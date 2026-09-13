@@ -1,0 +1,458 @@
+import type { Channel, ConsentStatus, MessageTemplate, Prisma } from '@prisma/client';
+import { prisma } from '../core/prisma';
+import { runUnscoped } from '../core/context';
+import { logger } from '../core/logger';
+import { toE164 } from '../core/ids';
+import { addDays, dateKey, dayjs } from '../core/dates';
+import { formatINR } from '../core/money';
+import { resolveProvider } from './providers';
+import { enqueue } from '../jobs/queue';
+import { consume, meterFor } from '../modules/quotas/quota.service';
+import { tenantHasFeature } from '../modules/quotas/limits.service';
+import { FEATURES } from '../core/features';
+
+export interface QueueMessageInput {
+  tenantId: string;
+  branchId?: string | null;
+  channel: Channel;
+  customerId?: string | null;
+  leadId?: string | null;
+  templateId?: string | null;
+  templateName?: string | null;
+  campaignId?: string | null;
+  journeyRunId?: string | null;
+  /** Extra values merged over the auto-resolved ones. */
+  variables?: Record<string, string>;
+  /** Used when no template is given (service-window replies). */
+  body?: string;
+  toAddress?: string;
+  attributionWindowDays?: number;
+  cost?: number;
+  /** Skip the delay and attempt delivery straight away. */
+  sendNow?: boolean;
+}
+
+const VARIABLE_PATTERN = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g;
+
+export function renderTemplate(body: string, variables: Record<string, string>): string {
+  return body.replace(VARIABLE_PATTERN, (_match, key: string) => variables[key] ?? '');
+}
+
+export function missingVariables(body: string, variables: Record<string, string>): string[] {
+  const missing: string[] = [];
+  for (const match of body.matchAll(VARIABLE_PATTERN)) {
+    const key = match[1]!;
+    if (!variables[key]) missing.push(key);
+  }
+  return [...new Set(missing)];
+}
+
+/**
+ * Consent gate. Marketing messages need an explicit opt-in; transactional
+ * (utility) messages only need the customer not to have opted out. This is the
+ * single place that decides, so no send path can bypass it.
+ */
+export function consentAllows(
+  category: 'MARKETING' | 'UTILITY' | 'AUTHENTICATION' | 'SERVICE',
+  consent: ConsentStatus,
+): boolean {
+  if (category === 'MARKETING') return consent === 'OPTED_IN';
+  return consent !== 'OPTED_OUT';
+}
+
+function consentForChannel(
+  customer: { whatsappConsent: ConsentStatus; smsConsent: ConsentStatus; emailConsent: ConsentStatus },
+  channel: Channel,
+): ConsentStatus {
+  switch (channel) {
+    case 'WHATSAPP':
+      return customer.whatsappConsent;
+    case 'SMS':
+      return customer.smsConsent;
+    case 'EMAIL':
+      return customer.emailConsent;
+    default:
+      return 'OPTED_IN';
+  }
+}
+
+/**
+ * Resolves the standard merge variables for a message from whatever context is
+ * available (customer, appointment, invoice, membership...).
+ */
+export async function buildVariables(input: {
+  tenantId: string;
+  customerId?: string | null;
+  leadId?: string | null;
+  appointmentId?: string | null;
+  invoiceId?: string | null;
+  membershipId?: string | null;
+  packagePurchaseId?: string | null;
+  extra?: Record<string, string>;
+}): Promise<Record<string, string>> {
+  const vars: Record<string, string> = {};
+
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: input.tenantId },
+    select: { name: true, slug: true, phone: true },
+  });
+  if (tenant) {
+    vars.salon_name = tenant.name;
+    vars.salon_phone = tenant.phone;
+    vars.booking_link = `https://book.salonos.in/${tenant.slug}`;
+  }
+
+  if (input.customerId) {
+    const customer = await prisma.customer.findUnique({
+      where: { id: input.customerId },
+      select: { firstName: true, lastName: true, loyaltyPoints: true, lastVisitAt: true, totalVisits: true, phone: true },
+    });
+    if (customer) {
+      vars.customer_name = customer.firstName;
+      vars.customer_full_name = `${customer.firstName} ${customer.lastName ?? ''}`.trim();
+      vars.points_balance = String(customer.loyaltyPoints);
+      vars.total_visits = String(customer.totalVisits);
+      if (customer.lastVisitAt) {
+        vars.last_visit_date = dateKey(customer.lastVisitAt);
+        vars.days_since_visit = String(dayjs().diff(dayjs(customer.lastVisitAt), 'day'));
+      }
+    }
+  }
+
+  if (input.leadId) {
+    const lead = await prisma.lead.findUnique({ where: { id: input.leadId }, select: { name: true } });
+    if (lead) vars.lead_name = lead.name;
+  }
+
+  if (input.appointmentId) {
+    const appointment = await prisma.appointment.findUnique({
+      where: { id: input.appointmentId },
+      include: {
+        branch: { select: { name: true, addressLine: true, city: true, timezone: true } },
+        services: { include: { service: { select: { name: true } }, staff: { select: { displayName: true } } } },
+      },
+    });
+    if (appointment) {
+      const tz = appointment.branch.timezone;
+      vars.appointment_date = dayjs(appointment.startAt).tz(tz).format('DD MMM YYYY');
+      vars.appointment_time = dayjs(appointment.startAt).tz(tz).format('h:mm A');
+      vars.appointment_day = dayjs(appointment.startAt).tz(tz).format('dddd');
+      vars.services = appointment.services.map((s) => s.service.name).join(', ');
+      vars.staff_name = appointment.services.find((s) => s.staff)?.staff?.displayName ?? 'our team';
+      vars.branch_name = appointment.branch.name;
+      vars.branch_address = [appointment.branch.addressLine, appointment.branch.city].filter(Boolean).join(', ');
+      vars.feedback_link = `https://book.salonos.in/feedback/${appointment.id}`;
+      // Routed through the app so the tap is recorded before Google opens.
+      vars.google_review_link = `https://book.salonos.in/feedback/${appointment.id}/google`;
+    }
+  }
+
+  if (input.invoiceId) {
+    const invoice = await prisma.invoice.findUnique({
+      where: { id: input.invoiceId },
+      select: { invoiceNumber: true, grandTotal: true, dueAmount: true, items: { select: { name: true } } },
+    });
+    if (invoice) {
+      vars.invoice_number = invoice.invoiceNumber;
+      vars.amount = formatINR(invoice.grandTotal);
+      vars.due_amount = formatINR(invoice.dueAmount);
+      // Deliberately no pay-online link: money is only ever collected at the
+      // counter and recorded by hand. See "Payments" in the README.
+      if (!vars.services) vars.services = invoice.items.map((i) => i.name).join(', ');
+      vars.last_service = invoice.items[0]?.name ?? 'visit';
+    }
+  }
+
+  if (input.membershipId) {
+    const membership = await prisma.membershipSubscription.findUnique({
+      where: { id: input.membershipId },
+      include: { plan: { select: { name: true } } },
+    });
+    if (membership) {
+      vars.plan_name = membership.plan.name;
+      vars.expiry_date = dateKey(membership.endAt);
+      vars.days_left = String(Math.max(0, dayjs(membership.endAt).diff(dayjs(), 'day')));
+    }
+  }
+
+  if (input.packagePurchaseId) {
+    const purchase = await prisma.packagePurchase.findUnique({
+      where: { id: input.packagePurchaseId },
+      include: { template: { select: { name: true } }, items: true },
+    });
+    if (purchase) {
+      vars.package_name = purchase.template.name;
+      vars.expiry_date = dateKey(purchase.expiresAt);
+      vars.sessions_left = String(purchase.items.reduce((acc, i) => acc + (i.totalQty - i.usedQty), 0));
+    }
+  }
+
+  return { ...vars, ...(input.extra ?? {}) };
+}
+
+/**
+ * Creates the message log row and schedules delivery. Nothing is sent inline:
+ * the worker owns delivery so retries and rate limits are handled in one place.
+ */
+export async function queueMessage(input: QueueMessageInput) {
+  let template: MessageTemplate | null = null;
+
+  if (input.templateId) {
+    template = await prisma.messageTemplate.findUnique({ where: { id: input.templateId } });
+  } else if (input.templateName) {
+    template = await prisma.messageTemplate.findFirst({
+      where: { tenantId: input.tenantId, name: input.templateName, channel: input.channel },
+    });
+  }
+
+  const [customer, lead] = await Promise.all([
+    input.customerId ? prisma.customer.findUnique({ where: { id: input.customerId } }) : null,
+    input.leadId ? prisma.lead.findUnique({ where: { id: input.leadId } }) : null,
+  ]);
+
+  const toAddress =
+    input.toAddress ??
+    (input.channel === 'EMAIL'
+      ? (customer?.email ?? lead?.email ?? '')
+      : toE164(customer?.phone ?? lead?.phone ?? ''));
+
+  if (!toAddress) {
+    logger.warn({ customerId: input.customerId, leadId: input.leadId }, 'no destination address for message');
+    return null;
+  }
+
+  /**
+   * The plan gate, and the only one that matters.
+   *
+   * A salon without the marketing feature sends nothing promotional, on any
+   * channel, however the send was started — a campaign, a journey step, a
+   * manual push, an API call. It sits above metering deliberately: quota,
+   * purchased credits and the overdraft all come later, so none of them can be
+   * used to get an offer out on a plan that does not include offers.
+   *
+   * Recorded rather than thrown. The caller is usually a background job
+   * working through a list, and a salon that upgrades should be able to see
+   * exactly what was held back and why.
+   */
+  if (template?.category === 'MARKETING' && !(await tenantHasFeature(input.tenantId, FEATURES.MARKETING))) {
+    logger.info(
+      { tenantId: input.tenantId, template: template.name, channel: input.channel },
+      'marketing message blocked: plan does not include marketing',
+    );
+    return prisma.messageLog.create({
+      data: {
+        tenantId: input.tenantId,
+        branchId: input.branchId ?? null,
+        channel: input.channel,
+        customerId: input.customerId ?? null,
+        leadId: input.leadId ?? null,
+        campaignId: input.campaignId ?? null,
+        journeyRunId: input.journeyRunId ?? null,
+        templateId: template.id,
+        toAddress,
+        status: 'SKIPPED',
+        errorCode: 'PLAN_NO_MARKETING',
+        errorMessage: 'Marketing messages are not included in this plan. Move to Grow to send offers and campaigns.',
+        payload: (input.variables ?? {}) as Prisma.InputJsonValue,
+      },
+    });
+  }
+
+  // Consent is checked at queue time so opted-out contacts never enter the queue.
+  if (customer && template) {
+    const consent = consentForChannel(customer, input.channel);
+    if (!consentAllows(template.category, consent)) {
+      return prisma.messageLog.create({
+        data: {
+          tenantId: input.tenantId,
+          branchId: input.branchId ?? null,
+          channel: input.channel,
+          customerId: input.customerId ?? null,
+          leadId: input.leadId ?? null,
+          campaignId: input.campaignId ?? null,
+          journeyRunId: input.journeyRunId ?? null,
+          templateId: template.id,
+          toAddress,
+          status: 'SKIPPED',
+          errorCode: 'NO_CONSENT',
+          errorMessage: `Customer has not opted in to ${input.channel.toLowerCase()} ${template.category.toLowerCase()} messages`,
+          payload: (input.variables ?? {}) as Prisma.InputJsonValue,
+        },
+      });
+    }
+  }
+
+  const variables = {
+    ...(await buildVariables({
+      tenantId: input.tenantId,
+      customerId: input.customerId,
+      leadId: input.leadId,
+    })),
+    ...(input.variables ?? {}),
+  };
+
+  const body = template ? renderTemplate(template.bodyText, variables) : (input.body ?? '');
+  if (!body) {
+    logger.warn({ templateId: input.templateId }, 'message has no body');
+    return null;
+  }
+
+  // Metering sits beside the consent gate, in the one place every send passes
+  // through, so no campaign, journey or job can spend an allowance it does not
+  // have. The charge happens before the message is queued — a queued message is
+  // one that has already been paid for.
+  const category = template?.category ?? 'UTILITY';
+  const meter = meterFor(input.channel, category);
+
+  // A send that belongs to a campaign or a journey already under way may
+  // overdraw in order to finish. Everything else — manual sends, fresh
+  // campaigns — is refused the moment the allowance is gone.
+  const committed = Boolean(input.campaignId || input.journeyRunId);
+  const charge = await consume(input.tenantId, meter, 1, { committed });
+
+  if (!charge.allowed) {
+    return prisma.messageLog.create({
+      data: {
+        tenantId: input.tenantId,
+        branchId: input.branchId ?? null,
+        channel: input.channel,
+        category,
+        meter,
+        customerId: input.customerId ?? null,
+        leadId: input.leadId ?? null,
+        campaignId: input.campaignId ?? null,
+        journeyRunId: input.journeyRunId ?? null,
+        templateId: template?.id ?? null,
+        toAddress,
+        renderedBody: body,
+        payload: variables as Prisma.InputJsonValue,
+        status: 'SKIPPED',
+        errorCode: 'QUOTA_EXCEEDED',
+        errorMessage: charge.reason ?? 'Message allowance exhausted',
+      },
+    });
+  }
+
+  const log = await prisma.messageLog.create({
+    data: {
+      tenantId: input.tenantId,
+      branchId: input.branchId ?? null,
+      channel: input.channel,
+      category,
+      meter,
+      customerId: input.customerId ?? null,
+      leadId: input.leadId ?? null,
+      campaignId: input.campaignId ?? null,
+      journeyRunId: input.journeyRunId ?? null,
+      templateId: template?.id ?? null,
+      toAddress,
+      renderedBody: body,
+      payload: variables as Prisma.InputJsonValue,
+      status: 'QUEUED',
+      cost: input.cost ?? 0,
+      attributionUntil: addDays(new Date(), input.attributionWindowDays ?? 14),
+    },
+  });
+
+  await enqueue('message.send', { messageLogId: log.id }, { tenantId: input.tenantId });
+  return log;
+}
+
+/** Called by the worker: hands the message to the channel provider. */
+export async function deliver(messageLogId: string) {
+  const log = await runUnscoped(() =>
+    prisma.messageLog.findUnique({ where: { id: messageLogId }, include: { template: true } }),
+  );
+  if (!log) return { ok: false, reason: 'not_found' as const };
+  if (log.status !== 'QUEUED') return { ok: false, reason: 'already_processed' as const };
+
+  // Resolved per tenant: the salon's own WhatsApp number, SMS header and email
+  // domain, falling back to the platform's only in development.
+  const { provider, live } = await resolveProvider(log.channel, log.tenantId);
+
+  if (!live) {
+    logger.warn(
+      { tenantId: log.tenantId, channel: log.channel },
+      'no sending account connected for this channel — message logged, not sent',
+    );
+  }
+
+  const variables = (log.payload as Record<string, string>) ?? {};
+
+  const result = await provider.send({
+    to: log.toAddress,
+    channel: log.channel,
+    body: log.renderedBody ?? '',
+    templateName: log.template?.providerTemplateName ?? null,
+    language: log.template?.language ?? 'en',
+    variables,
+    variableOrder: log.template?.variables ?? [],
+  });
+
+  await runUnscoped(() =>
+    prisma.messageLog.update({
+      where: { id: log.id },
+      data: result.ok
+        ? {
+            status: 'SENT',
+            sentAt: new Date(),
+            providerMessageId: result.providerMessageId ?? null,
+            cost: result.cost ?? log.cost,
+          }
+        : {
+            status: 'FAILED',
+            errorCode: result.errorCode ?? 'SEND_FAILED',
+            errorMessage: result.errorMessage ?? 'Unknown provider error',
+          },
+    }),
+  );
+
+  if (log.campaignId) {
+    await runUnscoped(() =>
+      prisma.campaign.update({
+        where: { id: log.campaignId! },
+        data: result.ok ? { sentCount: { increment: 1 } } : { failedCount: { increment: 1 } },
+      }),
+    );
+  }
+
+  return { ok: result.ok, reason: result.errorMessage };
+}
+
+/** Provider status callbacks (delivered / read / failed). */
+export async function applyStatusUpdate(input: {
+  providerMessageId: string;
+  status: 'DELIVERED' | 'READ' | 'FAILED' | 'CLICKED';
+  errorMessage?: string;
+  at?: Date;
+}) {
+  const log = await runUnscoped(() =>
+    prisma.messageLog.findFirst({ where: { providerMessageId: input.providerMessageId } }),
+  );
+  if (!log) return null;
+
+  const at = input.at ?? new Date();
+  const data: Prisma.MessageLogUpdateInput = { status: input.status };
+  if (input.status === 'DELIVERED') data.deliveredAt = at;
+  if (input.status === 'READ') data.readAt = at;
+  if (input.status === 'CLICKED') data.clickedAt = at;
+  if (input.status === 'FAILED') data.errorMessage = input.errorMessage ?? 'Delivery failed';
+
+  const updated = await runUnscoped(() => prisma.messageLog.update({ where: { id: log.id }, data }));
+
+  if (log.campaignId) {
+    const field =
+      input.status === 'DELIVERED'
+        ? 'deliveredCount'
+        : input.status === 'READ'
+          ? 'readCount'
+          : input.status === 'CLICKED'
+            ? 'clickedCount'
+            : 'failedCount';
+    await runUnscoped(() =>
+      prisma.campaign.update({ where: { id: log.campaignId! }, data: { [field]: { increment: 1 } } }),
+    );
+  }
+
+  return updated;
+}

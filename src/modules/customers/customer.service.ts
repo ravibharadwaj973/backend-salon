@@ -1,0 +1,841 @@
+import Papa from 'papaparse';
+import type { ConsentStatus, CustomerTier, Gender, LeadSource, Prisma } from '@prisma/client';
+import { prisma } from '../../core/prisma';
+import { requireTenantId } from '../../core/context';
+import { activeBranchId, branchFilter, optionalBranchFilter } from '../../core/scope';
+import { BadRequest, Conflict, NotFound } from '../../core/errors';
+import { pageParams } from '../../core/http';
+import { normalizePhone, sequenceNumber } from '../../core/ids';
+import { add, div, round2 } from '../../core/money';
+import { dateKey, dayjs, DEFAULT_TZ } from '../../core/dates';
+import { logger } from '../../core/logger';
+import { assertCustomerAllowed } from '../quotas/limits.service';
+
+export interface CustomerInput {
+  firstName: string;
+  lastName?: string;
+  phone: string;
+  altPhone?: string;
+  email?: string;
+  gender?: Gender;
+  dob?: Date;
+  anniversary?: Date;
+  addressLine?: string;
+  city?: string;
+  pincode?: string;
+  branchId?: string;
+  source?: LeadSource;
+  sourceDetail?: string;
+  referredById?: string;
+  preferredStaffId?: string;
+  tags?: string[];
+  notes?: string;
+  whatsappConsent?: ConsentStatus;
+  smsConsent?: ConsentStatus;
+  emailConsent?: ConsentStatus;
+  isActive?: boolean;
+  isBlacklisted?: boolean;
+  tier?: CustomerTier;
+}
+
+export interface ListCustomersInput {
+  page?: number;
+  pageSize?: number;
+  q?: string;
+  sortBy?: string;
+  sortDir?: 'asc' | 'desc';
+  branchId?: string;
+  tier?: CustomerTier;
+  tag?: string;
+  source?: LeadSource;
+  isActive?: string;
+  hasMembership?: string;
+  lastVisitBefore?: Date;
+  lastVisitAfter?: Date;
+  minVisits?: number;
+  minSpent?: number;
+  createdFrom?: Date;
+  createdTo?: Date;
+}
+
+const SORTABLE = new Set(['createdAt', 'lastVisitAt', 'totalSpent', 'totalVisits', 'firstName', 'avgBill']);
+
+export function buildCustomerWhere(tenantId: string, input: ListCustomersInput): Prisma.CustomerWhereInput {
+  const q = input.q?.trim();
+  return {
+    tenantId,
+    ...optionalBranchFilter(input.branchId),
+    ...(input.tier ? { tier: input.tier } : {}),
+    ...(input.tag ? { tags: { has: input.tag } } : {}),
+    ...(input.source ? { source: input.source } : {}),
+    ...(input.isActive ? { isActive: input.isActive === 'true' } : {}),
+    ...(input.minVisits !== undefined ? { totalVisits: { gte: input.minVisits } } : {}),
+    ...(input.minSpent !== undefined ? { totalSpent: { gte: input.minSpent } } : {}),
+    ...(input.lastVisitBefore || input.lastVisitAfter
+      ? {
+          lastVisitAt: {
+            ...(input.lastVisitBefore ? { lte: input.lastVisitBefore } : {}),
+            ...(input.lastVisitAfter ? { gte: input.lastVisitAfter } : {}),
+          },
+        }
+      : {}),
+    ...(input.createdFrom || input.createdTo
+      ? {
+          createdAt: {
+            ...(input.createdFrom ? { gte: input.createdFrom } : {}),
+            ...(input.createdTo ? { lte: input.createdTo } : {}),
+          },
+        }
+      : {}),
+    ...(input.hasMembership === 'true'
+      ? { memberships: { some: { status: 'ACTIVE', endAt: { gte: new Date() } } } }
+      : {}),
+    ...(input.hasMembership === 'false'
+      ? { memberships: { none: { status: 'ACTIVE', endAt: { gte: new Date() } } } }
+      : {}),
+    ...(q
+      ? {
+          OR: [
+            { firstName: { contains: q, mode: 'insensitive' as const } },
+            { lastName: { contains: q, mode: 'insensitive' as const } },
+            { phone: { contains: normalizePhone(q) } },
+            { email: { contains: q, mode: 'insensitive' as const } },
+            { code: { contains: q.toUpperCase() } },
+          ],
+        }
+      : {}),
+  };
+}
+
+/**
+ * The "have they been here before?" lookup behind every place a customer can
+ * be typed in fresh — the new-customer form, the walk-in box at booking.
+ *
+ * Deliberately narrower than listCustomers: it answers one question quickly
+ * with a small payload, and it matches on the things a receptionist actually
+ * has in hand — a phone number (any spacing or +91 prefix), an email, or a
+ * name. `exact` marks a match on the full phone number or email, which is the
+ * case the UI should treat as "this *is* them", not "this might be them".
+ */
+export function lookupTerms(q: string): { text: string; phone: string } {
+  const text = q.trim();
+  const digits = text.replace(/\D/g, '');
+  // "98765 43210", "+91 98765-43210", "(0) 9876" are phones; "priya98" is not.
+  const looksLikePhone = digits.length >= 4 && digits.length >= text.replace(/[\s+()-]/g, '').length;
+  return { text, phone: looksLikePhone ? normalizePhone(text) : '' };
+}
+
+export async function lookupCustomers(q: string, limit = 6) {
+  const tenantId = requireTenantId();
+  const { text, phone } = lookupTerms(q);
+  if (!text) return [];
+
+  // "Priya Sharma" has to find Priya Sharma: every word must match somewhere,
+  // each word against first name, last name or email.
+  const words = text.split(/\s+/).filter(Boolean);
+  const where = phone
+    ? { OR: [{ phone: { contains: phone } }, { altPhone: { contains: phone } }] }
+    : {
+        AND: words.map((word) => ({
+          OR: [
+            { email: { contains: word, mode: 'insensitive' as const } },
+            { firstName: { contains: word, mode: 'insensitive' as const } },
+            { lastName: { contains: word, mode: 'insensitive' as const } },
+          ],
+        })),
+      };
+
+  const rows = await prisma.customer.findMany({
+    where: { tenantId, isActive: true, ...where },
+    orderBy: [{ lastVisitAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }],
+    take: limit,
+    select: {
+      id: true,
+      code: true,
+      firstName: true,
+      lastName: true,
+      phone: true,
+      altPhone: true,
+      email: true,
+      gender: true,
+      dob: true,
+      tier: true,
+      totalVisits: true,
+      totalSpent: true,
+      lastVisitAt: true,
+      createdAt: true,
+    },
+  });
+
+  const lowered = text.toLowerCase();
+  return rows.map((row) => ({
+    ...row,
+    exact:
+      (phone !== '' && (row.phone === phone || row.altPhone === phone)) ||
+      (phone === '' && row.email?.toLowerCase() === lowered),
+  }));
+}
+
+export async function listCustomers(input: ListCustomersInput) {
+  const tenantId = requireTenantId();
+  const { skip, take, page, pageSize } = pageParams(input);
+  const where = buildCustomerWhere(tenantId, input);
+  const sortBy = input.sortBy && SORTABLE.has(input.sortBy) ? input.sortBy : 'createdAt';
+
+  const [items, total] = await Promise.all([
+    prisma.customer.findMany({
+      where,
+      skip,
+      take,
+      orderBy: { [sortBy]: input.sortDir ?? 'desc' },
+      select: {
+        id: true,
+        code: true,
+        firstName: true,
+        lastName: true,
+        phone: true,
+        email: true,
+        gender: true,
+        tier: true,
+        tags: true,
+        totalVisits: true,
+        totalSpent: true,
+        avgBill: true,
+        loyaltyPoints: true,
+        walletBalance: true,
+        outstanding: true,
+        lastVisitAt: true,
+        createdAt: true,
+        branchId: true,
+      },
+    }),
+    prisma.customer.count({ where }),
+  ]);
+
+  return { items, total, page, pageSize };
+}
+
+async function nextCustomerCode(tenantId: string): Promise<string> {
+  const count = await prisma.customer.count({ where: { tenantId } });
+  return sequenceNumber('C', count + 1, 5);
+}
+
+export async function createCustomer(input: CustomerInput) {
+  const tenantId = requireTenantId();
+  const phone = normalizePhone(input.phone);
+
+  await assertCustomerAllowed(tenantId);
+
+  const existing = await prisma.customer.findFirst({ where: { tenantId, phone } });
+  if (existing) {
+    throw Conflict('A customer with this phone number already exists', {
+      customerId: existing.id,
+      name: `${existing.firstName} ${existing.lastName ?? ''}`.trim(),
+    });
+  }
+
+  const { branchId, referredById, preferredStaffId, ...rest } = input;
+  if (branchId) branchFilter(branchId);
+
+  // The branch they were signed up at, when the counter has one selected. It is
+  // where they "live" in branch-scoped lists; they can still be served anywhere.
+  const homeBranchId = branchId ?? activeBranchId() ?? null;
+
+  const customer = await prisma.customer.create({
+    data: {
+      tenantId,
+      ...rest,
+      phone,
+      altPhone: input.altPhone ? normalizePhone(input.altPhone) : null,
+      code: await nextCustomerCode(tenantId),
+      branchId: homeBranchId,
+      referredById: referredById ?? null,
+      preferredStaffId: preferredStaffId ?? null,
+      consentUpdatedAt: new Date(),
+    },
+  });
+
+  if (referredById) await awardReferral(tenantId, referredById, customer.id);
+  return customer;
+}
+
+/** Referral points are only awarded when the loyalty programme is switched on. */
+async function awardReferral(tenantId: string, referrerId: string, newCustomerId: string): Promise<void> {
+  const program = await prisma.loyaltyProgram.findFirst({ where: { tenantId, isActive: true } });
+  if (!program || program.referralPoints <= 0) return;
+
+  const referrer = await prisma.customer.findUnique({ where: { id: referrerId } });
+  if (!referrer) return;
+
+  const balance = referrer.loyaltyPoints + program.referralPoints;
+  await prisma.$transaction([
+    prisma.customer.update({ where: { id: referrerId }, data: { loyaltyPoints: balance } }),
+    prisma.loyaltyTransaction.create({
+      data: {
+        tenantId,
+        customerId: referrerId,
+        type: 'BONUS',
+        points: program.referralPoints,
+        balanceAfter: balance,
+        reason: `Referral bonus for customer ${newCustomerId}`,
+      },
+    }),
+  ]);
+}
+
+export async function updateCustomer(id: string, input: Partial<CustomerInput>) {
+  const tenantId = requireTenantId();
+  const customer = await prisma.customer.findUnique({ where: { id } });
+  if (!customer) throw NotFound('Customer');
+
+  if (input.phone) {
+    const phone = normalizePhone(input.phone);
+    if (phone !== customer.phone) {
+      const clash = await prisma.customer.findFirst({ where: { tenantId, phone, id: { not: id } } });
+      if (clash) throw Conflict('Another customer already uses this phone number');
+      input.phone = phone;
+    }
+  }
+
+  const consentChanged =
+    input.whatsappConsent !== undefined || input.smsConsent !== undefined || input.emailConsent !== undefined;
+
+  return prisma.customer.update({
+    where: { id },
+    data: {
+      ...(input as Prisma.CustomerUpdateInput),
+      ...(consentChanged ? { consentUpdatedAt: new Date() } : {}),
+    },
+  });
+}
+
+/**
+ * The customer 360 view: everything the front desk needs on one screen.
+ */
+export async function getCustomerProfile(id: string) {
+  const customer = await prisma.customer.findUnique({
+    where: { id },
+    include: {
+      branch: { select: { id: true, name: true } },
+      preferredStaff: { select: { id: true, displayName: true } },
+      referredBy: { select: { id: true, firstName: true, lastName: true } },
+      hairProfile: true,
+      memberships: {
+        where: { status: 'ACTIVE' },
+        include: { plan: { select: { id: true, name: true, serviceDiscountPct: true } } },
+        orderBy: { endAt: 'desc' },
+      },
+      packagePurchases: {
+        where: { status: 'ACTIVE' },
+        include: {
+          template: { select: { id: true, name: true } },
+          items: { include: { service: { select: { id: true, name: true } } } },
+        },
+      },
+      _count: { select: { appointments: true, invoices: true, feedback: true } },
+    },
+  });
+  if (!customer) throw NotFound('Customer');
+
+  const [nextAppointment, lastInvoice, topServices, favouriteStaff, recentFeedback] = await Promise.all([
+    prisma.appointment.findFirst({
+      where: { customerId: id, startAt: { gte: new Date() }, status: { in: ['BOOKED', 'CONFIRMED'] } },
+      orderBy: { startAt: 'asc' },
+      include: {
+        services: { include: { service: { select: { name: true } }, staff: { select: { displayName: true } } } },
+      },
+    }),
+    prisma.invoice.findFirst({
+      where: { customerId: id, status: { not: 'VOID' } },
+      orderBy: { invoiceDate: 'desc' },
+      select: { id: true, invoiceNumber: true, grandTotal: true, invoiceDate: true, dueAmount: true },
+    }),
+    prisma.invoiceItem.groupBy({
+      by: ['name'],
+      where: { invoice: { customerId: id, status: { not: 'VOID' } }, itemType: 'SERVICE' },
+      _count: { _all: true },
+      _sum: { lineTotal: true },
+      orderBy: { _count: { name: 'desc' } },
+      take: 5,
+    }),
+    prisma.appointmentService.groupBy({
+      by: ['staffId'],
+      where: { appointment: { customerId: id, status: 'COMPLETED' }, staffId: { not: null } },
+      _count: { _all: true },
+      orderBy: { _count: { staffId: 'desc' } },
+      take: 1,
+    }),
+    prisma.feedback.findMany({
+      where: { customerId: id },
+      orderBy: { createdAt: 'desc' },
+      take: 3,
+      select: { id: true, rating: true, comment: true, createdAt: true },
+    }),
+  ]);
+
+  const favouriteStaffId = favouriteStaff[0]?.staffId ?? null;
+  const favourite = favouriteStaffId
+    ? await prisma.staff.findUnique({ where: { id: favouriteStaffId }, select: { id: true, displayName: true } })
+    : null;
+
+  const daysSinceLastVisit = customer.lastVisitAt
+    ? dayjs().diff(dayjs(customer.lastVisitAt), 'day')
+    : null;
+
+  return {
+    ...customer,
+    stats: {
+      totalVisits: customer.totalVisits,
+      totalSpent: customer.totalSpent,
+      avgBill: customer.avgBill,
+      loyaltyPoints: customer.loyaltyPoints,
+      walletBalance: customer.walletBalance,
+      outstanding: customer.outstanding,
+      daysSinceLastVisit,
+      isAtRisk: daysSinceLastVisit !== null && daysSinceLastVisit > 60,
+    },
+    nextAppointment,
+    lastInvoice,
+    favouriteStaff: favourite,
+    topServices: topServices.map((s) => ({ name: s.name, count: s._count._all, revenue: s._sum.lineTotal })),
+    recentFeedback,
+  };
+}
+
+/** Full timeline: appointments, invoices, messages, loyalty and feedback. */
+export async function getCustomerHistory(id: string, input: { page?: number; pageSize?: number }) {
+  const { skip, take, page, pageSize } = pageParams(input);
+
+  const [appointments, total] = await Promise.all([
+    prisma.appointment.findMany({
+      where: { customerId: id },
+      orderBy: { startAt: 'desc' },
+      skip,
+      take,
+      include: {
+        branch: { select: { name: true } },
+        services: {
+          include: {
+            service: { select: { id: true, name: true } },
+            staff: { select: { id: true, displayName: true } },
+          },
+        },
+        invoice: {
+          select: {
+            id: true,
+            invoiceNumber: true,
+            grandTotal: true,
+            paidAmount: true,
+            dueAmount: true,
+            status: true,
+          },
+        },
+        feedback: { select: { rating: true, comment: true } },
+      },
+    }),
+    prisma.appointment.count({ where: { customerId: id } }),
+  ]);
+
+  return { items: appointments, total, page, pageSize };
+}
+
+export async function listCustomerInvoices(id: string, input: { page?: number; pageSize?: number }) {
+  const { skip, take, page, pageSize } = pageParams(input);
+  const [items, total] = await Promise.all([
+    prisma.invoice.findMany({
+      where: { customerId: id },
+      orderBy: { invoiceDate: 'desc' },
+      skip,
+      take,
+      include: { items: true, payments: true },
+    }),
+    prisma.invoice.count({ where: { customerId: id } }),
+  ]);
+  return { items, total, page, pageSize };
+}
+
+// ------------------------------------------------------------------ notes ---
+
+export async function addNote(customerId: string, note: string, userId: string | null) {
+  const tenantId = requireTenantId();
+  await assertCustomerExists(customerId);
+  return prisma.customerNote.create({ data: { tenantId, customerId, note, createdById: userId } });
+}
+
+export async function listNotes(customerId: string) {
+  return prisma.customerNote.findMany({ where: { customerId }, orderBy: { createdAt: 'desc' }, take: 100 });
+}
+
+export async function addPhoto(
+  customerId: string,
+  input: { url: string; kind?: string; caption?: string; appointmentId?: string },
+) {
+  const tenantId = requireTenantId();
+  await assertCustomerExists(customerId);
+  return prisma.customerPhoto.create({
+    data: {
+      tenantId,
+      customerId,
+      url: input.url,
+      kind: input.kind ?? 'AFTER',
+      caption: input.caption ?? null,
+      appointmentId: input.appointmentId ?? null,
+    },
+  });
+}
+
+export async function listPhotos(customerId: string) {
+  return prisma.customerPhoto.findMany({ where: { customerId }, orderBy: { createdAt: 'desc' } });
+}
+
+export async function upsertHairProfile(customerId: string, input: Record<string, unknown>) {
+  const tenantId = requireTenantId();
+  await assertCustomerExists(customerId);
+  const existing = await prisma.hairProfile.findUnique({ where: { customerId } });
+  if (existing) {
+    return prisma.hairProfile.update({ where: { customerId }, data: input as Prisma.HairProfileUpdateInput });
+  }
+  return prisma.hairProfile.create({
+    data: { ...(input as Record<string, unknown>), tenantId, customerId } as Prisma.HairProfileUncheckedCreateInput,
+  });
+}
+
+export async function updateConsent(
+  customerId: string,
+  input: { whatsappConsent?: ConsentStatus; smsConsent?: ConsentStatus; emailConsent?: ConsentStatus },
+) {
+  await assertCustomerExists(customerId);
+  return prisma.customer.update({
+    where: { id: customerId },
+    data: { ...input, consentUpdatedAt: new Date() },
+  });
+}
+
+async function assertCustomerExists(customerId: string): Promise<void> {
+  const exists = await prisma.customer.count({ where: { id: customerId } });
+  if (!exists) throw NotFound('Customer');
+}
+
+// ----------------------------------------------------------------- import ---
+
+export interface ImportRow {
+  firstName: string;
+  lastName?: string;
+  phone: string;
+  email?: string;
+  gender?: string;
+  dob?: string;
+  tags?: string;
+  notes?: string;
+}
+
+export async function importCustomers(input: {
+  csv?: string;
+  rows?: ImportRow[];
+  branchId?: string;
+  source?: LeadSource;
+  skipDuplicates?: boolean;
+}) {
+  const tenantId = requireTenantId();
+
+  let rows: ImportRow[] = input.rows ?? [];
+  if (input.csv) {
+    const parsed = Papa.parse<Record<string, string>>(input.csv.trim(), {
+      header: true,
+      skipEmptyLines: true,
+      transformHeader: (h) => h.trim().toLowerCase().replace(/[\s_-]/g, ''),
+    });
+    if (parsed.errors.length) {
+      logger.warn({ errors: parsed.errors.slice(0, 3) }, 'csv parse warnings');
+    }
+    rows = parsed.data.map((r) => ({
+      firstName: r.firstname ?? r.name ?? r.customername ?? '',
+      lastName: r.lastname ?? '',
+      phone: r.phone ?? r.mobile ?? r.phonenumber ?? r.contact ?? '',
+      email: r.email ?? '',
+      gender: r.gender ?? '',
+      dob: r.dob ?? r.birthday ?? r.dateofbirth ?? '',
+      tags: r.tags ?? '',
+      notes: r.notes ?? r.remarks ?? '',
+    }));
+  }
+
+  if (!rows.length) throw BadRequest('Nothing to import: provide csv text or rows');
+
+  const existingPhones = new Set(
+    (await prisma.customer.findMany({ where: { tenantId }, select: { phone: true } })).map((c) => c.phone),
+  );
+
+  const created: string[] = [];
+  const skipped: { row: number; phone: string; reason: string }[] = [];
+  let counter = await prisma.customer.count({ where: { tenantId } });
+
+  const toCreate: Prisma.CustomerCreateManyInput[] = [];
+
+  rows.forEach((row, index) => {
+    const name = (row.firstName ?? '').trim();
+    const phone = normalizePhone(row.phone ?? '');
+
+    if (!name || phone.length < 6) {
+      skipped.push({ row: index + 1, phone, reason: 'Missing name or valid phone' });
+      return;
+    }
+    if (existingPhones.has(phone)) {
+      skipped.push({ row: index + 1, phone, reason: 'Duplicate phone' });
+      return;
+    }
+    existingPhones.add(phone);
+    counter += 1;
+
+    const parts = name.split(/\s+/);
+    const genderValue = (row.gender ?? '').trim().toUpperCase();
+    const gender: Gender | null =
+      genderValue.startsWith('M') ? 'MALE' : genderValue.startsWith('F') ? 'FEMALE' : null;
+
+    const dob = row.dob ? dayjs(row.dob, ['YYYY-MM-DD', 'DD/MM/YYYY', 'DD-MM-YYYY', 'MM/DD/YYYY']) : null;
+
+    toCreate.push({
+      tenantId,
+      code: sequenceNumber('C', counter, 5),
+      firstName: row.lastName ? name : (parts[0] ?? name),
+      lastName: row.lastName?.trim() || (parts.length > 1 ? parts.slice(1).join(' ') : null),
+      phone,
+      email: row.email?.trim() || null,
+      gender,
+      dob: dob?.isValid() ? dob.toDate() : null,
+      tags: row.tags ? row.tags.split(/[;,|]/).map((t) => t.trim()).filter(Boolean) : [],
+      notes: row.notes?.trim() || null,
+      branchId: input.branchId ?? null,
+      source: input.source ?? 'CSV_IMPORT',
+    });
+    created.push(phone);
+  });
+
+  if (toCreate.length) {
+    // Checked once for the whole batch: a 5,000-row CSV must not creep a salon
+    // past its customer limit one row at a time.
+    await assertCustomerAllowed(tenantId, toCreate.length);
+    await prisma.customer.createMany({ data: toCreate, skipDuplicates: true });
+  }
+
+  return { imported: toCreate.length, skipped: skipped.length, skippedRows: skipped.slice(0, 100), total: rows.length };
+}
+
+export async function exportCustomers(input: ListCustomersInput) {
+  const tenantId = requireTenantId();
+  const where = buildCustomerWhere(tenantId, input);
+  const customers = await prisma.customer.findMany({
+    where,
+    orderBy: { createdAt: 'desc' },
+    take: 50_000,
+    select: {
+      code: true,
+      firstName: true,
+      lastName: true,
+      phone: true,
+      email: true,
+      gender: true,
+      dob: true,
+      tier: true,
+      totalVisits: true,
+      totalSpent: true,
+      avgBill: true,
+      loyaltyPoints: true,
+      lastVisitAt: true,
+      tags: true,
+      createdAt: true,
+    },
+  });
+
+  return Papa.unparse(
+    customers.map((c) => ({
+      ...c,
+      dob: c.dob ? dateKey(c.dob) : '',
+      lastVisitAt: c.lastVisitAt ? dateKey(c.lastVisitAt) : '',
+      createdAt: dateKey(c.createdAt),
+      tags: c.tags.join('|'),
+      totalSpent: c.totalSpent.toString(),
+      avgBill: c.avgBill.toString(),
+    })),
+  );
+}
+
+/**
+ * Merge a duplicate into the surviving record: history moves across, rollups are
+ * recalculated, and the duplicate is deactivated rather than deleted.
+ */
+export async function mergeCustomers(sourceId: string, targetId: string) {
+  if (sourceId === targetId) throw BadRequest('Cannot merge a customer into themselves');
+
+  const [source, target] = await Promise.all([
+    prisma.customer.findUnique({ where: { id: sourceId } }),
+    prisma.customer.findUnique({ where: { id: targetId } }),
+  ]);
+  if (!source || !target) throw NotFound('Customer');
+
+  await prisma.$transaction(async (tx) => {
+    await tx.appointment.updateMany({ where: { customerId: sourceId }, data: { customerId: targetId } });
+    await tx.invoice.updateMany({ where: { customerId: sourceId }, data: { customerId: targetId } });
+    await tx.payment.updateMany({ where: { customerId: sourceId }, data: { customerId: targetId } });
+    await tx.customerNote.updateMany({ where: { customerId: sourceId }, data: { customerId: targetId } });
+    await tx.customerPhoto.updateMany({ where: { customerId: sourceId }, data: { customerId: targetId } });
+    await tx.loyaltyTransaction.updateMany({ where: { customerId: sourceId }, data: { customerId: targetId } });
+    await tx.walletTransaction.updateMany({ where: { customerId: sourceId }, data: { customerId: targetId } });
+    await tx.packagePurchase.updateMany({ where: { customerId: sourceId }, data: { customerId: targetId } });
+    await tx.membershipSubscription.updateMany({ where: { customerId: sourceId }, data: { customerId: targetId } });
+    await tx.feedback.updateMany({ where: { customerId: sourceId }, data: { customerId: targetId } });
+    await tx.messageLog.updateMany({ where: { customerId: sourceId }, data: { customerId: targetId } });
+
+    await tx.customer.update({
+      where: { id: sourceId },
+      data: {
+        isActive: false,
+        phone: `merged:${source.phone}:${Date.now()}`,
+        notes: `${source.notes ?? ''}\n[Merged into ${targetId}]`.trim(),
+      },
+    });
+  });
+
+  await recalculateCustomerRollups(targetId);
+  return getCustomerProfile(targetId);
+}
+
+/**
+ * Recompute visit counts, spend and outstanding from invoices. Billing keeps
+ * these up to date incrementally; this is the repair/backfill path.
+ */
+export async function recalculateCustomerRollups(customerId: string) {
+  const [agg, firstInvoice, lastInvoice, outstandingAgg] = await Promise.all([
+    prisma.invoice.aggregate({
+      where: { customerId, status: { in: ['ISSUED', 'PARTIALLY_PAID', 'PAID'] } },
+      _sum: { grandTotal: true },
+      _count: { _all: true },
+    }),
+    prisma.invoice.findFirst({
+      where: { customerId, status: { not: 'VOID' } },
+      orderBy: { invoiceDate: 'asc' },
+      select: { invoiceDate: true },
+    }),
+    prisma.invoice.findFirst({
+      where: { customerId, status: { not: 'VOID' } },
+      orderBy: { invoiceDate: 'desc' },
+      select: { invoiceDate: true },
+    }),
+    prisma.invoice.aggregate({
+      where: { customerId, status: { in: ['ISSUED', 'PARTIALLY_PAID'] } },
+      _sum: { dueAmount: true },
+    }),
+  ]);
+
+  const visits = agg._count._all;
+  const spent = agg._sum.grandTotal ?? 0;
+
+  return prisma.customer.update({
+    where: { id: customerId },
+    data: {
+      totalVisits: visits,
+      totalSpent: spent,
+      avgBill: visits > 0 ? round2(div(spent, visits)) : 0,
+      firstVisitAt: firstInvoice?.invoiceDate ?? null,
+      lastVisitAt: lastInvoice?.invoiceDate ?? null,
+      outstanding: outstandingAgg._sum.dueAmount ?? 0,
+    },
+  });
+}
+
+/** Tier thresholds are a tenant setting; these are the defaults. */
+export async function refreshCustomerTier(customerId: string) {
+  const customer = await prisma.customer.findUnique({ where: { id: customerId } });
+  if (!customer) return null;
+
+  const spent = Number(customer.totalSpent);
+  const tier: CustomerTier = spent >= 50_000 ? 'VIP' : spent >= 25_000 ? 'GOLD' : spent >= 10_000 ? 'SILVER' : 'BRONZE';
+
+  if (tier === customer.tier) return customer;
+  return prisma.customer.update({ where: { id: customerId }, data: { tier } });
+}
+
+export async function birthdaysAndAnniversaries(input: { window?: 'today' | 'week' | 'month'; branchId?: string }) {
+  const tenantId = requireTenantId();
+  const today = dayjs().tz(DEFAULT_TZ);
+  const days =
+    input.window === 'today' ? 1 : input.window === 'month' ? today.daysInMonth() - today.date() + 1 : 7;
+
+  const targets = Array.from({ length: days }, (_, i) => today.add(i, 'day')).map((d) => ({
+    month: d.month() + 1,
+    day: d.date(),
+  }));
+
+  const where = { tenantId, isActive: true, ...optionalBranchFilter(input.branchId) };
+
+  const customers = await prisma.customer.findMany({
+    where: { ...where, OR: [{ dob: { not: null } }, { anniversary: { not: null } }] },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      phone: true,
+      dob: true,
+      anniversary: true,
+      tier: true,
+      totalSpent: true,
+      whatsappConsent: true,
+    },
+  });
+
+  const matches = (date: Date | null) =>
+    date ? targets.some((t) => t.month === date.getUTCMonth() + 1 && t.day === date.getUTCDate()) : false;
+
+  return {
+    birthdays: customers.filter((c) => matches(c.dob)),
+    anniversaries: customers.filter((c) => matches(c.anniversary)),
+  };
+}
+
+/** Customers who have gone quiet — the core of the win-back motion. */
+export async function inactiveCustomers(input: { days?: number; minVisits?: number; branchId?: string; page?: number; pageSize?: number }) {
+  const tenantId = requireTenantId();
+  const days = input.days ?? 45;
+  const cutoff = dayjs().subtract(days, 'day').toDate();
+  const { skip, take, page, pageSize } = pageParams(input);
+
+  const where: Prisma.CustomerWhereInput = {
+    tenantId,
+    isActive: true,
+    ...optionalBranchFilter(input.branchId),
+    lastVisitAt: { lte: cutoff, not: null },
+    ...(input.minVisits ? { totalVisits: { gte: input.minVisits } } : {}),
+  };
+
+  const [items, total, valueAgg] = await Promise.all([
+    prisma.customer.findMany({
+      where,
+      skip,
+      take,
+      orderBy: { totalSpent: 'desc' },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        phone: true,
+        lastVisitAt: true,
+        totalVisits: true,
+        totalSpent: true,
+        avgBill: true,
+        tier: true,
+      },
+    }),
+    prisma.customer.count({ where }),
+    prisma.customer.aggregate({ where, _sum: { totalSpent: true }, _avg: { avgBill: true } }),
+  ]);
+
+  return {
+    items,
+    total,
+    page,
+    pageSize,
+    lifetimeValueAtRisk: valueAgg._sum.totalSpent ?? 0,
+    averageBill: valueAgg._avg.avgBill ?? 0,
+    recoveryPotential: round2(add(0, Number(valueAgg._avg.avgBill ?? 0) * total)),
+  };
+}

@@ -1,0 +1,274 @@
+import type { Channel, Prisma } from '@prisma/client';
+import { prisma } from '../../core/prisma';
+import { runUnscoped } from '../../core/context';
+import { NotFound, BadRequest } from '../../core/errors';
+import { resolveProvider } from '../../messaging/providers';
+
+/**
+ * MESSAGING SETUP AND AUTOMATION TIMING
+ *
+ * Two things a salon owner needs to control themselves: which accounts their
+ * messages go out from, and when the automatic ones fire. Both used to be
+ * developer-only.
+ */
+
+// ------------------------------------------------------------ credentials --
+
+/** Never return a secret. The last four characters are enough to recognise it. */
+function mask(value: string | null | undefined): string | null {
+  if (!value) return null;
+  return value.length <= 4 ? '••••' : `••••${value.slice(-4)}`;
+}
+
+export async function getMessagingSetup(tenantId: string) {
+  const config = await runUnscoped(() => prisma.tenantMessagingConfig.findUnique({ where: { tenantId } }));
+
+  return {
+    whatsapp: {
+      status: config?.waStatus ?? 'NOT_CONNECTED',
+      phoneNumberId: config?.waPhoneNumberId ?? null,
+      businessId: config?.waBusinessId ?? null,
+      displayNumber: config?.waDisplayNumber ?? null,
+      accessToken: mask(config?.waAccessToken),
+      verifiedAt: config?.waVerifiedAt ?? null,
+    },
+    sms: {
+      status: config?.smsStatus ?? 'NOT_CONNECTED',
+      senderId: config?.smsSenderId ?? null,
+      dltEntityId: config?.smsDltEntityId ?? null,
+      route: config?.smsRoute ?? null,
+      apiKey: mask(config?.smsApiKey),
+    },
+    email: {
+      status: config?.emailStatus ?? 'NOT_CONNECTED',
+      fromName: config?.emailFromName ?? null,
+      fromAddress: config?.emailFromAddress ?? null,
+      replyTo: config?.emailReplyTo ?? null,
+      apiKey: mask(config?.emailApiKey),
+    },
+  };
+}
+
+export interface MessagingSetupInput {
+  whatsapp?: { phoneNumberId?: string; businessId?: string; accessToken?: string; displayNumber?: string };
+  sms?: { senderId?: string; apiKey?: string; dltEntityId?: string; route?: string };
+  email?: { fromName?: string; fromAddress?: string; apiKey?: string; replyTo?: string };
+}
+
+/**
+ * A channel flips to CONNECTED only when it has everything it needs to send.
+ * Half-configured is the same as not configured — the dispatcher falls back to
+ * logging rather than throwing inside a customer's journey.
+ */
+export async function updateMessagingSetup(tenantId: string, input: MessagingSetupInput) {
+  const existing = await runUnscoped(() => prisma.tenantMessagingConfig.findUnique({ where: { tenantId } }));
+
+  const data: Prisma.TenantMessagingConfigUncheckedCreateInput = {
+    tenantId,
+    ...(existing ? {} : {}),
+  };
+
+  if (input.whatsapp) {
+    const phoneNumberId = input.whatsapp.phoneNumberId ?? existing?.waPhoneNumberId ?? null;
+    // An empty string means "leave it alone" — the UI sends back the mask, not
+    // the secret, so a blank field must never wipe a working token.
+    const accessToken = input.whatsapp.accessToken?.trim()
+      ? input.whatsapp.accessToken.trim()
+      : (existing?.waAccessToken ?? null);
+
+    data.waPhoneNumberId = phoneNumberId;
+    data.waBusinessId = input.whatsapp.businessId ?? existing?.waBusinessId ?? null;
+    data.waAccessToken = accessToken;
+    data.waDisplayNumber = input.whatsapp.displayNumber ?? existing?.waDisplayNumber ?? null;
+    data.waStatus = phoneNumberId && accessToken ? 'CONNECTED' : 'NOT_CONNECTED';
+  }
+
+  if (input.sms) {
+    const senderId = input.sms.senderId ?? existing?.smsSenderId ?? null;
+    const apiKey = input.sms.apiKey?.trim() ? input.sms.apiKey.trim() : (existing?.smsApiKey ?? null);
+
+    data.smsSenderId = senderId;
+    data.smsApiKey = apiKey;
+    data.smsDltEntityId = input.sms.dltEntityId ?? existing?.smsDltEntityId ?? null;
+    data.smsRoute = input.sms.route ?? existing?.smsRoute ?? null;
+    data.smsStatus = senderId && apiKey ? 'CONNECTED' : 'NOT_CONNECTED';
+  }
+
+  if (input.email) {
+    const fromAddress = input.email.fromAddress ?? existing?.emailFromAddress ?? null;
+    const apiKey = input.email.apiKey?.trim() ? input.email.apiKey.trim() : (existing?.emailApiKey ?? null);
+
+    data.emailFromAddress = fromAddress;
+    data.emailFromName = input.email.fromName ?? existing?.emailFromName ?? null;
+    data.emailApiKey = apiKey;
+    data.emailReplyTo = input.email.replyTo ?? existing?.emailReplyTo ?? null;
+    data.emailStatus = fromAddress && apiKey ? 'CONNECTED' : 'NOT_CONNECTED';
+  }
+
+  const saved = await runUnscoped(() =>
+    existing
+      ? prisma.tenantMessagingConfig.update({ where: { tenantId }, data })
+      : prisma.tenantMessagingConfig.create({ data }),
+  );
+
+  return { id: saved.id, ...(await getMessagingSetup(tenantId)) };
+}
+
+/** Prove a channel works before trusting it with customers. */
+export async function sendTestMessage(tenantId: string, channel: Channel, to: string) {
+  const { provider, live, source } = await resolveProvider(channel, tenantId);
+
+  if (!live) {
+    throw BadRequest(
+      `${channel.toLowerCase()} is not connected yet, so nothing was sent. Add the details above and save first.`,
+    );
+  }
+
+  const tenant = await runUnscoped(() =>
+    prisma.tenant.findUnique({ where: { id: tenantId }, select: { name: true } }),
+  );
+
+  const result = await provider.send({
+    to,
+    channel,
+    body: `This is a test message from ${tenant?.name ?? 'your salon'}. If you can read this, your ${channel.toLowerCase()} setup is working.`,
+    subject: 'Test message',
+  });
+
+  return { ...result, source };
+}
+
+// ------------------------------------------------------------ automations --
+
+const TRIGGER_LABELS: Record<string, { label: string; timingLabel: string | null; help: string }> = {
+  APPOINTMENT_BOOKED: {
+    label: 'When an appointment is booked',
+    timingLabel: null,
+    help: 'Confirmation goes out immediately.',
+  },
+  APPOINTMENT_REMINDER: {
+    label: 'Before an appointment',
+    timingLabel: 'Hours before',
+    help: 'The message that cuts no-shows most. 24 hours ahead works best.',
+  },
+  APPOINTMENT_COMPLETED: {
+    label: 'After a visit',
+    timingLabel: 'Hours after',
+    help: 'Thank-you and review request. Two hours later is the sweet spot.',
+  },
+  APPOINTMENT_CANCELLED: { label: 'When an appointment is cancelled', timingLabel: null, help: '' },
+  FIRST_VISIT: { label: 'After a first visit', timingLabel: 'Days after', help: 'Welcome a new customer properly.' },
+  INVOICE_PAID: { label: 'When a bill is paid', timingLabel: null, help: 'Receipt and loyalty points.' },
+  NO_VISIT_DAYS: {
+    label: 'When a customer stops coming',
+    timingLabel: 'Days since last visit',
+    help: '90 days is the usual point. Shorter for a barber, longer for colour.',
+  },
+  MEMBERSHIP_EXPIRING: {
+    label: 'Before a membership expires',
+    timingLabel: 'Days before',
+    help: '15 days gives them time to renew without feeling chased.',
+  },
+  PACKAGE_EXPIRING: { label: 'Before a package expires', timingLabel: 'Days before', help: '' },
+  BIRTHDAY: {
+    label: 'On a birthday',
+    timingLabel: 'Days before',
+    help: 'Zero sends on the day itself. Set 3–7 days if you attach a gift they need time to use.',
+  },
+  ANNIVERSARY: { label: 'On a visit anniversary', timingLabel: 'Days before', help: '' },
+  LEAD_CREATED: {
+    label: 'When someone enquires',
+    timingLabel: 'Minutes after',
+    help: 'Reply within five minutes and you convert several times better.',
+  },
+  REVIEW_REQUEST: { label: 'Asking for a review', timingLabel: 'Hours after', help: '' },
+  MANUAL: { label: 'Run by hand', timingLabel: null, help: 'Only runs when you start it.' },
+};
+
+export async function listAutomations(tenantId: string) {
+  const journeys = await runUnscoped(() =>
+    prisma.journey.findMany({
+      where: { tenantId },
+      orderBy: { name: 'asc' },
+      include: {
+        steps: {
+          orderBy: { sortOrder: 'asc' },
+          include: { template: { select: { id: true, name: true, channel: true, category: true } } },
+        },
+        _count: { select: { runs: true } },
+      },
+    }),
+  );
+
+  return journeys.map((journey) => {
+    const meta = TRIGGER_LABELS[journey.trigger] ?? { label: journey.trigger, timingLabel: null, help: '' };
+    const config = (journey.triggerConfig as Record<string, unknown>) ?? {};
+
+    return {
+      id: journey.id,
+      name: journey.name,
+      description: journey.description,
+      trigger: journey.trigger,
+      triggerLabel: meta.label,
+      timingLabel: meta.timingLabel,
+      help: meta.help,
+      isActive: journey.isActive,
+      days: typeof config.days === 'number' ? config.days : null,
+      sendAfterHour: typeof config.sendAfterHour === 'number' ? config.sendAfterHour : null,
+      sendBeforeHour: typeof config.sendBeforeHour === 'number' ? config.sendBeforeHour : null,
+      runs: journey._count.runs,
+      steps: journey.steps.map((step) => ({
+        id: step.id,
+        sortOrder: step.sortOrder,
+        actionType: step.actionType,
+        delayMinutes: step.delayMinutes,
+        channel: step.channel,
+        template: step.template,
+      })),
+    };
+  });
+}
+
+export interface AutomationTiming {
+  isActive?: boolean;
+  days?: number;
+  stepDelays?: Record<string, number>;
+  sendAfterHour?: number;
+  sendBeforeHour?: number;
+}
+
+export async function updateAutomation(journeyId: string, input: AutomationTiming) {
+  const journey = await prisma.journey.findUnique({ where: { id: journeyId } });
+  if (!journey) throw NotFound('Automation');
+
+  const config = { ...((journey.triggerConfig as Record<string, unknown>) ?? {}) };
+  if (input.days !== undefined) config.days = input.days;
+  if (input.sendAfterHour !== undefined) config.sendAfterHour = input.sendAfterHour;
+  if (input.sendBeforeHour !== undefined) config.sendBeforeHour = input.sendBeforeHour;
+
+  if (
+    typeof config.sendAfterHour === 'number' &&
+    typeof config.sendBeforeHour === 'number' &&
+    config.sendAfterHour >= config.sendBeforeHour
+  ) {
+    throw BadRequest('The "send after" hour must be earlier than the "send before" hour');
+  }
+
+  return prisma.$transaction(async (tx) => {
+    for (const [stepId, delayMinutes] of Object.entries(input.stepDelays ?? {})) {
+      await tx.journeyStep.updateMany({
+        where: { id: stepId, journeyId },
+        data: { delayMinutes },
+      });
+    }
+
+    return tx.journey.update({
+      where: { id: journeyId },
+      data: {
+        ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
+        triggerConfig: config as Prisma.InputJsonValue,
+      },
+      include: { steps: { orderBy: { sortOrder: 'asc' } } },
+    });
+  });
+}

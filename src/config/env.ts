@@ -1,0 +1,101 @@
+import 'dotenv/config';
+import { z } from 'zod';
+
+const bool = (def: boolean) =>
+  z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v === '' ? def : v === 'true' || v === '1'));
+
+const envSchema = z.object({
+  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  PORT: z.coerce.number().int().positive().default(4000),
+  API_PREFIX: z.string().default('/api/v1'),
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+  /**
+   * How much to log per HTTP request.
+   *   summary — one compact line: method, path, status, duration  (default)
+   *   off     — nothing for successful requests; errors still logged
+   *   full    — the complete request and response objects, for debugging
+   */
+  HTTP_LOG: z.enum(['summary', 'off', 'full']).default('summary'),
+  /** Log any query slower than this, in ms. Raise it if the warnings are noise. */
+  SLOW_QUERY_MS: z.coerce.number().int().min(50).default(250),
+  CORS_ORIGINS: z.string().default('*'),
+
+  DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
+
+  JWT_ACCESS_SECRET: z.string().min(16, 'JWT_ACCESS_SECRET must be at least 16 chars'),
+  JWT_REFRESH_SECRET: z.string().min(16, 'JWT_REFRESH_SECRET must be at least 16 chars'),
+  JWT_ACCESS_TTL: z.string().default('15m'),
+  JWT_REFRESH_TTL: z.string().default('30d'),
+  BCRYPT_ROUNDS: z.coerce.number().int().min(4).max(15).default(10),
+
+  PLATFORM_ADMIN_EMAIL: z.string().email().default('admin@salonos.in'),
+  PLATFORM_ADMIN_PASSWORD: z.string().default('Admin@12345'),
+
+  JOB_WORKER_ENABLED: bool(true),
+  JOB_POLL_INTERVAL_MS: z.coerce.number().int().min(500).default(5000),
+  JOB_BATCH_SIZE: z.coerce.number().int().min(1).max(200).default(25),
+
+  MESSAGING_DRIVER: z.enum(['console', 'whatsapp_cloud', 'gupshup']).default('console'),
+  WHATSAPP_API_URL: z.string().default('https://graph.facebook.com/v20.0'),
+  WHATSAPP_PHONE_NUMBER_ID: z.string().optional().default(''),
+  WHATSAPP_ACCESS_TOKEN: z.string().optional().default(''),
+  WHATSAPP_WEBHOOK_VERIFY_TOKEN: z.string().optional().default(''),
+  // Platform-level fallbacks. A real salon connects its own accounts; these
+  // exist for the demo tenant and for local development.
+  SMS_DRIVER: z.enum(['console', 'msg91']).default('console'),
+  SMS_API_URL: z.string().default('https://api.msg91.com'),
+  SMS_API_KEY: z.string().optional().default(''),
+  SMS_SENDER_ID: z.string().optional().default(''),
+  SMS_DLT_ENTITY_ID: z.string().optional().default(''),
+  /// Estimated, for reporting only — MSG91 does not return a per-message price.
+  SMS_COST_PER_SEGMENT: z.coerce.number().min(0).default(0.18),
+
+  EMAIL_DRIVER: z.enum(['console', 'resend']).default('console'),
+  EMAIL_API_URL: z.string().default('https://api.resend.com'),
+  EMAIL_API_KEY: z.string().optional().default(''),
+  EMAIL_FROM_ADDRESS: z.string().optional().default(''),
+  EMAIL_FROM_NAME: z.string().optional().default(''),
+  /// Resend's own variable names, accepted as aliases so a key pasted straight
+  /// from their dashboard works. A Resend key switches the driver on by itself.
+  RESEND_API_KEY: z.string().optional().default(''),
+  RESEND_FROM_EMAIL: z.string().optional().default(''),
+  RESEND_FROM_NAME: z.string().optional().default(''),
+  EMAIL_COST_PER_MESSAGE: z.coerce.number().min(0).default(0.01),
+
+  DEFAULT_CURRENCY: z.string().default('INR'),
+  DEFAULT_TIMEZONE: z.string().default('Asia/Kolkata'),
+  DEFAULT_GST_RATE: z.coerce.number().default(18),
+});
+
+const parsed = envSchema.safeParse(process.env);
+
+if (!parsed.success) {
+  // eslint-disable-next-line no-console
+  console.error('Invalid environment configuration:', parsed.error.flatten().fieldErrors);
+  process.exit(1);
+}
+
+const raw = parsed.data;
+
+/**
+ * Fold the Resend-named variables into the generic email ones. Setting
+ * RESEND_API_KEY is enough: the driver flips to resend without anyone having to
+ * know EMAIL_DRIVER exists.
+ */
+const emailApiKey = raw.EMAIL_API_KEY || raw.RESEND_API_KEY;
+export const env = {
+  ...raw,
+  EMAIL_API_KEY: emailApiKey,
+  EMAIL_FROM_ADDRESS: raw.EMAIL_FROM_ADDRESS || raw.RESEND_FROM_EMAIL,
+  EMAIL_FROM_NAME: raw.EMAIL_FROM_NAME || raw.RESEND_FROM_NAME,
+  EMAIL_DRIVER: raw.EMAIL_DRIVER === 'console' && emailApiKey ? ('resend' as const) : raw.EMAIL_DRIVER,
+};
+
+export const isProd = env.NODE_ENV === 'production';
+export const isTest = env.NODE_ENV === 'test';
+
+export const corsOrigins =
+  env.CORS_ORIGINS === '*' ? true : env.CORS_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean);
