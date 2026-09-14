@@ -2,7 +2,7 @@ import type { Prisma, TenantStatus } from '@prisma/client';
 import { prisma } from '../../core/prisma';
 import { runUnscoped } from '../../core/context';
 import { Conflict, NotFound } from '../../core/errors';
-import { addMonths } from '../../core/dates';
+import { addMonths, dayjs } from '../../core/dates';
 import { pageParams } from '../../core/http';
 import { invalidateAllIdentities } from '../../middleware/auth';
 
@@ -54,6 +54,74 @@ export async function getTenant(tenantId: string) {
   );
   if (!tenant) throw NotFound('Tenant');
   return tenant;
+}
+
+/**
+ * What the console needs to answer "how is this salon actually doing?" without
+ * opening their account.
+ *
+ * Deliberately aggregate. An operator gets the shape of the business — size,
+ * activity, what they are using, whether they are still turning up — and not
+ * the contents: no customer names, no phone numbers, no bill lines. Support
+ * questions are answered by these numbers; nothing here needs a real person's
+ * details, so it does not have them.
+ */
+export async function tenantOverview(tenantId: string) {
+  const tenant = await getTenant(tenantId);
+  const thirtyDaysAgo = dayjs().subtract(30, 'day').toDate();
+  const monthStart = dayjs().startOf('month').toDate();
+
+  const [branches, staff, appointments30, invoices30, revenue30, lastAppointment, lastInvoice, lastLogin, messages30, usage] =
+    await runUnscoped(() =>
+      Promise.all([
+        prisma.branch.findMany({
+          where: { tenantId },
+          select: { id: true, name: true, city: true, isActive: true, _count: { select: { staff: true, appointments: true } } },
+          orderBy: { name: 'asc' },
+        }),
+        prisma.staff.count({ where: { tenantId, isActive: true } }),
+        prisma.appointment.count({ where: { tenantId, startAt: { gte: thirtyDaysAgo } } }),
+        prisma.invoice.count({ where: { tenantId, invoiceDate: { gte: thirtyDaysAgo }, status: { not: 'VOID' } } }),
+        prisma.invoice.aggregate({
+          where: { tenantId, invoiceDate: { gte: thirtyDaysAgo }, status: { not: 'VOID' } },
+          _sum: { grandTotal: true },
+        }),
+        prisma.appointment.findFirst({ where: { tenantId }, orderBy: { startAt: 'desc' }, select: { startAt: true } }),
+        prisma.invoice.findFirst({ where: { tenantId }, orderBy: { invoiceDate: 'desc' }, select: { invoiceDate: true } }),
+        prisma.user.findFirst({
+          where: { tenantId, lastLoginAt: { not: null } },
+          orderBy: { lastLoginAt: 'desc' },
+          select: { lastLoginAt: true, name: true, role: true },
+        }),
+        prisma.messageLog.groupBy({
+          by: ['channel'],
+          where: { tenantId, queuedAt: { gte: thirtyDaysAgo } },
+          _count: { _all: true },
+        }),
+        prisma.messageUsage.findMany({
+          where: { tenantId, periodStart: { gte: monthStart } },
+          select: { meter: true, included: true, used: true, blocked: true },
+        }),
+      ]),
+    );
+
+  return {
+    tenant,
+    branches,
+    /** Is anyone actually using it? The question behind most support calls. */
+    activity: {
+      staff,
+      appointments30,
+      invoices30,
+      revenue30: revenue30._sum.grandTotal ?? 0,
+      lastAppointmentAt: lastAppointment?.startAt ?? null,
+      lastInvoiceAt: lastInvoice?.invoiceDate ?? null,
+      lastLoginAt: lastLogin?.lastLoginAt ?? null,
+      lastLoginBy: lastLogin ? { name: lastLogin.name, role: lastLogin.role } : null,
+    },
+    messages30: Object.fromEntries(messages30.map((row) => [row.channel, row._count._all])),
+    usage,
+  };
 }
 
 export async function updateTenant(tenantId: string, data: Record<string, unknown>) {

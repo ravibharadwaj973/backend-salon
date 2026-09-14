@@ -6,6 +6,7 @@ import { runUnscoped } from '../core/context';
 import { Forbidden, Unauthorized } from '../core/errors';
 import { ALL_BRANCH_ROLES, resolvePermissions } from '../core/permissions';
 import type { AuthPayload } from '../types/express';
+import { assertWritable } from './read-only';
 
 export interface AccessTokenClaims {
   sub: string;
@@ -63,9 +64,23 @@ async function loadIdentity(userId: string): Promise<AuthPayload> {
   );
 
   if (!user || !user.isActive) throw Unauthorized('Account is inactive or no longer exists');
-  if (user.tenant.status === 'SUSPENDED' || user.tenant.status === 'CANCELLED') {
-    throw Forbidden('This salon account is suspended. Please contact support.');
-  }
+
+  /**
+   * A switched-off salon is read-only, not locked out.
+   *
+   * Locking them out punishes the wrong thing. Their appointment history,
+   * customer book and invoices are their records — needed to serve a customer
+   * standing at the counter, to answer a tax question, to export and leave.
+   * What stops is *new work*: no bookings, no bills, no messages. That is the
+   * pressure that gets an invoice paid, and it does not hold a salon's own
+   * data hostage to do it.
+   */
+  const readOnlyReason =
+    user.tenant.status === 'SUSPENDED'
+      ? 'This salon account is switched off, so nothing new can be saved. Your records are all still here to read and export. Contact support to switch it back on.'
+      : user.tenant.status === 'CANCELLED'
+        ? 'This salon account has been closed. Your records stay available to read and export.'
+        : null;
 
   const seesAllBranches = ALL_BRANCH_ROLES.includes(user.role) || user.branches.length === 0;
 
@@ -79,6 +94,8 @@ async function loadIdentity(userId: string): Promise<AuthPayload> {
     permissions: resolvePermissions(user.role, user.overrides),
     branchIds: seesAllBranches ? null : user.branches.map((b) => b.branchId),
     staffId: user.staffProfile?.id ?? null,
+    readOnly: readOnlyReason !== null,
+    readOnlyReason,
   };
 
   identityCache.set(userId, { payload, expiresAt: Date.now() + IDENTITY_TTL_MS });
@@ -99,7 +116,14 @@ export const authenticate: RequestHandler = (req, _res, next) => {
   // Idempotent: a route may authenticate at the mount point (so a feature gate
   // can read the tenant) and again inside its own router. Verifying the same
   // token twice is wasted work, not a second opinion.
-  if (req.auth?.tenantId) return next();
+  if (req.auth?.tenantId) {
+    try {
+      assertWritable(req);
+    } catch (error) {
+      return next(error);
+    }
+    return next();
+  }
 
   const token = bearer(req);
   if (!token) return next(Unauthorized('Missing bearer token'));
@@ -117,6 +141,8 @@ export const authenticate: RequestHandler = (req, _res, next) => {
     .then((payload) => {
       if (payload.tenantId !== claims.tid) throw Unauthorized('Token does not match this account');
       applyToContext(req, payload);
+      // A switched-off salon may read everything and change nothing.
+      assertWritable(req);
       next();
     })
     .catch(next);

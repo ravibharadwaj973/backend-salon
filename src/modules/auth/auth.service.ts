@@ -42,6 +42,9 @@ export interface SessionUser {
   /** What the salon's plan includes. Separate from permissions on purpose. */
   features: FeatureKey[];
   staffId: string | null;
+  /** The salon may read everything and save nothing. */
+  readOnly: boolean;
+  readOnlyReason: string | null;
 }
 
 export async function hashPassword(plain: string): Promise<string> {
@@ -114,9 +117,9 @@ export async function login(
   const valid = await bcrypt.compare(password, user.passwordHash);
   if (!valid) throw Unauthorized('Invalid email or password');
 
-  if (user.tenant.status === 'SUSPENDED' || user.tenant.status === 'CANCELLED') {
-    throw Unauthorized('This salon account is suspended. Please contact support.');
-  }
+  // A switched-off salon still signs in. It lands in a read-only app: every
+  // record readable and exportable, nothing new saveable. Refusing the login
+  // would lock a salon out of its own customer book over an unpaid invoice.
 
   await runUnscoped(() => prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } }));
   invalidateIdentity(user.id);
@@ -158,6 +161,28 @@ export async function logoutAllSessions(userId: string): Promise<void> {
     prisma.refreshToken.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: new Date() } }),
   );
   invalidateIdentity(userId);
+}
+
+/**
+ * Whether this salon may change anything, and why not. Kept beside the session
+ * so the interface can explain the state up front instead of letting someone
+ * fill in a form and meet a 403 on save.
+ */
+export function readOnlyState(status: string): { readOnly: boolean; readOnlyReason: string | null } {
+  if (status === 'SUSPENDED') {
+    return {
+      readOnly: true,
+      readOnlyReason:
+        'This salon account is switched off, so nothing new can be saved. Your records are all still here to read and export. Contact support to switch it back on.',
+    };
+  }
+  if (status === 'CANCELLED') {
+    return {
+      readOnly: true,
+      readOnlyReason: 'This salon account has been closed. Your records stay available to read and export.',
+    };
+  }
+  return { readOnly: false, readOnlyReason: null };
 }
 
 export async function buildSession(userId: string): Promise<SessionUser> {
@@ -210,6 +235,7 @@ export async function buildSession(userId: string): Promise<SessionUser> {
     // plan includes the feature, and hiding it beats a 402 on the way in.
     features: enabledFeatures(user.tenant.plan?.features),
     staffId: user.staffProfile?.id ?? null,
+    ...readOnlyState(user.tenant.status),
   };
 }
 

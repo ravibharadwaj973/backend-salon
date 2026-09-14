@@ -16,6 +16,7 @@ import * as loyalty from '../../modules/loyalty/loyalty.service';
 import * as gamification from '../../modules/gamification/gamification.service';
 import * as alerts from '../../modules/analytics/alerts.service';
 import { pruneAudit } from '../../modules/audit/audit.service';
+import * as renewals from '../../modules/tenants/renewal.service';
 
 export type JobHandler = (payload: Record<string, unknown>, job: Job) => Promise<unknown>;
 
@@ -336,6 +337,12 @@ const handlers: Record<JobType, JobHandler> = {
    * An audit table grows forever and nobody notices until a backup takes an
    * hour. A year is long past any dispute a salon will still be having.
    */
+  /**
+   * "Your plan renews in 3 days." Sent on a schedule, never acted on: this job
+   * warns, and a person decides whether anything gets switched off.
+   */
+  'subscription.renewal_reminders': async () => renewals.sendRenewalReminders(),
+
   'audit.prune': async (payload: Record<string, unknown>) => {
     const retentionDays = (payload.retentionDays as number | undefined) ?? 365;
     const deleted = await pruneAudit(retentionDays);

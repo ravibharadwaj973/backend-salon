@@ -7,6 +7,7 @@ import { PERMISSIONS } from '../../core/permissions';
 import { audit } from '../../middleware/audit';
 import { idParam } from '../../core/validators';
 import * as service from './tenant.service';
+import * as renewals from './renewal.service';
 import { provisionTenant } from './provisioning.service';
 import {
   assignPlanSchema,
@@ -85,6 +86,35 @@ platformTenantRouter.post(
 platformTenantRouter.get(
   '/stats',
   asyncHandler(async (_req, res) => ok(res, await service.platformStats())),
+);
+
+/** How one salon is actually doing — aggregate only, never their records. */
+platformTenantRouter.get(
+  '/tenants/:id/overview',
+  validate({ params: idParam }),
+  asyncHandler(async (req, res) => ok(res, await service.tenantOverview(req.params.id!))),
+);
+
+// --------------------------------------------------------------- renewals --
+
+/** Plans ending soon, and plans that have already lapsed. The working list. */
+platformTenantRouter.get(
+  '/renewals',
+  asyncHandler(async (_req, res) =>
+    ok(res, {
+      upcoming: await renewals.subscriptionsDueForReminder(),
+      lapsed: await renewals.lapsedTenants(),
+    }),
+  ),
+);
+
+/**
+ * Send today's reminders now rather than waiting for the 08:00 sweep. Same
+ * function, same once-per-milestone guard, so pressing it twice is harmless.
+ */
+platformTenantRouter.post(
+  '/renewals/send-reminders',
+  asyncHandler(async (_req, res) => ok(res, await renewals.sendRenewalReminders())),
 );
 
 // ------------------------------------------------------------------ plans --

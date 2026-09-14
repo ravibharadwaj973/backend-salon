@@ -8,6 +8,7 @@ import { PERMISSIONS } from '../../core/permissions';
 import { audit } from '../../middleware/audit';
 import { idParam, idSchema, moneySchema, paginationQuery } from '../../core/validators';
 import * as segments from './segment.service';
+import { FIELD_GROUPS, SEGMENT_FIELDS, SEGMENT_PRESETS } from './segment-fields';
 import * as campaigns from './campaign.service';
 import * as journeys from './journey.service';
 import * as templates from './template.service';
@@ -37,6 +38,19 @@ const rulesSchema = z.object({
 
 export const segmentRouter = Router();
 segmentRouter.use(authenticate);
+
+/**
+ * What you can segment on, and the ready-made lists. Served rather than
+ * duplicated in the client, so the builder can never offer a field the rule
+ * compiler does not understand.
+ */
+segmentRouter.get(
+  '/fields',
+  requirePermission(PERMISSIONS.CAMPAIGN_VIEW),
+  asyncHandler(async (_req, res) =>
+    ok(res, { fields: SEGMENT_FIELDS, groups: FIELD_GROUPS, presets: SEGMENT_PRESETS }),
+  ),
+);
 
 segmentRouter.get(
   '/',

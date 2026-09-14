@@ -22,7 +22,8 @@ export type JobType =
   | 'winback.sweep'
   | 'birthday.sweep'
   | 'challenge.progress'
-  | 'audit.prune';
+  | 'audit.prune'
+  | 'subscription.renewal_reminders';
 
 export interface EnqueueOptions {
   /** When to run. Defaults to now. */

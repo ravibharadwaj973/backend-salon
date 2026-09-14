@@ -134,6 +134,10 @@ function registerSchedules(): void {
   cron.schedule('0 1 * * *', () => void enqueue('loyalty.expiry_sweep', {}, { tenantId: null }));
   cron.schedule('20 1 * * *', () => void enqueue('segment.recompute', {}, { tenantId: null }));
   cron.schedule('40 1 * * *', () => void enqueue('challenge.progress', {}, { tenantId: null }));
+  // 08:00 — renewal reminders, before the salon gets busy. Warns only; nothing
+  // is ever switched off by a scheduled job.
+  cron.schedule('0 8 * * *', () => void enqueue('subscription.renewal_reminders', {}, { tenantId: null }));
+
   // 02:00 Sunday — trim audit rows older than a year.
   cron.schedule('0 2 * * 0', () => void enqueue('audit.prune', {}, { tenantId: null }));
 

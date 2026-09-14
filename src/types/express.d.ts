@@ -12,6 +12,14 @@ export interface AuthPayload {
   /** null = every branch in the tenant */
   branchIds: string[] | null;
   staffId: string | null;
+  /**
+   * The salon can look but not touch: its account has been switched off, or
+   * cancelled. Every write is refused; every read still works, because the
+   * salon's own records are the one thing it should never lose access to.
+   */
+  readOnly: boolean;
+  /** Why, in words the salon owner can act on. */
+  readOnlyReason: string | null;
 }
 
 export interface PlatformAuthPayload {

@@ -189,7 +189,7 @@ export async function triggerJourney(context: TriggerContext) {
     if (context.customerId) {
       const rules = journey.audienceRules as unknown as SegmentRules;
       if (rules?.conditions?.length) {
-        const where = buildSegmentWhere(context.tenantId, rules);
+        const where = await buildSegmentWhere(context.tenantId, rules);
         const matches = await runUnscoped(() =>
           prisma.customer.count({ where: { ...where, id: context.customerId! } }),
         );
