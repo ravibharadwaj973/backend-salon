@@ -1,0 +1,31 @@
+# What must never reach the build context.
+#
+# The first two lines are the ones that matter: .env holds the database URL,
+# the JWT secrets and the Resend key, and anything copied into an image is
+# readable by anyone who can pull it. Secrets are passed at run time
+# (--env-file, or the host's secret store), never baked in.
+.env
+.env.*
+
+node_modules
+dist
+coverage
+
+# Build tooling and history that has no business in a server image.
+.git
+.gitignore
+.github
+*.log
+npm-debug.log*
+
+# Not shipped: tests, docs and editor noise.
+tests
+docs
+*.md
+.vscode
+.idea
+.DS_Store
+
+# The image builds its own.
+Dockerfile
+.dockerignore
