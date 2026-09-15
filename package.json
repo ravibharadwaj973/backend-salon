@@ -1,8 +1,8 @@
 {
-  "name": "salon-grow-backend",
+  "name": "parlon-backend",
   "version": "1.0.0",
   "private": true,
-  "description": "Salon Grow — multi-tenant salon management SaaS backend",
+  "description": "Parlon — multi-tenant salon management SaaS backend",
   "license": "UNLICENSED",
   "main": "dist/src/server.js",
   "engines": { "node": ">=20" },

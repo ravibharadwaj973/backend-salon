@@ -89,9 +89,9 @@ router.post(
  *
  *   <script src=".../public/<slug>/embed.js" defer></script>
  *
- * and every element carrying `data-salongrow-book` becomes a button that opens
+ * and every element carrying `data-parlon-book` becomes a button that opens
  * their booking page in an overlay, without leaving their site. A page with a
- * `<div id="salongrow-booking">` gets the booking flow rendered inline there
+ * `<div id="parlon-booking">` gets the booking flow rendered inline there
  * instead. Bookings made through it land in that salon's own diary, exactly
  * like one taken at the front desk.
  *
@@ -126,10 +126,10 @@ router.get(
 function embedScript(slug: string, salonName: string): string {
   const base = bookingUrl(slug, { embed: true });
 
-  return `/* Salon Grow booking widget for ${JSON.stringify(salonName)} */
+  return `/* Parlon booking widget for ${JSON.stringify(salonName)} */
 (function () {
   'use strict';
-  if (window.__salonGrowBooking) return;
+  if (window.__parlonBooking) return;
 
   var BASE = ${JSON.stringify(base)};
   var ORIGIN = new URL(BASE).origin;
@@ -157,18 +157,18 @@ function embedScript(slug: string, salonName: string): string {
     return f;
   }
 
-  /* --- inline: <div id="salongrow-booking"></div> --- */
+  /* --- inline: <div id="parlon-booking"></div> --- */
   function inline() {
-    var host = document.getElementById('salongrow-booking');
+    var host = document.getElementById('parlon-booking');
     if (!host || host.getAttribute('data-ready')) return;
     host.setAttribute('data-ready', '1');
     var f = frame(url(host));
     f.style.height = (host.getAttribute('data-height') || '720') + 'px';
-    f.setAttribute('data-salongrow-frame', '1');
+    f.setAttribute('data-parlon-frame', '1');
     host.appendChild(f);
   }
 
-  /* --- overlay: any element with data-salongrow-book --- */
+  /* --- overlay: any element with data-parlon-book --- */
   var overlay = null;
 
   function close() {
@@ -212,7 +212,7 @@ function embedScript(slug: string, salonName: string): string {
 
     var f = frame(url(el));
     f.style.height = '100%';
-    f.setAttribute('data-salongrow-frame', '1');
+    f.setAttribute('data-parlon-frame', '1');
 
     panel.appendChild(shut);
     panel.appendChild(f);
@@ -223,7 +223,7 @@ function embedScript(slug: string, salonName: string): string {
   }
 
   document.addEventListener('click', function (e) {
-    var el = e.target && e.target.closest && e.target.closest('[data-salongrow-book]');
+    var el = e.target && e.target.closest && e.target.closest('[data-parlon-book]');
     if (!el) return;
     e.preventDefault();
     open(el);
@@ -232,10 +232,10 @@ function embedScript(slug: string, salonName: string): string {
   /* The booking page tells us how tall it is, and when a booking is made. The
      origin check matters: without it any page could post us a fake message. */
   window.addEventListener('message', function (e) {
-    if (e.origin !== ORIGIN || !e.data || e.data.source !== 'salongrow') return;
+    if (e.origin !== ORIGIN || !e.data || e.data.source !== 'parlon') return;
 
     if (e.data.type === 'height') {
-      var frames = document.querySelectorAll('iframe[data-salongrow-frame]');
+      var frames = document.querySelectorAll('iframe[data-parlon-frame]');
       for (var i = 0; i < frames.length; i++) {
         if (frames[i].contentWindow === e.source && !overlay) {
           frames[i].style.height = Math.max(420, e.data.height) + 'px';
@@ -246,7 +246,7 @@ function embedScript(slug: string, salonName: string): string {
     if (e.data.type === 'booked') {
       /* The salon's own site can react to this — thank-you page, analytics,
          whatever they already use. We deliberately do not navigate for them. */
-      window.dispatchEvent(new CustomEvent('salongrow:booked', { detail: e.data.appointment || {} }));
+      window.dispatchEvent(new CustomEvent('parlon:booked', { detail: e.data.appointment || {} }));
       setTimeout(close, 2600);
     }
   });
@@ -257,7 +257,7 @@ function embedScript(slug: string, salonName: string): string {
     inline();
   }
 
-  window.__salonGrowBooking = { open: open, close: close, url: url };
+  window.__parlonBooking = { open: open, close: close, url: url };
 })();
 `;
 }

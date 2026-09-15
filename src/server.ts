@@ -15,7 +15,7 @@ async function bootstrap(): Promise<void> {
   server = app.listen(env.PORT, () => {
     logger.info(
       { port: env.PORT, env: env.NODE_ENV, prefix: env.API_PREFIX },
-      `Salon Grow API listening on http://localhost:${env.PORT}${env.API_PREFIX}`,
+      `Parlon API listening on http://localhost:${env.PORT}${env.API_PREFIX}`,
     );
   });
 

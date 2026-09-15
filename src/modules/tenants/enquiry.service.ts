@@ -57,7 +57,7 @@ export async function createEnquiry(input: EnquiryInput) {
 }
 
 async function alertOperator(enquiry: { id: string; salonName: string; contactName: string; phone: string; email: string; city: string | null; size: string | null; message: string | null }) {
-  const to = process.env.PLATFORM_ADMIN_EMAIL ?? 'admin@salongrow.in';
+  const to = process.env.PLATFORM_ADMIN_EMAIL ?? 'admin@parlon.in';
   await notifyPlatform({
     to,
     subject: `New enquiry: ${enquiry.salonName}`,

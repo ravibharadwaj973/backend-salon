@@ -15,7 +15,7 @@ import {
 const prisma = new PrismaClient();
 
 const PASSWORD = process.env.SEED_PASSWORD ?? 'Salon@12345';
-const TENANT_SLUG = process.env.SEED_TENANT_SLUG ?? 'glow-studio';
+const TENANT_SLUG = process.env.SEED_TENANT_SLUG ?? 'parlon';
 
 function daysAgo(days: number): Date {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
@@ -69,17 +69,17 @@ async function assertSchemaIsCurrent() {
 }
 
 async function main() {
-  console.log('Seeding Salon Grow…');
+  console.log('Seeding Parlon…');
   await assertSchemaIsCurrent();
   const passwordHash = await bcrypt.hash(PASSWORD, 10);
 
   // ----------------------------------------------------------- platform ----
   await prisma.platformUser.upsert({
-    where: { email: process.env.PLATFORM_ADMIN_EMAIL ?? 'admin@salongrow.in' },
+    where: { email: process.env.PLATFORM_ADMIN_EMAIL ?? 'admin@parlon.in' },
     update: {},
     create: {
       name: 'Platform Admin',
-      email: process.env.PLATFORM_ADMIN_EMAIL ?? 'admin@salongrow.in',
+      email: process.env.PLATFORM_ADMIN_EMAIL ?? 'admin@parlon.in',
       passwordHash: await bcrypt.hash(process.env.PLATFORM_ADMIN_PASSWORD ?? 'Admin@12345', 10),
     },
   });
@@ -204,12 +204,12 @@ async function main() {
 
   const tenant = await prisma.tenant.create({
     data: {
-      name: 'Glow Studio Salon & Spa',
+      name: 'Parlon Salon & Spa',
       slug: TENANT_SLUG,
-      legalName: 'Glow Studio Wellness Pvt Ltd',
+      legalName: 'Parlon Wellness Pvt Ltd',
       gstin: '09AABCG1234M1Z5',
       phone: '9876543210',
-      email: 'hello@glowstudio.in',
+      email: 'hello@parlon.in',
       addressLine: '12 Hazratganj Main Road',
       city: 'Lucknow',
       state: 'Uttar Pradesh',
@@ -288,10 +288,10 @@ async function main() {
 
   // -------------------------------------------------------------- users ----
   const users = [
-    { name: 'Ravi Jha', email: 'owner@glowstudio.in', role: 'OWNER' as const },
-    { name: 'Meera Kapoor', email: 'manager@glowstudio.in', role: 'MANAGER' as const },
-    { name: 'Sunita Verma', email: 'reception@glowstudio.in', role: 'RECEPTIONIST' as const },
-    { name: 'Arun Gupta', email: 'accounts@glowstudio.in', role: 'ACCOUNTANT' as const },
+    { name: 'Ravi Jha', email: 'owner@parlon.in', role: 'OWNER' as const },
+    { name: 'Meera Kapoor', email: 'manager@parlon.in', role: 'MANAGER' as const },
+    { name: 'Sunita Verma', email: 'reception@parlon.in', role: 'RECEPTIONIST' as const },
+    { name: 'Arun Gupta', email: 'accounts@parlon.in', role: 'ACCOUNTANT' as const },
   ];
 
   const createdUsers: { id: string }[] = [];
@@ -507,7 +507,7 @@ async function main() {
   await prisma.packageTemplate.create({
     data: {
       tenantId,
-      name: 'Glow Skin Package',
+      name: 'Radiance Skin Package',
       description: '4 clean-ups and 2 gold facials',
       price: 5500,
       validityDays: 120,
@@ -969,11 +969,11 @@ Seed complete.
   Customers    : ${customers.length}
   Invoices     : ${invoiceCounter}
 
-  Owner login       : owner@glowstudio.in / ${PASSWORD}
-  Manager login     : manager@glowstudio.in / ${PASSWORD}
-  Receptionist      : reception@glowstudio.in / ${PASSWORD}
-  Accountant        : accounts@glowstudio.in / ${PASSWORD}
-  Platform admin    : ${process.env.PLATFORM_ADMIN_EMAIL ?? 'admin@salongrow.in'} / ${process.env.PLATFORM_ADMIN_PASSWORD ?? 'Admin@12345'}
+  Owner login       : owner@parlon.in / ${PASSWORD}
+  Manager login     : manager@parlon.in / ${PASSWORD}
+  Receptionist      : reception@parlon.in / ${PASSWORD}
+  Accountant        : accounts@parlon.in / ${PASSWORD}
+  Platform admin    : ${process.env.PLATFORM_ADMIN_EMAIL ?? 'admin@parlon.in'} / ${process.env.PLATFORM_ADMIN_PASSWORD ?? 'Admin@12345'}
 
   Public booking    : GET /api/v1/public/${tenant.slug}
 `);

@@ -1,4 +1,4 @@
-# Salon Grow — data model notes
+# Parlon — data model notes
 
 76 models in `prisma/schema.prisma`. This file explains the decisions behind the
 shape rather than repeating the schema.

@@ -4,7 +4,8 @@ import helmet from 'helmet';
 import compression from 'compression';
 import cookieParser from 'cookie-parser';
 import pinoHttp from 'pino-http';
-import { corsOrigins, env, isTest } from './config/env';
+import { corsPolicy, env, isTest } from './config/env';
+import { describePolicy, isAllowedOrigin, shouldReportRefusal } from './core/cors';
 import { logger } from './core/logger';
 import { contextMiddleware } from './middleware/context';
 import { errorHandler, notFoundHandler } from './middleware/error';
@@ -49,7 +50,19 @@ export function createApp(): Express {
       }
 
       callback(null, {
-        origin: corsOrigins,
+        // Reflects the caller's own origin when it is allowed. Never a literal
+        // "*": a browser refuses a wildcard on a request that carries
+        // credentials, and every signed-in call here carries a cookie.
+        origin: (origin, done) => {
+          const allowed = isAllowedOrigin(corsPolicy, origin ?? undefined);
+          if (!allowed && origin && shouldReportRefusal(origin)) {
+            logger.warn(
+              { origin, allowed: describePolicy(corsPolicy) },
+              'CORS: refused an origin that is not in CORS_ORIGINS',
+            );
+          }
+          done(null, allowed);
+        },
         credentials: true,
         exposedHeaders: ['X-Request-Id'],
         allowedHeaders: ['Content-Type', 'Authorization', 'X-Branch-Id', 'X-Tenant-Id', 'X-Request-Id'],
@@ -100,7 +113,7 @@ export function createApp(): Express {
   app.use(contextMiddleware);
 
   app.get('/health', (_req, res) => {
-    res.json({ status: 'ok', service: 'salon-grow', uptime: process.uptime(), timestamp: new Date().toISOString() });
+    res.json({ status: 'ok', service: 'parlon', uptime: process.uptime(), timestamp: new Date().toISOString() });
   });
 
   app.get('/ready', (_req, res) => {

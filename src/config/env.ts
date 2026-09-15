@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { z } from 'zod';
+import { parseCorsOrigins } from '../core/cors';
 
 const bool = (def: boolean) =>
   z
@@ -46,7 +47,7 @@ const envSchema = z.object({
   JWT_REFRESH_TTL: z.string().default('30d'),
   BCRYPT_ROUNDS: z.coerce.number().int().min(4).max(15).default(10),
 
-  PLATFORM_ADMIN_EMAIL: z.string().email().default('admin@salongrow.in'),
+  PLATFORM_ADMIN_EMAIL: z.string().email().default('admin@parlon.in'),
   PLATFORM_ADMIN_PASSWORD: z.string().default('Admin@12345'),
 
   JOB_WORKER_ENABLED: bool(true),
@@ -112,5 +113,9 @@ export const env = {
 export const isProd = env.NODE_ENV === 'production';
 export const isTest = env.NODE_ENV === 'test';
 
-export const corsOrigins =
-  env.CORS_ORIGINS === '*' ? true : env.CORS_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean);
+/**
+ * Parsed once at boot. Supports exact origins and one-label wildcards such as
+ * https://*.vercel.app, and forgives the trailing slash you get from copying a
+ * URL out of the address bar.
+ */
+export const corsPolicy = parseCorsOrigins(env.CORS_ORIGINS);

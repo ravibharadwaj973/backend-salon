@@ -1,11 +1,11 @@
-# Salon Grow — Backend
+# Parlon — Backend
 
 A multi-tenant SaaS backend for salon chains. One codebase serves every salon
 (tenant), each with its own branches, staff, customers and configuration.
 
 ```
 Platform
-├── Tenant: Glow Studio        ├── Branch: Hazratganj
+├── Tenant: Parlon        ├── Branch: Hazratganj
 │                              └── Branch: Gomti Nagar
 ├── Tenant: Salon B            └── Branch: Main
 └── Tenant: Salon C            └── Branch: Main
@@ -316,16 +316,16 @@ Seed logins (password `Salon@12345`):
 
 | Role          | Email                      |
 | ------------- | -------------------------- |
-| Owner         | owner@glowstudio.in        |
-| Manager       | manager@glowstudio.in      |
-| Receptionist  | reception@glowstudio.in    |
-| Accountant    | accounts@glowstudio.in     |
-| Platform admin| admin@salongrow.in (`Admin@12345`) |
+| Owner         | owner@parlon.in        |
+| Manager       | manager@parlon.in      |
+| Receptionist  | reception@parlon.in    |
+| Accountant    | accounts@parlon.in     |
+| Platform admin| admin@parlon.in (`Admin@12345`) |
 
 ```bash
 curl -X POST localhost:4000/api/v1/auth/login \
   -H 'content-type: application/json' \
-  -d '{"email":"owner@glowstudio.in","password":"Salon@12345"}'
+  -d '{"email":"owner@parlon.in","password":"Salon@12345"}'
 ```
 
 ---
