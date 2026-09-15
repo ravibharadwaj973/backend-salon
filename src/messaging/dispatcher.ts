@@ -10,6 +10,7 @@ import { enqueue } from '../jobs/queue';
 import { consume, meterFor } from '../modules/quotas/quota.service';
 import { tenantHasFeature } from '../modules/quotas/limits.service';
 import { FEATURES } from '../core/features';
+import { bookingUrl, feedbackUrl, googleReviewUrl } from '../core/public-links';
 
 export interface QueueMessageInput {
   tenantId: string;
@@ -99,7 +100,7 @@ export async function buildVariables(input: {
   if (tenant) {
     vars.salon_name = tenant.name;
     vars.salon_phone = tenant.phone;
-    vars.booking_link = `https://book.salonos.in/${tenant.slug}`;
+    vars.booking_link = bookingUrl(tenant.slug);
   }
 
   if (input.customerId) {
@@ -141,9 +142,9 @@ export async function buildVariables(input: {
       vars.staff_name = appointment.services.find((s) => s.staff)?.staff?.displayName ?? 'our team';
       vars.branch_name = appointment.branch.name;
       vars.branch_address = [appointment.branch.addressLine, appointment.branch.city].filter(Boolean).join(', ');
-      vars.feedback_link = `https://book.salonos.in/feedback/${appointment.id}`;
+      vars.feedback_link = feedbackUrl(appointment.id);
       // Routed through the app so the tap is recorded before Google opens.
-      vars.google_review_link = `https://book.salonos.in/feedback/${appointment.id}/google`;
+      vars.google_review_link = googleReviewUrl(appointment.id);
     }
   }
 

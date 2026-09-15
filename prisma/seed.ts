@@ -69,17 +69,17 @@ async function assertSchemaIsCurrent() {
 }
 
 async function main() {
-  console.log('Seeding Salon OS…');
+  console.log('Seeding Salon Grow…');
   await assertSchemaIsCurrent();
   const passwordHash = await bcrypt.hash(PASSWORD, 10);
 
   // ----------------------------------------------------------- platform ----
   await prisma.platformUser.upsert({
-    where: { email: process.env.PLATFORM_ADMIN_EMAIL ?? 'admin@salonos.in' },
+    where: { email: process.env.PLATFORM_ADMIN_EMAIL ?? 'admin@salongrow.in' },
     update: {},
     create: {
       name: 'Platform Admin',
-      email: process.env.PLATFORM_ADMIN_EMAIL ?? 'admin@salonos.in',
+      email: process.env.PLATFORM_ADMIN_EMAIL ?? 'admin@salongrow.in',
       passwordHash: await bcrypt.hash(process.env.PLATFORM_ADMIN_PASSWORD ?? 'Admin@12345', 10),
     },
   });
@@ -973,7 +973,7 @@ Seed complete.
   Manager login     : manager@glowstudio.in / ${PASSWORD}
   Receptionist      : reception@glowstudio.in / ${PASSWORD}
   Accountant        : accounts@glowstudio.in / ${PASSWORD}
-  Platform admin    : ${process.env.PLATFORM_ADMIN_EMAIL ?? 'admin@salonos.in'} / ${process.env.PLATFORM_ADMIN_PASSWORD ?? 'Admin@12345'}
+  Platform admin    : ${process.env.PLATFORM_ADMIN_EMAIL ?? 'admin@salongrow.in'} / ${process.env.PLATFORM_ADMIN_PASSWORD ?? 'Admin@12345'}
 
   Public booking    : GET /api/v1/public/${tenant.slug}
 `);

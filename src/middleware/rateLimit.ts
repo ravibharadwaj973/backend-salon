@@ -37,3 +37,23 @@ export const publicLimiter = rateLimit({
   skip,
   message: { success: false, error: { code: 'TOO_MANY_REQUESTS', message: 'Too many requests.' } },
 });
+
+/**
+ * An enquiry is cheap to store and expensive to read — every junk one is a
+ * real person's minute spent deciding it is junk. Tighter than the rest of the
+ * public surface for that reason, not for load.
+ */
+export const enquiryLimiter = rateLimit({
+  windowMs: 60 * 60_000,
+  limit: 5,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  skip,
+  message: {
+    success: false,
+    error: {
+      code: 'TOO_MANY_REQUESTS',
+      message: 'Too many enquiries from this address. Please give us a call instead — we would rather talk anyway.',
+    },
+  },
+});

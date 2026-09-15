@@ -1,4 +1,4 @@
-# Salon OS — data model notes
+# Salon Grow — data model notes
 
 76 models in `prisma/schema.prisma`. This file explains the decisions behind the
 shape rather than repeating the schema.

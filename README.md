@@ -1,4 +1,4 @@
-# Salon OS — Backend
+# Salon Grow — Backend
 
 A multi-tenant SaaS backend for salon chains. One codebase serves every salon
 (tenant), each with its own branches, staff, customers and configuration.
@@ -320,7 +320,7 @@ Seed logins (password `Salon@12345`):
 | Manager       | manager@glowstudio.in      |
 | Receptionist  | reception@glowstudio.in    |
 | Accountant    | accounts@glowstudio.in     |
-| Platform admin| admin@salonos.in (`Admin@12345`) |
+| Platform admin| admin@salongrow.in (`Admin@12345`) |
 
 ```bash
 curl -X POST localhost:4000/api/v1/auth/login \

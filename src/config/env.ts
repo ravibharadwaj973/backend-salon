@@ -23,6 +23,21 @@ const envSchema = z.object({
   SLOW_QUERY_MS: z.coerce.number().int().min(50).default(250),
   CORS_ORIGINS: z.string().default('*'),
 
+  /**
+   * Where the salon app is served from — the public origin, not this API's.
+   *
+   * Every customer-facing link we build points here: the booking page a salon
+   * puts on their own website, the feedback link in a WhatsApp message, the
+   * Google-review hand-off. It has to be the address a customer's phone can
+   * actually open, so it is configuration rather than something guessed from
+   * the request.
+   */
+  PUBLIC_APP_URL: z
+    .string()
+    .url()
+    .default('http://localhost:3000')
+    .transform((value) => value.replace(/\/+$/, '')),
+
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
 
   JWT_ACCESS_SECRET: z.string().min(16, 'JWT_ACCESS_SECRET must be at least 16 chars'),
@@ -31,7 +46,7 @@ const envSchema = z.object({
   JWT_REFRESH_TTL: z.string().default('30d'),
   BCRYPT_ROUNDS: z.coerce.number().int().min(4).max(15).default(10),
 
-  PLATFORM_ADMIN_EMAIL: z.string().email().default('admin@salonos.in'),
+  PLATFORM_ADMIN_EMAIL: z.string().email().default('admin@salongrow.in'),
   PLATFORM_ADMIN_PASSWORD: z.string().default('Admin@12345'),
 
   JOB_WORKER_ENABLED: bool(true),

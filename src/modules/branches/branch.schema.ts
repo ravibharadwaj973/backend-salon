@@ -21,6 +21,11 @@ export const createBranchSchema = z.object({
   timezone: z.string().default('Asia/Kolkata'),
   openingHours: openingHoursSchema.optional(),
   slotIntervalMin: z.coerce.number().int().min(5).max(60).default(15),
+  /**
+   * How many appointments online booking may place in one moment. Omit, or send
+   * null, for "as many as there are stylists free" — the default.
+   */
+  maxConcurrentBookings: z.coerce.number().int().min(1).max(50).nullable().optional(),
   invoicePrefix: z.string().trim().min(1).max(10).toUpperCase().default('INV'),
   /** Where a happy customer is sent to leave a public review. One listing per shop. */
   googleReviewUrl: linkSchema.optional(),

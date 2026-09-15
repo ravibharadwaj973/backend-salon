@@ -1,13 +1,15 @@
 import { Router } from 'express';
+import { z } from 'zod';
 import { asyncHandler, created, ok, paginated } from '../../core/http';
 import { validate } from '../../middleware/validate';
 import { authenticate, authenticatePlatform } from '../../middleware/auth';
 import { requirePermission } from '../../middleware/rbac';
 import { PERMISSIONS } from '../../core/permissions';
 import { audit } from '../../middleware/audit';
-import { idParam } from '../../core/validators';
+import { idParam, paginationQuery } from '../../core/validators';
 import * as service from './tenant.service';
 import * as renewals from './renewal.service';
+import * as enquiries from './enquiry.service';
 import { provisionTenant } from './provisioning.service';
 import {
   assignPlanSchema,
@@ -115,6 +117,92 @@ platformTenantRouter.get(
 platformTenantRouter.post(
   '/renewals/send-reminders',
   asyncHandler(async (_req, res) => ok(res, await renewals.sendRenewalReminders())),
+);
+
+// ------------------------------------------------------------- enquiries --
+
+/**
+ * Salons that asked to hear from you. The console's working list: read it,
+ * ring them, mark what happened.
+ */
+platformTenantRouter.get(
+  '/enquiries',
+  validate({
+    query: paginationQuery.extend({
+      status: z.enum(['NEW', 'CONTACTED', 'DEMO_BOOKED', 'TRIAL_STARTED', 'WON', 'LOST']).optional(),
+      q: z.string().trim().max(120).optional(),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const result = await enquiries.listEnquiries(req.query as never);
+    // The status counts ride along in the envelope's meta so the tabs can show
+    // numbers without a second request.
+    return ok(res, { items: result.items, total: result.total, counts: result.counts });
+  }),
+);
+
+platformTenantRouter.get(
+  '/enquiries/:id',
+  validate({ params: idParam }),
+  asyncHandler(async (req, res) => ok(res, await enquiries.getEnquiry(req.params.id!))),
+);
+
+platformTenantRouter.patch(
+  '/enquiries/:id',
+  validate({
+    params: idParam,
+    body: z.object({
+      status: z.enum(['NEW', 'CONTACTED', 'DEMO_BOOKED', 'TRIAL_STARTED', 'WON', 'LOST']).optional(),
+      notes: z.string().trim().max(4000).optional(),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const enquiry = await enquiries.updateEnquiry(req.params.id!, req.body as never);
+    audit({ action: 'enquiry.updated', entity: 'Enquiry', entityId: enquiry.id, after: req.body });
+    return ok(res, enquiry);
+  }),
+);
+
+/**
+ * Turn an enquiry into a real salon.
+ *
+ * The one place a tenant is created from an enquiry, and it is a deliberate
+ * act by a person who has spoken to them — which is why the owner's first
+ * password is typed here rather than chosen by a stranger on a web form.
+ */
+platformTenantRouter.post(
+  '/enquiries/:id/convert',
+  validate({ params: idParam, body: createTenantSchema.partial({ name: true, phone: true, email: true }) }),
+  asyncHandler(async (req, res) => {
+    const enquiry = await enquiries.getEnquiry(req.params.id!);
+    const body = req.body as Partial<ProvisionTenantInput>;
+
+    const result = await provisionTenant({
+      ...(body as ProvisionTenantInput),
+      // What they told us, unless the operator corrected it while on the call.
+      name: body.name ?? enquiry.salonName,
+      phone: body.phone ?? enquiry.phone,
+      email: body.email ?? enquiry.email,
+      city: body.city ?? enquiry.city ?? undefined,
+      owner: body.owner ?? {
+        name: enquiry.contactName,
+        email: enquiry.email,
+        phone: enquiry.phone,
+        password: (body.owner as { password?: string } | undefined)?.password ?? '',
+      },
+    });
+
+    await enquiries.markConverted(enquiry.id, result.tenant.id);
+    audit({ action: 'enquiry.converted', entity: 'Enquiry', entityId: enquiry.id, after: { tenantId: result.tenant.id } });
+
+    // Same shape as POST /tenants, so the console's onboarding form can post
+    // here instead without knowing it did anything different.
+    return created(res, {
+      tenant: result.tenant,
+      branch: result.branch,
+      owner: { id: result.owner.id, email: result.owner.email, name: result.owner.name },
+    });
+  }),
 );
 
 // ------------------------------------------------------------------ plans --

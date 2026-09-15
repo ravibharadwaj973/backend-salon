@@ -30,10 +30,30 @@ export interface SlotRequest {
   excludeAppointmentId?: string;
 }
 
+export interface Slot {
+  start: Date;
+  end: Date;
+  /** "14:30" in the branch's own timezone — what a customer reads. */
+  label: string;
+  /**
+   * False when this stylist is already busy then.
+   *
+   * Taken times are RETURNED rather than filtered out, so a booking page can
+   * grey them instead of leaving a hole. A missing 11:00 tells a customer
+   * nothing — it could be a booking, a lunch break, or a time the salon never
+   * offers. A greyed 11:00 says "someone got there first", which is both true
+   * and the thing that makes them take the 11:30.
+   *
+   * Only times the salon could otherwise sell appear at all: outside opening
+   * hours, outside the stylist's shift, and already past are all absent.
+   */
+  available: boolean;
+}
+
 export interface StaffSlots {
   staffId: string;
   staffName: string;
-  slots: { start: Date; end: Date; label: string }[];
+  slots: Slot[];
 }
 
 interface OpeningWindow {
@@ -133,15 +153,91 @@ export async function resourceBusyIntervals(
   return map;
 }
 
+/**
+ * Every appointment occupying this branch in a window, one interval each.
+ *
+ * Per APPOINTMENT, not per service line: someone having a cut, a colour and a
+ * blow-dry is one person in the salon for two hours, not three simultaneous
+ * bookings. Counting lines would make a branch look full three times over.
+ */
+export async function bookedIntervals(
+  branchId: string,
+  from: Date,
+  to: Date,
+  excludeAppointmentId?: string,
+): Promise<Interval[]> {
+  const rows = await prisma.appointmentService.findMany({
+    where: {
+      branchId,
+      startAt: { lt: to },
+      endAt: { gt: from },
+      appointment: {
+        status: { in: ['BOOKED', 'CONFIRMED', 'CHECKED_IN', 'IN_PROGRESS'] },
+        ...(excludeAppointmentId ? { id: { not: excludeAppointmentId } } : {}),
+      },
+    },
+    select: { appointmentId: true, startAt: true, endAt: true },
+  });
+
+  const byAppointment = new Map<string, Interval>();
+  for (const row of rows) {
+    const current = byAppointment.get(row.appointmentId);
+    byAppointment.set(
+      row.appointmentId,
+      current
+        ? {
+            start: row.startAt < current.start ? row.startAt : current.start,
+            end: row.endAt > current.end ? row.endAt : current.end,
+          }
+        : { start: row.startAt, end: row.endAt },
+    );
+  }
+
+  return [...byAppointment.values()];
+}
+
+/** How many of those overlap a given window. */
+function concurrentAt(intervals: Interval[], start: Date, end: Date): number {
+  return intervals.filter((i) => overlaps(start, end, i.start, i.end)).length;
+}
+
+/**
+ * The most bookings this branch takes at one moment.
+ *
+ * The salon's own number when they have set one; otherwise how many bookable
+ * stylists work there. The fallback is not a new rule — it is what "capacity
+ * comes from the rota" always meant. It is stated explicitly because the
+ * per-stylist checks cannot see an appointment with nobody assigned to it, and
+ * without a branch-wide number those bookings were unlimited: a receptionist
+ * could stack ten people onto one o'clock and nothing anywhere objected.
+ */
+export async function effectiveCapacity(branch: { id: string; maxConcurrentBookings: number | null }): Promise<number> {
+  if (branch.maxConcurrentBookings) return branch.maxConcurrentBookings;
+
+  const stylists = await prisma.staff.count({
+    where: { branchId: branch.id, isActive: true, isBookable: true },
+  });
+
+  // A branch with nobody on the books should not silently become unlimited.
+  return Math.max(stylists, 1);
+}
+
 function isFree(intervals: Interval[] | undefined, start: Date, end: Date): boolean {
   if (!intervals?.length) return true;
   return !intervals.some((i) => overlaps(start, end, i.start, i.end));
 }
 
 /**
- * Bookable slots for a set of services on a given day. Respects branch opening
- * hours, holidays, each stylist's weekly availability, time off and existing
- * bookings (including buffer time).
+ * The shape of a stylist's day for a given set of services.
+ *
+ * Returns every time the salon could sell — inside opening hours, inside that
+ * stylist's shift, long enough for the whole booking, and still to come —
+ * each marked available or not. Holidays, time off, existing bookings and
+ * their buffer time are what make one unavailable.
+ *
+ * It returns taken times rather than hiding them because the caller is a
+ * booking page, and a customer reads a greyed 11:00 as "gone" but reads a
+ * missing 11:00 as nothing at all.
  */
 export async function availableSlots(input: SlotRequest): Promise<StaffSlots[]> {
   const tenantId = requireTenantId();
@@ -186,12 +282,18 @@ export async function availableSlots(input: SlotRequest): Promise<StaffSlots[]> 
     input.excludeAppointmentId,
   );
 
+  // Always applied, not just when the salon has set a number. Bookings with no
+  // stylist assigned are invisible to the per-stylist busy map, so this is the
+  // only thing that counts them.
+  const cap = await effectiveCapacity(branch);
+  const dayBookings = await bookedIntervals(input.branchId, dayStart, dayEnd, input.excludeAppointmentId);
+
   const interval = branch.slotIntervalMin > 0 ? branch.slotIntervalMin : 15;
   const now = new Date();
 
   return staffList
     .map((staff) => {
-      const slots: { start: Date; end: Date; label: string }[] = [];
+      const slots: Slot[] = [];
 
       for (const window of windows) {
         for (const shift of staff.availability) {
@@ -203,10 +305,24 @@ export async function availableSlots(input: SlotRequest): Promise<StaffSlots[]> 
             const end = dayjs(start).add(totalDuration, 'minute').toDate();
             const endWithBuffer = dayjs(end).add(trailingBuffer, 'minute').toDate();
 
+            // A time that has already passed is not a slot at all — showing
+            // this morning greyed out at four in the afternoon is just noise.
             if (start <= now) continue;
-            if (!isFree(busyByStaff.get(staff.id), start, endWithBuffer)) continue;
 
-            slots.push({ start, end, label: minutesToTime(minute) });
+            // Two independent reasons a time can be gone: this stylist is
+            // busy, or the shop is already as full as it will let the
+            // internet make it. The buffer counts against the stylist but not
+            // against the room — a customer is in the chair for the
+            // appointment, not for the stylist's turnaround afterwards.
+            const stylistFree = isFree(busyByStaff.get(staff.id), start, endWithBuffer);
+            const roomLeft = concurrentAt(dayBookings, start, end) < cap;
+
+            slots.push({
+              start,
+              end,
+              label: minutesToTime(minute),
+              available: stylistFree && roomLeft,
+            });
           }
         }
       }
@@ -225,7 +341,14 @@ export interface ConflictCheckItem {
 }
 
 export interface Conflict {
-  type: 'STAFF_BUSY' | 'STAFF_UNAVAILABLE' | 'STAFF_TIME_OFF' | 'RESOURCE_BUSY' | 'BRANCH_CLOSED' | 'OVERLAP_IN_REQUEST';
+  type:
+    | 'STAFF_BUSY'
+    | 'STAFF_UNAVAILABLE'
+    | 'STAFF_TIME_OFF'
+    | 'RESOURCE_BUSY'
+    | 'BRANCH_CLOSED'
+    | 'BRANCH_AT_CAPACITY'
+    | 'OVERLAP_IN_REQUEST';
   message: string;
   staffId?: string | null;
   resourceId?: string | null;
@@ -289,7 +412,35 @@ export async function findConflicts(
     }
   }
 
-  // 3. Staff availability, time off and existing bookings.
+  // 3. The shop's own ceiling on how many people it takes at once.
+  //
+  // Checked here as well as when offering slots, because the slot list is a
+  // suggestion and this is the gate. Without it, two people booking the last
+  // place at the same moment both succeed, and anyone posting straight at the
+  // API ignores the limit entirely.
+  //
+  // `force` skips every conflict, which is the point: the front desk can always
+  // squeeze someone in, and only online booking is held to the number.
+  {
+    const from = new Date(Math.min(...items.map((i) => i.startAt.getTime())));
+    const to = new Date(Math.max(...items.map((i) => i.endAt.getTime())));
+
+    const cap = await effectiveCapacity(branch);
+    const existing = await bookedIntervals(branchId, from, to, excludeAppointmentId);
+    const taken = existing.filter((i) => overlaps(from, to, i.start, i.end)).length;
+
+    if (taken >= cap) {
+      conflicts.push({
+        type: 'BRANCH_AT_CAPACITY',
+        message: branch.maxConcurrentBookings
+          ? `${branch.name} takes ${cap} at a time and already has ${taken} then`
+          : `All ${cap} of ${branch.name}'s stylists are already booked then`,
+        startAt: from,
+      });
+    }
+  }
+
+  // 4. Staff availability, time off and existing bookings.
   const staffIds = [...new Set(items.map((i) => i.staffId).filter((id): id is string => Boolean(id)))];
   if (staffIds.length) {
     const [staffRows, busy] = await Promise.all([
@@ -333,7 +484,7 @@ export async function findConflicts(
     }
   }
 
-  // 4. Rooms and chairs.
+  // 5. Rooms and chairs.
   const resourceIds = [...new Set(items.map((i) => i.resourceId).filter((id): id is string => Boolean(id)))];
   if (resourceIds.length) {
     const busy = await resourceBusyIntervals(resourceIds, from, to, excludeAppointmentId);

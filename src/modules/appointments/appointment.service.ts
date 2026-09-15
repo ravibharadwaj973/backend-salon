@@ -29,6 +29,8 @@ export interface CreateAppointmentInput {
   walkInPhone?: string;
   startAt: Date;
   source?: BookingSource;
+  /** Which page or code the booking came from. Free text, never trusted. */
+  sourceRef?: string;
   notes?: string;
   internalNotes?: string;
   services: ServiceLineInput[];
@@ -144,6 +146,7 @@ export async function createAppointment(input: CreateAppointmentInput) {
         endAt,
         status: 'BOOKED',
         source: input.source ?? 'RECEPTION',
+        sourceRef: input.sourceRef ?? null,
         notes: input.notes ?? null,
         internalNotes: input.internalNotes ?? null,
         totalDurationMin: totalDuration,

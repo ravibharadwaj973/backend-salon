@@ -1,13 +1,13 @@
 # syntax=docker/dockerfile:1
 
 # =============================================================================
-# Salon OS — backend API
+# Salon Grow — backend API
 #
 # Builds the API only. The salon app and the platform console are separate
 # Next.js projects and are not in this image.
 #
-#   docker build -t salon-os-api .
-#   docker run --env-file .env -p 4000:4000 salon-os-api
+#   docker build -t salon-grow-api .
+#   docker run --env-file .env -p 4000:4000 salon-grow-api
 #
 # Three stages, so what ships is the compiled output and production
 # dependencies — no TypeScript, no test runner, no source. The build tools live

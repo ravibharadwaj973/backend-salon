@@ -356,6 +356,57 @@ enum ResourceType {
 
 // ============================== PLATFORM ====================================
 
+/// Where an enquiry is in your pipeline. Deliberately short: a list with nine
+/// statuses is a list nobody keeps up to date.
+enum EnquiryStatus {
+  NEW
+  CONTACTED
+  DEMO_BOOKED
+  TRIAL_STARTED
+  WON
+  LOST
+}
+
+/// A salon that asked to hear from you.
+///
+/// This is the whole of what the marketing site collects: no password, no
+/// account, nothing provisioned. Someone fills in the form, you read it in the
+/// console, and you ring them. A salon becomes a tenant only when a person
+/// decides it should — at which point `convertedTenantId` records which one.
+///
+/// Not tenant-scoped: an enquiry exists before any salon does, so it sits
+/// alongside PlatformUser rather than under a tenant.
+model Enquiry {
+  id         String        @id @default(cuid())
+  salonName  String
+  contactName String
+  email      String
+  phone      String
+  city       String?
+  /// How many chairs, roughly — the one qualifying question worth asking up front.
+  size       String?
+  /// Anything they wanted to tell you. Their words, untouched.
+  message    String?
+
+  status     EnquiryStatus @default(NEW)
+  /// Where they came from: the pricing page, the home page, a campaign.
+  source     String?
+  /// Free notes from whoever is working the pipeline.
+  notes      String?
+
+  contactedAt DateTime?
+  /// Set when this enquiry became a real salon.
+  convertedTenantId String?
+  convertedAt DateTime?
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([status, createdAt])
+  @@index([email])
+  @@map("enquiries")
+}
+
 model PlatformUser {
   id           String   @id @default(cuid())
   name         String
@@ -684,6 +735,19 @@ model Branch {
   region       String?
   openingHours Json     @default("{}") // { "1": [{"open":"10:00","close":"20:00"}], ... 0=Sunday }
   slotIntervalMin Int   @default(15)
+  /// How many appointments this shop will let the INTERNET book into one moment.
+  ///
+  /// Null, the default, means "as many as there are stylists free" — capacity
+  /// derived from the rota, which is right for a salon where every stylist has
+  /// their own chair. It is wrong for a salon with six stylists and three
+  /// chairs, or one that wants to keep a chair back for walk-ins, and until now
+  /// there was no way for them to say so.
+  ///
+  /// It is a ceiling, not a replacement: a slot still needs a stylist who can
+  /// do the work and is free. And it binds online booking only — the front desk
+  /// can always overbook, because a receptionist looking at a real room knows
+  /// things this number does not.
+  maxConcurrentBookings Int?
   /// The salon's own Google review link, pasted from Google Business Profile.
   /// Per branch: each shop has its own listing, and a review on the wrong one is wasted.
   googleReviewUrl String?
@@ -1268,6 +1332,12 @@ model Appointment {
   endAt          DateTime
   status         AppointmentStatus @default(BOOKED)
   source         BookingSource     @default(RECEPTION)
+  /// Where an online booking actually came from — the salon's own website, a
+  /// QR code on the counter, an Instagram link. `source` says which channel;
+  /// this says which page, so an owner can tell their website from their
+  /// Instagram bio without guessing. Free text, supplied by whoever embedded
+  /// the booking widget, so it is displayed and grouped but never trusted.
+  sourceRef      String?
   notes          String?
   internalNotes  String?
   totalDurationMin Int             @default(0)

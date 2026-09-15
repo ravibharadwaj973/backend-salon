@@ -1,4 +1,4 @@
-# Salon OS — API reference
+# Salon Grow — API reference
 
 Base path: `/api/v1`. All routes require `Authorization: Bearer <accessToken>` unless marked *(no auth)*.
 Select a branch with `X-Branch-Id: <branchId>` (or `?branchId=`).
@@ -467,9 +467,16 @@ to the caller. `GET /staff/:id` carries `sections` and `isSelf`, and nulls `base
 
 ## Public booking & feedback (no auth) — `/public`
 
+Everything under `/public` answers **any** origin (`Access-Control-Allow-Origin: *`, no
+credentials), because this is the surface a salon embeds in their own website and we cannot
+know in advance what that website is called. It is safe to do so: these routes carry no
+session, send no cookies, are rate-limited per address, and are scoped to one salon by the
+slug in the path. Everything else on the API stays locked to `CORS_ORIGINS`.
+
 | Method | Path | Permission |
 | --- | --- | --- |
 | GET | `/public/:slug` | — |
+| GET | `/public/:slug/embed.js` | — |
 | GET | `/public/:slug/services` | — |
 | GET | `/public/:slug/staff` | — |
 | GET | `/public/:slug/slots` | — |
@@ -478,6 +485,32 @@ to the caller. `GET /staff/:id` carries `sections` and `isSelf`, and nulls `base
 | POST | `/public/:slug/appointments/:appointmentId/cancel` | — |
 | GET | `/public/feedback/:appointmentId` | — |
 | POST | `/public/feedback/:appointmentId` | — |
+
+### Booking from the salon's own website
+
+`GET /public/:slug/embed.js` returns a self-contained widget with that salon's slug already
+baked in, so the salon copies one line rather than configuring anything:
+
+```html
+<script src="https://api.example.com/api/v1/public/glow-studio/embed.js" defer></script>
+
+<!-- either: a button that opens booking over their own page -->
+<a href="#" data-salongrow-book data-ref="website">Book now</a>
+
+<!-- or: booking rendered inside the page -->
+<div id="salongrow-booking" data-ref="website"></div>
+```
+
+It loads the booking page in an iframe — nothing of ours can collide with their stylesheet,
+nothing of theirs can read the customer's details. Optional attributes: `data-branch`,
+`data-service` (start on a particular shop or service) and `data-ref` (a label of the salon's
+choosing). The page posts `{source:'salongrow', type:'height'|'booked'}` to the parent, and the
+widget re-dispatches a booking as a `salongrow:booked` DOM event for the salon's own analytics.
+
+`POST /public/:slug/book` accepts `ref` (≤60 chars, `[\w .\-/]`), stored on the appointment as
+`sourceRef`. When it is absent the Referer's hostname is used, so a salon that pastes the
+snippet and changes nothing still sees where the booking came from. It is display-only and
+never trusted.
 
 ## Provider webhooks (no auth) — `/webhooks`
 

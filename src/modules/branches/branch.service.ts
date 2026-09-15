@@ -22,6 +22,8 @@ export interface BranchInput {
   timezone?: string;
   openingHours?: Record<string, { open: string; close: string }[]>;
   slotIntervalMin?: number;
+  /** null = as many as there are stylists free. */
+  maxConcurrentBookings?: number | null;
   invoicePrefix?: string;
   googleReviewUrl?: string;
   isActive?: boolean;

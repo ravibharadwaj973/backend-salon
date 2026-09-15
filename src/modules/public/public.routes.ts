@@ -2,10 +2,10 @@ import { Router, type RequestHandler } from 'express';
 import { z } from 'zod';
 import { asyncHandler, created, ok } from '../../core/http';
 import { validate } from '../../middleware/validate';
-import { publicLimiter } from '../../middleware/rateLimit';
+import { publicLimiter, enquiryLimiter } from '../../middleware/rateLimit';
 import { prisma } from '../../core/prisma';
 import { runUnscoped } from '../../core/context';
-import { BadRequest, NotFound } from '../../core/errors';
+import { BadRequest, Conflict, NotFound } from '../../core/errors';
 import { idSchema, phoneSchema } from '../../core/validators';
 import { normalizePhone, sequenceNumber } from '../../core/ids';
 import * as availability from '../appointments/availability.service';
@@ -13,6 +13,8 @@ import * as appointments from '../appointments/appointment.service';
 import * as catalog from '../catalog/catalog.service';
 import * as staffService from '../staff/staff.service';
 import * as feedback from '../feedback/feedback.service';
+import * as enquiries from '../tenants/enquiry.service';
+import { bookingUrl, refererHost } from '../../core/public-links';
 import type { Gender } from '@prisma/client';
 
 const router = Router();
@@ -40,6 +42,225 @@ const resolveTenantBySlug: RequestHandler = (req, _res, next) => {
     })
     .catch(next);
 };
+
+// -------------------------------------------------------------- enquiry ---
+
+/**
+ * "Please get in touch."
+ *
+ * The only thing the marketing site sends us. It creates no account, no
+ * password and no salon — it records that someone would like a conversation,
+ * and alerts the operator. A tenant is provisioned later, by a person, in the
+ * console, once they have actually spoken.
+ *
+ * That ordering is deliberate. A self-serve sign-up would fill the database
+ * with half-finished salons nobody ever rang, and a salon owner changing the
+ * software their business runs on wants a person on the phone, not a form.
+ */
+router.post(
+  '/enquiry',
+  enquiryLimiter,
+  validate({
+    body: z.object({
+      salonName: z.string().trim().min(2).max(120),
+      contactName: z.string().trim().min(2).max(120),
+      email: z.string().trim().toLowerCase().email(),
+      phone: phoneSchema,
+      city: z.string().trim().max(80).optional(),
+      size: z.string().trim().max(40).optional(),
+      message: z.string().trim().max(1000).optional(),
+      source: z.string().trim().max(60).optional(),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const enquiry = await enquiries.createEnquiry(req.body as enquiries.EnquiryInput);
+    // Nothing about the enquiry is echoed back — the page only needs to know
+    // it arrived, and the reply comes by phone.
+    return created(res, { received: true, salonName: enquiry.salonName });
+  }),
+);
+
+// ------------------------------------------------------- website embed ---
+
+/**
+ * BOOKING ON THE SALON'S OWN WEBSITE.
+ *
+ * A salon pastes one line into their site:
+ *
+ *   <script src=".../public/<slug>/embed.js" defer></script>
+ *
+ * and every element carrying `data-salongrow-book` becomes a button that opens
+ * their booking page in an overlay, without leaving their site. A page with a
+ * `<div id="salongrow-booking">` gets the booking flow rendered inline there
+ * instead. Bookings made through it land in that salon's own diary, exactly
+ * like one taken at the front desk.
+ *
+ * It is served from here, not from a CDN, for one reason: the slug is baked in,
+ * so the salon copies a line rather than configuring anything. And it is an
+ * iframe rather than injected markup, so nothing of ours can collide with their
+ * stylesheet and nothing of theirs can read the customer's details.
+ */
+router.get(
+  '/:slug/embed.js',
+  resolveTenantBySlug,
+  asyncHandler(async (req, res) => {
+    const tenant = await prisma.tenant.findUniqueOrThrow({
+      where: { id: req.publicTenantId! },
+      select: { name: true, slug: true },
+    });
+
+    res.type('application/javascript; charset=utf-8');
+    // Cached at the edge for an hour: it changes when we ship, not per visitor.
+    res.set('Cache-Control', 'public, max-age=3600');
+    return res.send(embedScript(tenant.slug, tenant.name));
+  }),
+);
+
+/**
+ * The widget, as a string.
+ *
+ * Only two values are interpolated — the slug, which the router has already
+ * matched against a real tenant, and the salon's name, which is JSON-escaped.
+ * Everything else is fixed text.
+ */
+function embedScript(slug: string, salonName: string): string {
+  const base = bookingUrl(slug, { embed: true });
+
+  return `/* Salon Grow booking widget for ${JSON.stringify(salonName)} */
+(function () {
+  'use strict';
+  if (window.__salonGrowBooking) return;
+
+  var BASE = ${JSON.stringify(base)};
+  var ORIGIN = new URL(BASE).origin;
+
+  function url(el) {
+    var u = new URL(BASE);
+    if (el && el.getAttribute) {
+      var branch = el.getAttribute('data-branch');
+      var service = el.getAttribute('data-service');
+      var ref = el.getAttribute('data-ref');
+      if (branch) u.searchParams.set('branch', branch);
+      if (service) u.searchParams.set('service', service);
+      u.searchParams.set('ref', ref || location.hostname.replace(/^www\\./, ''));
+    }
+    return u.toString();
+  }
+
+  function frame(src) {
+    var f = document.createElement('iframe');
+    f.src = src;
+    f.title = 'Book an appointment';
+    f.loading = 'lazy';
+    f.setAttribute('allowtransparency', 'true');
+    f.style.cssText = 'width:100%;border:0;display:block;background:transparent;';
+    return f;
+  }
+
+  /* --- inline: <div id="salongrow-booking"></div> --- */
+  function inline() {
+    var host = document.getElementById('salongrow-booking');
+    if (!host || host.getAttribute('data-ready')) return;
+    host.setAttribute('data-ready', '1');
+    var f = frame(url(host));
+    f.style.height = (host.getAttribute('data-height') || '720') + 'px';
+    f.setAttribute('data-salongrow-frame', '1');
+    host.appendChild(f);
+  }
+
+  /* --- overlay: any element with data-salongrow-book --- */
+  var overlay = null;
+
+  function close() {
+    if (!overlay) return;
+    overlay.remove();
+    overlay = null;
+    document.documentElement.style.overflow = '';
+    document.removeEventListener('keydown', onKey);
+  }
+
+  function onKey(e) {
+    if (e.key === 'Escape') close();
+  }
+
+  function open(el) {
+    close();
+    overlay = document.createElement('div');
+    overlay.style.cssText =
+      'position:fixed;inset:0;z-index:2147483000;background:rgba(28,25,23,.55);' +
+      'display:flex;align-items:center;justify-content:center;padding:16px;' +
+      '-webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px);';
+    overlay.addEventListener('click', function (e) {
+      if (e.target === overlay) close();
+    });
+
+    var panel = document.createElement('div');
+    panel.style.cssText =
+      'position:relative;width:100%;max-width:560px;height:min(92vh,860px);' +
+      'background:#fff;border-radius:16px;overflow:hidden;' +
+      'box-shadow:0 24px 64px -12px rgba(28,25,23,.45);';
+
+    var shut = document.createElement('button');
+    shut.type = 'button';
+    shut.setAttribute('aria-label', 'Close');
+    shut.textContent = '\\u00d7';
+    shut.style.cssText =
+      'position:absolute;top:8px;right:10px;z-index:2;width:32px;height:32px;' +
+      'border:0;border-radius:999px;background:rgba(255,255,255,.9);cursor:pointer;' +
+      'font:20px/1 system-ui,sans-serif;color:#44403c;';
+    shut.addEventListener('click', close);
+
+    var f = frame(url(el));
+    f.style.height = '100%';
+    f.setAttribute('data-salongrow-frame', '1');
+
+    panel.appendChild(shut);
+    panel.appendChild(f);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+    document.documentElement.style.overflow = 'hidden';
+    document.addEventListener('keydown', onKey);
+  }
+
+  document.addEventListener('click', function (e) {
+    var el = e.target && e.target.closest && e.target.closest('[data-salongrow-book]');
+    if (!el) return;
+    e.preventDefault();
+    open(el);
+  });
+
+  /* The booking page tells us how tall it is, and when a booking is made. The
+     origin check matters: without it any page could post us a fake message. */
+  window.addEventListener('message', function (e) {
+    if (e.origin !== ORIGIN || !e.data || e.data.source !== 'salongrow') return;
+
+    if (e.data.type === 'height') {
+      var frames = document.querySelectorAll('iframe[data-salongrow-frame]');
+      for (var i = 0; i < frames.length; i++) {
+        if (frames[i].contentWindow === e.source && !overlay) {
+          frames[i].style.height = Math.max(420, e.data.height) + 'px';
+        }
+      }
+    }
+
+    if (e.data.type === 'booked') {
+      /* The salon's own site can react to this — thank-you page, analytics,
+         whatever they already use. We deliberately do not navigate for them. */
+      window.dispatchEvent(new CustomEvent('salongrow:booked', { detail: e.data.appointment || {} }));
+      setTimeout(close, 2600);
+    }
+  });
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', inline);
+  } else {
+    inline();
+  }
+
+  window.__salonGrowBooking = { open: open, close: close, url: url };
+})();
+`;
+}
 
 // ------------------------------------------------------------ salon info ---
 
@@ -133,6 +354,16 @@ router.post(
         .max(8),
       notes: z.string().trim().max(500).optional(),
       source: z.enum(['ONLINE', 'QR', 'WHATSAPP', 'INSTAGRAM']).default('ONLINE'),
+      // Where on the internet this booking came from — "our website", "insta-bio",
+      // the counter QR. Whoever embeds the widget chooses it, so it is capped,
+      // stripped of anything that is not plain text, and only ever displayed as
+      // a label the owner can group by.
+      ref: z
+        .string()
+        .trim()
+        .max(60)
+        .regex(/^[\w .\-/]*$/, 'ref may contain letters, numbers, spaces and - _ . /')
+        .optional(),
       marketingConsent: z.boolean().default(false),
     }),
   }),
@@ -148,6 +379,7 @@ router.post(
       services: { serviceId: string; staffId?: string }[];
       notes?: string;
       source: 'ONLINE' | 'QR' | 'WHATSAPP' | 'INSTAGRAM';
+      ref?: string;
       marketingConsent: boolean;
     };
 
@@ -193,6 +425,10 @@ router.post(
       customerId: customer.id,
       startAt: body.startAt,
       source: body.source,
+      // Falls back to the sending page's host, so a salon that pastes the
+      // snippet and changes nothing still sees "booked from yoursalon.in"
+      // rather than a blank column.
+      sourceRef: body.ref ?? refererHost(req.get('referer')),
       notes: body.notes,
       services: body.services,
       force: false,

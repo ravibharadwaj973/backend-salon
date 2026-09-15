@@ -5,6 +5,7 @@ import { Conflict, NotFound } from '../../core/errors';
 import { addMonths, dayjs } from '../../core/dates';
 import { pageParams } from '../../core/http';
 import { invalidateAllIdentities } from '../../middleware/auth';
+import { enquiryStats } from './enquiry.service';
 
 export async function listTenants(input: { page?: number; pageSize?: number; q?: string; status?: TenantStatus }) {
   const { skip, take, page, pageSize } = pageParams(input);
@@ -303,6 +304,10 @@ export async function platformStats() {
     branches,
     customers,
     grossTransactionValue: invoiceAgg._sum.grandTotal ?? 0,
+    // Salons that have asked to hear from you but are not salons yet. It belongs
+    // beside the platform counts because an unanswered enquiry is the one number
+    // on this page that costs money while you look at it.
+    enquiries: await enquiryStats(),
   };
 }
 

@@ -18,12 +18,42 @@ export function createApp(): Express {
   app.disable('x-powered-by');
 
   app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+
+  /**
+   * Two CORS policies, chosen per request.
+   *
+   * Everything authenticated is locked to the origins we run ourselves, because
+   * those requests carry a session.
+   *
+   * `/public/*` is the opposite: it is the booking surface a salon embeds in
+   * their OWN website, and we cannot know in advance what that website is
+   * called. So it answers any origin — and is safe to, because it is
+   * unauthenticated, sends no cookies (`credentials: false`, which also stops a
+   * browser attaching a signed-in user's session to it), is rate-limited per
+   * address, and is scoped to one salon by the slug in the URL. A wildcard here
+   * exposes exactly what is already public on the booking page.
+   */
+  const PUBLIC_PREFIX = `${env.API_PREFIX}/public`;
+
   app.use(
-    cors({
-      origin: corsOrigins,
-      credentials: true,
-      exposedHeaders: ['X-Request-Id'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'X-Branch-Id', 'X-Tenant-Id', 'X-Request-Id'],
+    cors((req, callback) => {
+      if (req.path.startsWith(PUBLIC_PREFIX)) {
+        callback(null, {
+          origin: true,
+          credentials: false,
+          methods: ['GET', 'POST', 'OPTIONS'],
+          allowedHeaders: ['Content-Type'],
+          maxAge: 86_400,
+        });
+        return;
+      }
+
+      callback(null, {
+        origin: corsOrigins,
+        credentials: true,
+        exposedHeaders: ['X-Request-Id'],
+        allowedHeaders: ['Content-Type', 'Authorization', 'X-Branch-Id', 'X-Tenant-Id', 'X-Request-Id'],
+      });
     }),
   );
   app.use(compression());
@@ -70,7 +100,7 @@ export function createApp(): Express {
   app.use(contextMiddleware);
 
   app.get('/health', (_req, res) => {
-    res.json({ status: 'ok', service: 'salon-os', uptime: process.uptime(), timestamp: new Date().toISOString() });
+    res.json({ status: 'ok', service: 'salon-grow', uptime: process.uptime(), timestamp: new Date().toISOString() });
   });
 
   app.get('/ready', (_req, res) => {

@@ -19,7 +19,7 @@ export const logger = pino({
   level: isTest ? 'silent' : env.LOG_LEVEL,
 
   // pid and hostname matter on a fleet of containers, not on a laptop.
-  base: isProd ? { service: 'salon-os', pid: process.pid } : {},
+  base: isProd ? { service: 'salon-grow', pid: process.pid } : {},
   timestamp: isProd ? pino.stdTimeFunctions.isoTime : devTime,
 
   redact: {
