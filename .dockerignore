@@ -29,3 +29,8 @@ docs
 # The image builds its own.
 Dockerfile
 .dockerignore
+
+# Orchestration and deploy tooling: these run on the host, not in the image.
+docker-compose.yml
+docker-compose.*.yml
+scripts

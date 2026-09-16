@@ -539,6 +539,7 @@ export async function importCustomers(input: {
   const tenantId = requireTenantId();
 
   let rows: ImportRow[] = input.rows ?? [];
+  let ignoredColumns: string[] = [];
   if (input.csv) {
     const parsed = Papa.parse<Record<string, string>>(input.csv.trim(), {
       header: true,
@@ -548,16 +549,47 @@ export async function importCustomers(input: {
     if (parsed.errors.length) {
       logger.warn({ errors: parsed.errors.slice(0, 3) }, 'csv parse warnings');
     }
+    // Headers arrive lowercased with spaces, underscores and hyphens stripped,
+    // so "Email ID", "email_id" and "EMAIL-ID" all reach here as "emailid".
+    // Every column takes a list of spellings because a salon's previous system
+    // exported whatever it felt like, and a receptionist should not have to
+    // rename columns in Excel before the import will take their data.
+    //
+    // Missing an alias is worse than rejecting the file: the row imports
+    // looking fine, and the value is gone with nothing to say so.
+    const pick = (row: Record<string, string>, ...names: string[]): string => {
+      for (const name of names) {
+        const value = row[name];
+        if (value !== undefined && value !== null && value.trim() !== '') return value;
+      }
+      return '';
+    };
+
     rows = parsed.data.map((r) => ({
-      firstName: r.firstname ?? r.name ?? r.customername ?? '',
-      lastName: r.lastname ?? '',
-      phone: r.phone ?? r.mobile ?? r.phonenumber ?? r.contact ?? '',
-      email: r.email ?? '',
-      gender: r.gender ?? '',
-      dob: r.dob ?? r.birthday ?? r.dateofbirth ?? '',
-      tags: r.tags ?? '',
-      notes: r.notes ?? r.remarks ?? '',
+      firstName: pick(r, 'firstname', 'name', 'customername', 'fullname', 'clientname'),
+      lastName: pick(r, 'lastname', 'surname'),
+      phone: pick(r, 'phone', 'mobile', 'phonenumber', 'mobilenumber', 'contact', 'contactnumber', 'contactno'),
+      email: pick(r, 'email', 'emailid', 'emailaddress', 'mail', 'emailaddresss'),
+      gender: pick(r, 'gender', 'sex'),
+      dob: pick(r, 'dob', 'birthday', 'dateofbirth', 'birthdate'),
+      tags: pick(r, 'tags', 'tag', 'labels', 'category'),
+      notes: pick(r, 'notes', 'note', 'remarks', 'comments', 'comment'),
     }));
+
+    // Anything in the file we did not read. Silence here is how a salon loses
+    // every email address without noticing, so the caller gets told and can
+    // put it in front of whoever ran the import.
+    const known = new Set([
+      'firstname', 'name', 'customername', 'fullname', 'clientname',
+      'lastname', 'surname',
+      'phone', 'mobile', 'phonenumber', 'mobilenumber', 'contact', 'contactnumber', 'contactno',
+      'email', 'emailid', 'emailaddress', 'mail', 'emailaddresss',
+      'gender', 'sex',
+      'dob', 'birthday', 'dateofbirth', 'birthdate',
+      'tags', 'tag', 'labels', 'category',
+      'notes', 'note', 'remarks', 'comments', 'comment',
+    ]);
+    ignoredColumns = (parsed.meta.fields ?? []).filter((f) => f && !known.has(f));
   }
 
   if (!rows.length) throw BadRequest('Nothing to import: provide csv text or rows');
@@ -567,7 +599,32 @@ export async function importCustomers(input: {
   );
 
   const created: string[] = [];
-  const skipped: { row: number; phone: string; reason: string }[] = [];
+  /**
+   * A rejected row has to be findable in the file the person is looking at.
+   * `row` is its position among the data rows; `line` is the line number they
+   * will see in Excel or a text editor, which is one higher because of the
+   * header. Name and email ride along so a wrong number is recognisable
+   * without cross-referencing anything.
+   */
+  const skipped: {
+    row: number;
+    line: number;
+    name: string;
+    phone: string;
+    email: string;
+    reason: string;
+  }[] = [];
+
+  const reject = (index: number, row: ImportRow, phone: string, reason: string) => {
+    skipped.push({
+      row: index + 1,
+      line: index + 2,
+      name: (row.firstName ?? '').trim(),
+      phone: phone || (row.phone ?? '').trim(),
+      email: (row.email ?? '').trim(),
+      reason,
+    });
+  };
   let counter = await prisma.customer.count({ where: { tenantId } });
 
   const toCreate: Prisma.CustomerCreateManyInput[] = [];
@@ -576,12 +633,26 @@ export async function importCustomers(input: {
     const name = (row.firstName ?? '').trim();
     const phone = normalizePhone(row.phone ?? '');
 
-    if (!name || phone.length < 6) {
-      skipped.push({ row: index + 1, phone, reason: 'Missing name or valid phone' });
+    // Separate reasons, because "fix the name" and "fix the number" are
+    // different jobs and a single combined message makes the person check both.
+    if (!name && phone.length < 6) {
+      reject(index, row, phone, 'No name and no valid phone number');
+      return;
+    }
+    if (!name) {
+      reject(index, row, phone, 'Name is blank');
+      return;
+    }
+    if (!(row.phone ?? '').trim()) {
+      reject(index, row, phone, 'Phone number is blank');
+      return;
+    }
+    if (phone.length < 6) {
+      reject(index, row, phone, `Phone number is not valid (${phone.length} digits after cleaning)`);
       return;
     }
     if (existingPhones.has(phone)) {
-      skipped.push({ row: index + 1, phone, reason: 'Duplicate phone' });
+      reject(index, row, phone, 'Already in your customer list — same phone number');
       return;
     }
     existingPhones.add(phone);
@@ -618,7 +689,13 @@ export async function importCustomers(input: {
     await prisma.customer.createMany({ data: toCreate, skipDuplicates: true });
   }
 
-  return { imported: toCreate.length, skipped: skipped.length, skippedRows: skipped.slice(0, 100), total: rows.length };
+  return {
+    imported: toCreate.length,
+    skipped: skipped.length,
+    skippedRows: skipped.slice(0, 1000),
+    total: rows.length,
+    ignoredColumns,
+  };
 }
 
 export async function exportCustomers(input: ListCustomersInput) {
