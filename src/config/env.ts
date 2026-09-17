@@ -84,6 +84,11 @@ const envSchema = z.object({
   RESEND_API_KEY: z.string().optional().default(''),
   RESEND_FROM_EMAIL: z.string().optional().default(''),
   RESEND_FROM_NAME: z.string().optional().default(''),
+  /// The signing secret Resend shows once when you add a webhook endpoint
+  /// (`whsec_…`). Without it the delivery webhook is an open endpoint: anyone
+  /// who learns the URL can mark messages bounced and switch a customer's
+  /// email consent off.
+  RESEND_WEBHOOK_SECRET: z.string().optional().default(''),
   EMAIL_COST_PER_MESSAGE: z.coerce.number().min(0).default(0.01),
 
   DEFAULT_CURRENCY: z.string().default('INR'),

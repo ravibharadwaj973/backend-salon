@@ -7,6 +7,7 @@ import { logger } from '../../core/logger';
 import { applyStatusUpdate } from '../../messaging/dispatcher';
 import { normalizePhone } from '../../core/ids';
 import { verifyWhatsAppSignature } from './whatsapp-signature';
+import { verifyResendSignature } from './resend-signature';
 import type { Prisma } from '@prisma/client';
 
 const router = Router();
@@ -167,6 +168,7 @@ interface ResendEvent {
 
 router.post(
   '/email',
+  verifyResendSignature,
   asyncHandler(async (req, res) => {
     res.status(200).json({ received: true });
 
