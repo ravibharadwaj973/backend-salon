@@ -441,6 +441,16 @@ export async function listSegments(input: { page?: number; pageSize?: number }) 
   return { items, total, page, pageSize };
 }
 
+/** One segment, with how many campaigns have used it. */
+export async function getSegment(id: string) {
+  const segment = await prisma.segment.findUnique({
+    where: { id },
+    include: { _count: { select: { campaigns: true } } },
+  });
+  if (!segment) throw NotFound('Segment');
+  return segment;
+}
+
 export async function createSegment(input: { name: string; description?: string; rules: SegmentRules; isDynamic?: boolean }) {
   const tenantId = requireTenantId();
   const clash = await prisma.segment.findFirst({ where: { tenantId, name: input.name } });
@@ -576,6 +586,69 @@ export async function segmentReach(segmentId: string, category: TemplateCategory
   }
 
   return reachAllInDb(prisma, where, category);
+}
+
+/**
+ * Who is actually in a saved segment, a page at a time.
+ *
+ * A segment is a rule, and a rule is only as trustworthy as the people it
+ * picks. "2,412 customers" is a number somebody either believes or does not;
+ * seeing that the list is full of the right names is what makes them press
+ * send. It is also the only way to find a rule that is subtly wrong — an
+ * off-by-one on days, a tag that matches more than it looks like it should.
+ *
+ * Each row carries what the rule was probably about (visits, spend, last
+ * visit) and whether they can actually be reached, so the list answers "is
+ * this the right group?" and "will they get it?" together.
+ */
+export async function segmentMembers(
+  segmentId: string,
+  input: { page?: number; pageSize?: number } = {},
+) {
+  const segment = await prisma.segment.findUnique({ where: { id: segmentId } });
+  if (!segment) throw NotFound('Segment');
+
+  const rules = segment.rules as unknown as SegmentRules;
+  const where = await buildSegmentWhere(segment.tenantId, rules);
+  const { skip, take, page, pageSize } = pageParams(input);
+
+  const select = {
+    id: true,
+    code: true,
+    firstName: true,
+    lastName: true,
+    tier: true,
+    totalVisits: true,
+    totalSpent: true,
+    lastVisitAt: true,
+    dob: true,
+    anniversary: true,
+    ...CONTACT_SELECT,
+  };
+
+  /**
+   * An occasion rule is applied in memory, so the database cannot paginate:
+   * page 2 of the query is not page 2 of the answer. Those segments are read
+   * up to the cap and paged here instead — the same cap resolveMembers uses,
+   * so the list and the send agree.
+   */
+  if (hasPostFilter(rules)) {
+    const rows = await prisma.customer.findMany({
+      where,
+      select,
+      take: 50_000,
+      orderBy: { totalSpent: 'desc' },
+    });
+    const matched = postFilter(rows, rules);
+    return { items: matched.slice(skip, skip + take), total: matched.length, page, pageSize };
+  }
+
+  const [items, total] = await Promise.all([
+    prisma.customer.findMany({ where, select, skip, take, orderBy: { totalSpent: 'desc' } }),
+    prisma.customer.count({ where }),
+  ]);
+
+  return { items, total, page, pageSize };
 }
 
 /** Materialise a static snapshot of the segment's members. */

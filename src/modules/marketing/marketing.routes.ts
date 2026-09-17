@@ -91,6 +91,13 @@ segmentRouter.post(
   }),
 );
 
+segmentRouter.get(
+  '/:id',
+  requirePermission(PERMISSIONS.CAMPAIGN_VIEW),
+  validate({ params: idParam }),
+  asyncHandler(async (req, res) => ok(res, await segments.getSegment(req.params.id!))),
+);
+
 /**
  * What a saved segment can actually reach, per channel.
  *
@@ -111,6 +118,21 @@ segmentRouter.get(
   asyncHandler(async (req, res) => {
     const { category } = req.query as unknown as { category: TemplateCategory };
     return ok(res, await segments.segmentReach(req.params.id!, category));
+  }),
+);
+
+/**
+ * The people a segment matches. A count nobody can look behind is a count
+ * nobody trusts, and a rule that is subtly wrong is invisible until you read
+ * the names it picked.
+ */
+segmentRouter.get(
+  '/:id/members',
+  requirePermission(PERMISSIONS.CAMPAIGN_VIEW, PERMISSIONS.CUSTOMER_VIEW),
+  validate({ params: idParam, query: paginationQuery }),
+  asyncHandler(async (req, res) => {
+    const result = await segments.segmentMembers(req.params.id!, req.query as never);
+    return paginated(res, result.items, result.total, result.page, result.pageSize);
   }),
 );
 
