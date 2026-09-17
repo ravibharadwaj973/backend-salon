@@ -124,6 +124,29 @@ export const isProd = env.NODE_ENV === 'production';
 export const isTest = env.NODE_ENV === 'test';
 
 /**
+ * A production server must never send out localhost links.
+ *
+ * PUBLIC_APP_URL has a localhost default so the app runs out of the box, and
+ * that default is the trap: leave it unset in production and every booking
+ * link, feedback link and Google-review hand-off in every message says
+ * `http://localhost:3000/...`. Nothing errors. The salon sees messages marked
+ * delivered, the customer taps a link that cannot open, and nobody finds out
+ * until someone asks why the campaign produced no bookings.
+ *
+ * So it fails at boot instead, while somebody is watching a deploy, rather
+ * than quietly at 2am in a journey run.
+ */
+if (isProd && /localhost|127\.0\.0\.1/.test(env.PUBLIC_APP_URL)) {
+  // eslint-disable-next-line no-console
+  console.error(
+    `PUBLIC_APP_URL is ${env.PUBLIC_APP_URL} in production.\n` +
+      'Every booking and review link sent to a customer would point at localhost and open nothing.\n' +
+      'Set PUBLIC_APP_URL to the address customers can actually reach, e.g. https://parlon.jharavi.in',
+  );
+  process.exit(1);
+}
+
+/**
  * Parsed once at boot. Supports exact origins and one-label wildcards such as
  * https://*.vercel.app, and forgives the trailing slash you get from copying a
  * URL out of the address bar.
