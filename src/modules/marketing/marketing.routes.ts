@@ -436,6 +436,24 @@ templateRouter.post(
   asyncHandler(async (req, res) => created(res, await templates.createTemplate(req.body as TemplateInput))),
 );
 
+/**
+ * Top the salon up with any starter templates it does not have.
+ *
+ * Idempotent, and never overwrites: a salon that has rewritten a message keeps
+ * its own words. This exists because seeding happens once at signup, so a
+ * salon created before the email and SMS starters existed had an empty picker
+ * on those tabs with no way to fill it but typing.
+ */
+templateRouter.post(
+  '/restore-defaults',
+  requirePermission(PERMISSIONS.TEMPLATE_MANAGE),
+  asyncHandler(async (_req, res) => {
+    const result = await templates.restoreDefaultTemplates();
+    audit({ action: 'template.defaults_restored', entity: 'MessageTemplate' });
+    return ok(res, result);
+  }),
+);
+
 templateRouter.get(
   '/:id',
   requirePermission(PERMISSIONS.CAMPAIGN_VIEW),

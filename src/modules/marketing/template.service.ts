@@ -4,6 +4,7 @@ import { requireTenantId } from '../../core/context';
 import { Conflict, NotFound } from '../../core/errors';
 import { pageParams } from '../../core/http';
 import { renderTemplate, missingVariables, buildVariables } from '../../messaging/dispatcher';
+import { DEFAULT_TEMPLATES } from '../messaging/defaults';
 
 export interface TemplateInput {
   name: string;
@@ -23,6 +24,45 @@ export interface TemplateInput {
 /** Pulls {{placeholders}} out of the body so the UI can list them. */
 export function extractVariables(body: string): string[] {
   return [...new Set([...body.matchAll(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g)].map((m) => m[1]!))];
+}
+
+/**
+ * Add any starter templates this salon is missing, without touching the ones
+ * it has.
+ *
+ * Templates are seeded once, when the salon is created. A salon provisioned
+ * before email and SMS starters existed has an empty picker on those tabs
+ * forever — which reads as a broken screen, not an empty cupboard — and the
+ * only way out was to write every message by hand.
+ *
+ * `skipDuplicates` against (tenantId, name, channel) is what makes this safe
+ * to run any number of times: a salon that has rewritten its confirmation
+ * message keeps its own wording, and only genuinely absent rows are added.
+ * Nothing here ever overwrites.
+ */
+export async function restoreDefaultTemplates() {
+  const tenantId = requireTenantId();
+
+  const existing = await prisma.messageTemplate.findMany({
+    where: { tenantId },
+    select: { name: true, channel: true },
+  });
+  const have = new Set(existing.map((t) => `${t.name}::${t.channel}`));
+
+  const missing = DEFAULT_TEMPLATES.filter((t) => !have.has(`${t.name}::${t.channel}`));
+  if (missing.length === 0) return { added: 0, byChannel: {} as Record<string, number> };
+
+  await prisma.messageTemplate.createMany({
+    data: missing.map((t) => ({ tenantId, ...t })),
+    skipDuplicates: true,
+  });
+
+  const byChannel = missing.reduce<Record<string, number>>((acc, t) => {
+    acc[t.channel] = (acc[t.channel] ?? 0) + 1;
+    return acc;
+  }, {});
+
+  return { added: missing.length, byChannel };
 }
 
 export async function listTemplates(input: { page?: number; pageSize?: number; channel?: Channel; category?: TemplateCategory }) {

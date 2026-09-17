@@ -9,6 +9,8 @@ export interface TemplateDefinition {
   variables: string[];
   approvalStatus: TemplateApprovalStatus;
   footerText?: string;
+  /** The subject line, for email. Ignored on WhatsApp and SMS. */
+  headerText?: string;
 }
 
 /**
@@ -191,6 +193,176 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     bodyText:
       'You earned {{points_earned}} points at {{salon_name}}, {{customer_name}}. Total balance: {{points_balance}} — worth {{points_value}}.',
     variables: ['points_earned', 'salon_name', 'customer_name', 'points_balance', 'points_value'],
+    approvalStatus: 'DRAFT',
+  },
+
+  // ---------------------------------------------------------------- email --
+  /**
+   * A salon that has email switched on and no email templates has a template
+   * picker that is empty on the Email tab, which reads as a broken screen
+   * rather than as an empty cupboard. Every channel a salon can send on ships
+   * with something to send.
+   *
+   * These are APPROVED rather than DRAFT: there is no provider to approve an
+   * email. WhatsApp templates wait for Meta and SMS waits for DLT, but an
+   * email can go out the moment the salon has a verified domain.
+   *
+   * Email is a different medium from a WhatsApp message, not the same words in
+   * a bigger box: it has a subject line, it is read at a desk rather than on a
+   * lock screen, and it is where the longer, more formal messages belong —
+   * invoices, renewals, anything a customer might want to find again later.
+   * The same `name` as the WhatsApp version is deliberate; the unique key is
+   * (tenant, name, channel), so one message can have a version per channel.
+   */
+  {
+    name: 'appointment_confirmation',
+    channel: 'EMAIL',
+    category: 'UTILITY',
+    language: 'en',
+    headerText: 'Your appointment at {{salon_name}} is confirmed',
+    bodyText:
+      'Dear {{customer_name}},\n\nYour appointment at {{salon_name}} is confirmed.\n\nWhen: {{appointment_date}} at {{appointment_time}}\nWith: {{staff_name}}\nServices: {{services}}\nWhere: {{branch_address}}\n\nIf you need a different time, just reply to this email and we will sort it out.\n\nWarm regards,\n{{salon_name}}\n{{salon_phone}}',
+    variables: [
+      'customer_name',
+      'salon_name',
+      'appointment_date',
+      'appointment_time',
+      'staff_name',
+      'services',
+      'branch_address',
+      'salon_phone',
+    ],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    name: 'invoice_sent',
+    channel: 'EMAIL',
+    category: 'UTILITY',
+    language: 'en',
+    headerText: 'Your invoice {{invoice_number}} from {{salon_name}}',
+    bodyText:
+      'Dear {{customer_name}},\n\nThank you for visiting {{salon_name}}.\n\nInvoice: {{invoice_number}}\nServices: {{services}}\nTotal: {{amount}}\n\nWarm regards,\n{{salon_name}}\n{{salon_phone}}',
+    variables: ['customer_name', 'salon_name', 'invoice_number', 'services', 'amount', 'salon_phone'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    name: 'thank_you',
+    channel: 'EMAIL',
+    category: 'UTILITY',
+    language: 'en',
+    headerText: 'Thank you for visiting {{salon_name}}',
+    bodyText:
+      'Dear {{customer_name}},\n\nThank you for coming in today. We hope you left happy.\n\nIf anything was not quite right, reply to this email and tell us — we would rather hear it from you than not at all.\n\nWarm regards,\n{{salon_name}}',
+    variables: ['customer_name', 'salon_name'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    name: 'review_request',
+    channel: 'EMAIL',
+    category: 'UTILITY',
+    language: 'en',
+    headerText: 'How was your visit to {{salon_name}}?',
+    bodyText:
+      'Dear {{customer_name}},\n\nWe would love to know how your visit went. It takes a minute and it genuinely helps us:\n\n{{review_link}}\n\nThank you,\n{{salon_name}}',
+    variables: ['customer_name', 'review_link', 'salon_name'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    name: 'membership_expiring',
+    channel: 'EMAIL',
+    category: 'UTILITY',
+    language: 'en',
+    headerText: 'Your {{plan_name}} membership ends on {{expiry_date}}',
+    bodyText:
+      'Dear {{customer_name}},\n\nYour {{plan_name}} membership at {{salon_name}} ends on {{expiry_date}}.\n\nRenewing keeps your member pricing and any unused benefits running without a gap. Reply to this email or call us on {{salon_phone}} and we will take care of it.\n\nWarm regards,\n{{salon_name}}',
+    variables: ['customer_name', 'plan_name', 'salon_name', 'expiry_date', 'salon_phone'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    name: 'package_expiring',
+    channel: 'EMAIL',
+    category: 'UTILITY',
+    language: 'en',
+    headerText: 'You still have sessions left at {{salon_name}}',
+    bodyText:
+      'Dear {{customer_name}},\n\nYou have {{sessions_left}} session(s) left on your {{package_name}}, and they expire on {{expiry_date}}.\n\nBook whenever suits you: {{booking_link}}\n\nWarm regards,\n{{salon_name}}',
+    variables: ['customer_name', 'sessions_left', 'package_name', 'expiry_date', 'booking_link', 'salon_name'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    name: 'birthday_wish',
+    channel: 'EMAIL',
+    category: 'MARKETING',
+    language: 'en',
+    headerText: 'Happy birthday, {{customer_name}}',
+    bodyText:
+      'Dear {{customer_name}},\n\nHappy birthday from everyone at {{salon_name}}.\n\nCome and be looked after this month — book any time: {{booking_link}}\n\nWarm regards,\n{{salon_name}}',
+    variables: ['customer_name', 'salon_name', 'booking_link'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    name: 'winback_offer',
+    channel: 'EMAIL',
+    category: 'MARKETING',
+    language: 'en',
+    headerText: 'We have missed you at {{salon_name}}',
+    bodyText:
+      'Dear {{customer_name}},\n\nIt has been a while since your last visit to {{salon_name}}, and we would love to see you again.\n\nBook whenever suits you: {{booking_link}}\n\nWarm regards,\n{{salon_name}}',
+    variables: ['customer_name', 'salon_name', 'booking_link'],
+    approvalStatus: 'APPROVED',
+  },
+
+  // ------------------------------------------------------------------ SMS --
+  /**
+   * Deliberately few, and deliberately short.
+   *
+   * An SMS in India needs a DLT-registered template before it can be sent, so
+   * these start as DRAFT like the WhatsApp ones — the salon registers the
+   * wording, then marks them approved. Registration is per message, so a long
+   * list here would be a long list of paperwork nobody does.
+   *
+   * SMS earns its cost only where WhatsApp might not arrive: a reminder for
+   * the hour before, a cancellation, money owed. Anything that can wait or can
+   * be read later belongs on WhatsApp or email, which cost less and say more.
+   * Each is kept inside one 160-character segment once the variables are
+   * filled, because two segments is two messages and twice the bill.
+   */
+  {
+    name: 'appointment_confirmation',
+    channel: 'SMS',
+    category: 'UTILITY',
+    language: 'en',
+    bodyText:
+      '{{salon_name}}: Appointment confirmed for {{appointment_date}} at {{appointment_time}}. Call {{salon_phone}} to change it.',
+    variables: ['salon_name', 'appointment_date', 'appointment_time', 'salon_phone'],
+    approvalStatus: 'DRAFT',
+  },
+  {
+    name: 'appointment_reminder_24h',
+    channel: 'SMS',
+    category: 'UTILITY',
+    language: 'en',
+    bodyText: '{{salon_name}}: Reminder, your appointment is tomorrow at {{appointment_time}}. See you then.',
+    variables: ['salon_name', 'appointment_time'],
+    approvalStatus: 'DRAFT',
+  },
+  {
+    name: 'appointment_cancelled',
+    channel: 'SMS',
+    category: 'UTILITY',
+    language: 'en',
+    bodyText:
+      '{{salon_name}}: Your appointment on {{appointment_date}} is cancelled. Call {{salon_phone}} to rebook.',
+    variables: ['salon_name', 'appointment_date', 'salon_phone'],
+    approvalStatus: 'DRAFT',
+  },
+  {
+    name: 'payment_reminder',
+    channel: 'SMS',
+    category: 'UTILITY',
+    language: 'en',
+    bodyText: '{{salon_name}}: {{amount}} is outstanding on invoice {{invoice_number}}. Call {{salon_phone}}.',
+    variables: ['salon_name', 'amount', 'invoice_number', 'salon_phone'],
     approvalStatus: 'DRAFT',
   },
 ];
