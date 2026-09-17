@@ -6,6 +6,7 @@ import { activeBranchId, branchFilter, optionalBranchFilter } from '../../core/s
 import { BadRequest, Conflict, NotFound } from '../../core/errors';
 import { pageParams } from '../../core/http';
 import { normalizePhone, sequenceNumber } from '../../core/ids';
+import { visitRhythm } from './visit-rhythm';
 import { add, div, round2 } from '../../core/money';
 import { dateKey, dayjs, DEFAULT_TZ } from '../../core/dates';
 import { logger } from '../../core/logger';
@@ -842,7 +843,7 @@ export async function mergeCustomers(sourceId: string, targetId: string) {
  * these up to date incrementally; this is the repair/backfill path.
  */
 export async function recalculateCustomerRollups(customerId: string) {
-  const [agg, firstInvoice, lastInvoice, outstandingAgg] = await Promise.all([
+  const [agg, firstInvoice, lastInvoice, outstandingAgg, visitDates, noShows, lastCategory] = await Promise.all([
     prisma.invoice.aggregate({
       where: { customerId, status: { in: ['ISSUED', 'PARTIALLY_PAID', 'PAID'] } },
       _sum: { grandTotal: true },
@@ -862,10 +863,45 @@ export async function recalculateCustomerRollups(customerId: string) {
       where: { customerId, status: { in: ['ISSUED', 'PARTIALLY_PAID'] } },
       _sum: { dueAmount: true },
     }),
+
+    /**
+     * Every billed visit date, for the customer's own cycle. Capped and taken
+     * newest-first: the rhythm only looks at the recent handful of intervals,
+     * so there is no reason to read ten years of a regular's history to find
+     * out they come every four weeks.
+     */
+    prisma.invoice.findMany({
+      where: { customerId, status: { not: 'VOID' } },
+      orderBy: { invoiceDate: 'desc' },
+      take: 40,
+      select: { invoiceDate: true },
+    }),
+
+    prisma.appointment.count({ where: { customerId, status: 'NO_SHOW' } }),
+
+    /**
+     * The last thing they actually bought. A colour reminder sent to somebody
+     * who only ever books waxing is the noise that teaches people to ignore
+     * the salon's messages.
+     */
+    prisma.invoiceItem.findFirst({
+      where: { invoice: { customerId, status: { not: 'VOID' } }, itemType: 'SERVICE' },
+      orderBy: { invoice: { invoiceDate: 'desc' } },
+      select: { refId: true },
+    }),
   ]);
 
   const visits = agg._count._all;
   const spent = agg._sum.grandTotal ?? 0;
+
+  const rhythm = visitRhythm(visitDates.map((v) => v.invoiceDate));
+
+  // The service row stores a bare refId with no relation, so the category is
+  // one lookup away rather than part of the query above.
+  const lastServiceCategoryId = lastCategory?.refId
+    ? ((await prisma.service.findUnique({ where: { id: lastCategory.refId }, select: { categoryId: true } }))
+        ?.categoryId ?? null)
+    : null;
 
   return prisma.customer.update({
     where: { id: customerId },
@@ -876,6 +912,13 @@ export async function recalculateCustomerRollups(customerId: string) {
       firstVisitAt: firstInvoice?.invoiceDate ?? null,
       lastVisitAt: lastInvoice?.invoiceDate ?? null,
       outstanding: outstandingAgg._sum.dueAmount ?? 0,
+
+      visitIntervalDays: rhythm.intervalDays,
+      visitIntervalBasis: rhythm.basedOnIntervals,
+      expectedNextVisitAt: rhythm.expectedNextVisitAt,
+      lifecycleStage: rhythm.stage,
+      noShowCount: noShows,
+      lastServiceCategoryId,
     },
   });
 }

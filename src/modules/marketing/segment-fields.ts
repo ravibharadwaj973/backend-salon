@@ -26,7 +26,8 @@ export type FieldInput =
   | 'staff'
   | 'branch'
   | 'tag'
-  | 'text';
+  | 'text'
+  | 'lifecycle';
 
 export interface FieldDefinition {
   key: string;
@@ -65,6 +66,77 @@ export const SEGMENT_FIELDS: readonly FieldDefinition[] = [
     ops: ['lte'],
     placeholder: '30',
     help: 'Your newest customers — the ones a welcome offer is for.',
+  },
+
+  // ------------------------------------------------- their own clock -----
+  /**
+   * The group that makes this more than a mailing list.
+   *
+   * Everything above asks "how long since they came?" against one number for
+   * the whole book. These ask "are they late FOR THEM?" — a three-weekly
+   * haircut and a twice-a-year balayage are both 45 days out today, and only
+   * one of them is a problem.
+   */
+  {
+    key: 'lifecycleStage',
+    label: 'Where they are in their cycle',
+    group: 'Their own visit cycle',
+    input: 'lifecycle',
+    ops: ['eq', 'in', 'nin'],
+    help: 'Measured against this customer’s own gap between visits, not a fixed number of days.',
+  },
+  {
+    key: 'dueWithinDays',
+    label: 'Due for a visit within (days)',
+    group: 'Their own visit cycle',
+    input: 'days',
+    ops: ['lte'],
+    placeholder: '7',
+    help: 'On their own cycle. The list to offer next week’s slots to.',
+  },
+  {
+    key: 'overdueByDays',
+    label: 'Overdue by more than (days)',
+    group: 'Their own visit cycle',
+    input: 'days',
+    ops: ['gte'],
+    placeholder: '14',
+    help: 'Days past when they were due — not days since they last came.',
+  },
+  {
+    key: 'visitIntervalDays',
+    label: 'Usually visits every (days)',
+    group: 'Their own visit cycle',
+    input: 'days',
+    ops: ['lte', 'gte', 'between'],
+    help: 'Their own rhythm. Under 30 is a regular haircut; over 90 is occasional colour.',
+  },
+  {
+    key: 'hasKnownRhythm',
+    label: 'Has an established rhythm',
+    group: 'Their own visit cycle',
+    input: 'boolean',
+    ops: ['eq'],
+    help: 'Four or more visits, so the cycle is real rather than a guess. Turn off to include newer customers.',
+  },
+
+  // ---------------------------------------------------------- risk -------
+  {
+    key: 'noShowCount',
+    label: 'Missed appointments',
+    group: 'Risk and reliability',
+    input: 'number',
+    ops: ['gte', 'lte', 'eq'],
+    placeholder: '2',
+    help: 'No-shows cost a chair for an hour. Two or more is a different booking policy, not a campaign.',
+  },
+  {
+    key: 'lastServiceCategory',
+    label: 'Last service was in category',
+    group: 'What they buy',
+    input: 'category',
+    ops: ['eq', 'in'],
+    help: 'What they actually bought last, so a colour reminder does not go to a waxing customer.',
   },
 
   // ------------------------------------------------------- how often -----
@@ -204,6 +276,93 @@ export interface SegmentPreset {
 }
 
 export const SEGMENT_PRESETS: readonly SegmentPreset[] = [
+  /**
+   * THE LIFECYCLE SET.
+   *
+   * These come first because they are the ones that make money, and because
+   * each is measured against the customer's own visit cycle rather than a
+   * fixed number of days. On any given Tuesday a three-weekly haircut and a
+   * twice-a-year balayage are both "45 days out"; only one of them needs a
+   * message, and a fixed rule sends it to the wrong one.
+   *
+   * Each has one job. A segment you cannot name the message for is a segment
+   * that should not exist.
+   */
+  {
+    key: 'first_visit_win_second',
+    name: 'New — win the second visit',
+    why: 'One visit, recently. First-to-second conversion is the number that decides whether the salon grows, and the window is weeks, not months.',
+    rules: { match: 'all', conditions: [{ field: 'lifecycleStage', op: 'in', value: ['NEW'] }] },
+  },
+  {
+    key: 'due_this_week',
+    name: 'Due for a visit this week',
+    why: 'On their own cycle, not a calendar rule. The list to offer next week’s empty slots to — they were coming anyway, this just picks the day.',
+    rules: { match: 'all', conditions: [{ field: 'dueWithinDays', op: 'lte', value: 7 }, { field: 'hasKnownRhythm', op: 'eq', value: true }] },
+  },
+  {
+    key: 'drifting_regulars',
+    name: 'Regulars starting to drift',
+    why: 'Past their own gap but not gone. This is where a salon actually loses people, and a message here costs far less than a win-back later.',
+    rules: { match: 'all', conditions: [{ field: 'lifecycleStage', op: 'in', value: ['OVERDUE', 'AT_RISK'] }, { field: 'totalVisits', op: 'gte', value: 3 }] },
+  },
+  {
+    key: 'at_risk_high_value',
+    name: 'At risk — and worth real effort',
+    why: 'A ₹35,000 customer drifting away should not get the same "20% off everything" as everyone else. Call them, name their stylist, offer their usual slot.',
+    rules: {
+      match: 'all',
+      conditions: [
+        { field: 'lifecycleStage', op: 'in', value: ['AT_RISK', 'LAPSED'] },
+        { field: 'totalSpent', op: 'gte', value: 25000 },
+      ],
+    },
+  },
+  {
+    key: 'vip_active',
+    name: 'VIPs, still coming',
+    why: 'High spend, often, and on schedule. Early access and first look at anything new — not discounts they were never going to need.',
+    rules: {
+      match: 'all',
+      conditions: [
+        { field: 'totalSpent', op: 'gte', value: 25000 },
+        { field: 'totalVisits', op: 'gte', value: 5 },
+        { field: 'lifecycleStage', op: 'in', value: ['ACTIVE', 'DUE_SOON', 'DUE'] },
+      ],
+    },
+  },
+  {
+    key: 'premium_spenders',
+    name: 'Big bill every time',
+    why: 'Different from lifetime value: three visits at ₹8,000 is a premium customer, twenty at ₹2,000 is a loyal one. This list is for packages and upgrades.',
+    rules: { match: 'all', conditions: [{ field: 'avgBill', op: 'gte', value: 3000 }, { field: 'totalVisits', op: 'gte', value: 2 }] },
+  },
+  {
+    key: 'dormant_over_a_year',
+    name: 'Gone over a year',
+    why: 'Not the same problem as a 60-day gap and not worth the same message. Treat as almost-new: reintroduce the salon rather than reminding them of it.',
+    rules: { match: 'all', conditions: [{ field: 'lifecycleStage', op: 'in', value: ['DORMANT'] }] },
+  },
+  {
+    key: 'no_show_risk',
+    name: 'Misses appointments',
+    why: 'Not a campaign — a booking policy. Confirm these before holding a chair, and consider a deposit for the long services.',
+    rules: { match: 'all', conditions: [{ field: 'noShowCount', op: 'gte', value: 2 }] },
+  },
+  {
+    key: 'referral_candidates',
+    name: 'Happy regulars worth asking',
+    why: 'Been several times and rated you well. The only list that should be asked for a referral or a public review.',
+    rules: {
+      match: 'all',
+      conditions: [
+        { field: 'totalVisits', op: 'gte', value: 5 },
+        { field: 'ratedAtLeast', op: 'gte', value: 4 },
+        { field: 'lifecycleStage', op: 'nin', value: ['AT_RISK', 'LAPSED', 'DORMANT'] },
+      ],
+    },
+  },
+
   {
     key: 'one_visit_wonders',
     name: 'Came once, never again',

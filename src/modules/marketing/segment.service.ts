@@ -159,6 +159,54 @@ function conditionToWhere(
     case 'neverVisited':
       return isTrue ? { totalVisits: 0 } : { totalVisits: { gt: 0 } };
 
+    /**
+     * THE CUSTOMER'S OWN CLOCK.
+     *
+     * These read the columns maintained beside the other rollups, so "late for
+     * them" is an indexed query rather than a pass over the whole book. The
+     * work is done when a bill is raised, not when a campaign is sent.
+     */
+    case 'lifecycleStage': {
+      const stages = (Array.isArray(value) ? value : [value]).map(String) as Prisma.CustomerWhereInput['lifecycleStage'][];
+      if (op === 'nin') return { lifecycleStage: { notIn: stages as never } };
+      return { lifecycleStage: { in: stages as never } };
+    }
+
+    /** Due within N days, on their own cycle — including anyone already due. */
+    case 'dueWithinDays':
+      return {
+        expectedNextVisitAt: { not: null, lte: dayjs().add(Number(value), 'day').toDate() },
+      };
+
+    /**
+     * Past due by N days. Not the same as "N days since their last visit":
+     * a customer due every 21 days who came 40 days ago is 19 days overdue,
+     * while a six-monthly customer at 40 days is not overdue at all.
+     */
+    case 'overdueByDays':
+      return {
+        expectedNextVisitAt: { not: null, lte: dayjs().subtract(Number(value), 'day').toDate() },
+      };
+
+    case 'visitIntervalDays':
+      return { visitIntervalDays: numericFilter(op, value) as Prisma.IntNullableFilter };
+
+    /**
+     * Whether the rhythm is earned or borrowed from the salon default. Matters
+     * for a campaign that leans on timing: acting on a guessed cycle is how a
+     * customer gets chased two weeks early.
+     */
+    case 'hasKnownRhythm':
+      return isTrue ? { visitIntervalDays: { not: null } } : { visitIntervalDays: null };
+
+    case 'noShowCount':
+      return { noShowCount: numericFilter(op, value) as Prisma.IntFilter };
+
+    case 'lastServiceCategory': {
+      const ids = (Array.isArray(value) ? value : [value]).map(String);
+      return { lastServiceCategoryId: { in: ids } };
+    }
+
     case 'birthdayMonth':
       return { dob: { not: null } };
     case 'birthdayInNextDays':

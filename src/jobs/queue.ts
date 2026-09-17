@@ -18,6 +18,7 @@ export type JobType =
   | 'membership.expiry_sweep'
   | 'package.expiry_sweep'
   | 'loyalty.expiry_sweep'
+  | 'lifecycle.sweep'
   | 'segment.recompute'
   | 'winback.sweep'
   | 'birthday.sweep'

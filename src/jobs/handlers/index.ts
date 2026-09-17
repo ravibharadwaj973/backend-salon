@@ -225,6 +225,15 @@ const handlers: Record<JobType, JobHandler> = {
     return { expired };
   },
 
+  /**
+   * Stages move with the calendar, so they are re-derived nightly. Runs before
+   * segment.recompute, because every lifecycle segment reads what this writes.
+   */
+  'lifecycle.sweep': async () => {
+    const { sweepLifecycleStages } = await import('../../modules/customers/lifecycle-sweep');
+    return sweepLifecycleStages();
+  },
+
   'segment.recompute': async () => {
     const segments = await runUnscoped(() => prisma.segment.findMany({ where: { isDynamic: true }, select: { id: true, tenantId: true } }));
     let updated = 0;

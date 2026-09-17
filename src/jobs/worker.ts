@@ -132,6 +132,9 @@ function registerSchedules(): void {
 
   // 01:00 — housekeeping: loyalty expiry, segment counts, challenge enrolment.
   cron.schedule('0 1 * * *', () => void enqueue('loyalty.expiry_sweep', {}, { tenantId: null }));
+  // 01:10 — re-derive where each customer sits in their own visit cycle. Must
+  // run BEFORE segment.recompute: every lifecycle segment reads what it writes.
+  cron.schedule('10 1 * * *', () => void enqueue('lifecycle.sweep', {}, { tenantId: null }));
   cron.schedule('20 1 * * *', () => void enqueue('segment.recompute', {}, { tenantId: null }));
   cron.schedule('40 1 * * *', () => void enqueue('challenge.progress', {}, { tenantId: null }));
   // 08:00 — renewal reminders, before the salon gets busy. Warns only; nothing
@@ -199,4 +202,3 @@ if (require.main === module) {
     process.exit(1);
   });
 }
-// //jhfiiquweyrwiuhk34hr8w8rhi34rb3

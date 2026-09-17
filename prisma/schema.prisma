@@ -190,6 +190,21 @@ enum Channel {
   IN_APP
 }
 
+/// Where a customer sits against their OWN visit cycle, not a fixed number of
+/// days. The order is the order they travel through it.
+enum LifecycleStage {
+  NEVER_VISITED
+  NEW
+  ONE_TIME
+  ACTIVE
+  DUE_SOON
+  DUE
+  OVERDUE
+  AT_RISK
+  LAPSED
+  DORMANT
+}
+
 enum ConsentStatus {
   UNKNOWN
   OPTED_IN
@@ -1261,6 +1276,32 @@ model Customer {
   currentStreak  Int      @default(0)
   longestStreak  Int      @default(0)
 
+  /// THE CUSTOMER'S OWN CLOCK. Maintained alongside the rollups above.
+  ///
+  /// "Not seen in 45 days" is wrong for almost everybody: a three-weekly
+  /// haircut is a month late at 45 days, and a twice-a-year balayage is
+  /// perfectly on schedule. These three columns let a segment ask "late for
+  /// THEM?" instead, in plain indexed SQL rather than in memory.
+  ///
+  /// visitIntervalDays is the median gap over their recent visits — the median
+  /// because one year abroad would otherwise double a monthly regular's cycle
+  /// and stop the salon chasing them. Null until three intervals exist, since
+  /// a single gap is a coincidence, not a habit.
+  visitIntervalDays    Int?
+  /// How many intervals the figure rests on. 0 means the salon-wide fallback.
+  visitIntervalBasis   Int      @default(0)
+  /// When they are due, on their own clock. Indexed: this is what "due now"
+  /// and "due this week" segments actually filter on.
+  expectedNextVisitAt  DateTime?
+  /// Where they sit on the ladder, recomputed with the rollups.
+  lifecycleStage       LifecycleStage @default(NEVER_VISITED)
+
+  /// Missed appointments, for the segments that protect chair time.
+  noShowCount    Int      @default(0)
+  /// What they last actually bought — different services have different
+  /// natural cycles, and a colour reminder to a waxing customer is noise.
+  lastServiceCategoryId String?
+
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -1294,6 +1335,8 @@ model Customer {
   @@index([tenantId, lastVisitAt])
   @@index([tenantId, branchId])
   @@index([tenantId, tier])
+  @@index([tenantId, lifecycleStage])
+  @@index([tenantId, expectedNextVisitAt])
   @@map("customers")
 }
 
