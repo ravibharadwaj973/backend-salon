@@ -29,6 +29,34 @@ import { meterFor, usageSummary } from '../quotas/quota.service';
  * useful the same afternoon.
  */
 
+/**
+ * What to tell someone whose message will be recorded but not delivered.
+ *
+ * The old sentence said "your salon has not connected email yet" and then
+ * offered to send it "from your own WhatsApp" — on the email tab, where there
+ * is no such button. It was written for WhatsApp and reused for everything.
+ *
+ * It also said nothing about WHY. Half-configured looks identical to
+ * unconfigured from here, so somebody who has just pasted an API key reads
+ * "not connected", assumes it did not save, and pastes it again.
+ */
+export function notLiveReason(channel: Channel, missing: string | null): string {
+  const detail = missing ? ` What is missing: ${missing}.` : '';
+
+  if (channel === 'WHATSAPP') {
+    return (
+      'Your salon’s WhatsApp is not connected yet, so this would be recorded but not delivered. ' +
+      `You can still send it from your own WhatsApp below.${detail}`
+    );
+  }
+
+  const what = channel === 'EMAIL' ? 'Email' : 'SMS';
+  return (
+    `${what} is not connected yet, so this would be recorded but not delivered — ` +
+    `it will show in Messages as skipped.${detail} Set it up in Settings → Messaging.`
+  );
+}
+
 export interface SharePreviewInput {
   channel: Channel;
   customerId?: string;
@@ -102,7 +130,7 @@ export async function previewShare(tenantId: string, input: SharePreviewInput): 
   const consentStatus = consentFor(customer, input.channel);
   const consentOk = consentAllows(category, consentStatus as never);
 
-  const { live, source } = await resolveProvider(input.channel, tenantId);
+  const { live, source, missing } = await resolveProvider(input.channel, tenantId);
 
   const meter = meterFor(input.channel, category);
   let available: number | null = null;
@@ -138,9 +166,7 @@ export async function previewShare(tenantId: string, input: SharePreviewInput): 
     delivery: {
       live,
       source,
-      reason: live
-        ? null
-        : `Your salon has not connected ${input.channel.toLowerCase()} yet, so this would be recorded but not delivered. You can still send it from your own WhatsApp below.`,
+      reason: live ? null : notLiveReason(input.channel, missing),
     },
     quota: { meter, available },
     whatsappLink,

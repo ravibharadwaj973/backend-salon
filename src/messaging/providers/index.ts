@@ -32,6 +32,15 @@ export interface ResolvedProvider {
   /** False when we fell back to logging because nothing is configured. */
   live: boolean;
   source: 'tenant' | 'environment' | 'none';
+  /**
+   * When not live, what is actually missing.
+   *
+   * "Not connected" is a useless thing to read when you have just pasted an
+   * API key and saved it. Half-configured is the common case — a key with no
+   * from-address, a WhatsApp number saved but never verified — and it looks
+   * identical to nothing at all from the send screen.
+   */
+  missing: string | null;
 }
 
 export async function resolveProvider(channel: Channel, tenantId: string | null): Promise<ResolvedProvider> {
@@ -49,6 +58,7 @@ export async function resolveProvider(channel: Channel, tenantId: string | null)
           }),
           live: true,
           source: 'tenant',
+          missing: null,
         };
       }
       if (env.MESSAGING_DRIVER === 'whatsapp_cloud' && env.WHATSAPP_ACCESS_TOKEN && env.WHATSAPP_PHONE_NUMBER_ID) {
@@ -59,9 +69,19 @@ export async function resolveProvider(channel: Channel, tenantId: string | null)
           }),
           live: true,
           source: 'environment',
+          missing: null,
         };
       }
-      return { provider: new ConsoleProvider('WHATSAPP'), live: false, source: 'none' };
+      return {
+        provider: new ConsoleProvider('WHATSAPP'),
+        live: false,
+        source: 'none',
+        missing: whatIsMissing([
+          [!config?.waPhoneNumberId, 'the WhatsApp Phone Number ID'],
+          [!config?.waAccessToken, 'the access token'],
+          [Boolean(config?.waAccessToken && config.waPhoneNumberId && config.waStatus !== 'CONNECTED'), 'a successful test send — the number is saved but not verified yet'],
+        ]),
+      };
     }
 
     case 'SMS': {
@@ -75,6 +95,7 @@ export async function resolveProvider(channel: Channel, tenantId: string | null)
           }),
           live: true,
           source: 'tenant',
+          missing: null,
         };
       }
       if (env.SMS_DRIVER === 'msg91' && env.SMS_API_KEY && env.SMS_SENDER_ID) {
@@ -86,9 +107,19 @@ export async function resolveProvider(channel: Channel, tenantId: string | null)
           }),
           live: true,
           source: 'environment',
+          missing: null,
         };
       }
-      return { provider: new ConsoleProvider('SMS'), live: false, source: 'none' };
+      return {
+        provider: new ConsoleProvider('SMS'),
+        live: false,
+        source: 'none',
+        missing: whatIsMissing([
+          [!config?.smsApiKey, 'the SMS API key'],
+          [!config?.smsSenderId, 'the DLT-registered sender ID'],
+          [Boolean(config?.smsApiKey && config.smsSenderId && config.smsStatus !== 'CONNECTED'), 'a successful test send — the details are saved but not verified yet'],
+        ]),
+      };
     }
 
     case 'EMAIL': {
@@ -102,6 +133,7 @@ export async function resolveProvider(channel: Channel, tenantId: string | null)
           }),
           live: true,
           source: 'tenant',
+          missing: null,
         };
       }
       if (env.EMAIL_DRIVER === 'resend' && env.EMAIL_API_KEY && env.EMAIL_FROM_ADDRESS) {
@@ -122,14 +154,46 @@ export async function resolveProvider(channel: Channel, tenantId: string | null)
           }),
           live: true,
           source: 'environment',
+          missing: null,
         };
       }
-      return { provider: new ConsoleProvider('EMAIL'), live: false, source: 'none' };
+      // The platform fallback is the usual way email is sent, so when the salon
+      // has configured nothing itself, say what the SERVER is missing — that is
+      // where somebody setting Resend up has actually gone wrong.
+      const salonTried = Boolean(config?.emailApiKey || config?.emailFromAddress);
+      return {
+        provider: new ConsoleProvider('EMAIL'),
+        live: false,
+        source: 'none',
+        missing: salonTried
+          ? whatIsMissing([
+              [!config?.emailApiKey, 'the email API key'],
+              [!config?.emailFromAddress, 'the from address'],
+              [Boolean(config?.emailApiKey && config.emailFromAddress && config.emailStatus !== 'CONNECTED'), 'a successful test send — the details are saved but not verified yet'],
+            ])
+          : whatIsMissing([
+              [!env.EMAIL_API_KEY, 'RESEND_API_KEY on the server'],
+              [!env.EMAIL_FROM_ADDRESS, 'RESEND_FROM_EMAIL on the server — an address on the verified domain, not the bare domain'],
+            ]),
+      };
     }
 
     default:
-      return { provider: new ConsoleProvider(channel), live: false, source: 'none' };
+      return { provider: new ConsoleProvider(channel), live: false, source: 'none', missing: null };
   }
+}
+
+/**
+ * Join the reasons that apply into one readable phrase, or null if none do.
+ *
+ * Listing everything that is absent beats naming only the first: somebody who
+ * fixes one thing and sees the same screen again assumes it did not save.
+ */
+function whatIsMissing(checks: [boolean, string][]): string | null {
+  const reasons = checks.filter(([applies]) => applies).map(([, reason]) => reason);
+  if (reasons.length === 0) return null;
+  if (reasons.length === 1) return reasons[0]!;
+  return `${reasons.slice(0, -1).join(', ')} and ${reasons[reasons.length - 1]}`;
 }
 
 /** Synchronous fallback for callers with no tenant in hand (tests, tooling). */
