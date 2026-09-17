@@ -17,12 +17,12 @@ async function bootstrap(): Promise<void> {
       { port: env.PORT, env: env.NODE_ENV, prefix: env.API_PREFIX },
       `Parlon API listening on http://localhost:${env.PORT}${env.API_PREFIX}`,
     );
-  });
+  })
 
   // In small deployments the worker runs in-process; set JOB_WORKER_ENABLED=false
   // and run `npm run start:worker` separately once volume justifies it.
   if (env.JOB_WORKER_ENABLED) {
-    await reclaimStuckJobs();
+    await reclaimStuckJobs()
     startWorker();
   }
 }
