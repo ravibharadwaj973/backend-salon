@@ -59,6 +59,11 @@ const envSchema = z.object({
   WHATSAPP_PHONE_NUMBER_ID: z.string().optional().default(''),
   WHATSAPP_ACCESS_TOKEN: z.string().optional().default(''),
   WHATSAPP_WEBHOOK_VERIFY_TOKEN: z.string().optional().default(''),
+  /// The Meta app secret, used to check the X-Hub-Signature-256 header on every
+  /// webhook. One value for the whole platform, because every salon's number
+  /// reports to the same Meta app. Left empty, signatures cannot be checked and
+  /// anyone who finds the webhook URL can post fake delivery receipts.
+  WHATSAPP_APP_SECRET: z.string().optional().default(''),
   // Platform-level fallbacks. A real salon connects its own accounts; these
   // exist for the demo tenant and for local development.
   SMS_DRIVER: z.enum(['console', 'msg91']).default('console'),

@@ -5,6 +5,8 @@ import { asyncHandler } from '../../core/http';
 import { env } from '../../config/env';
 import { logger } from '../../core/logger';
 import { applyStatusUpdate } from '../../messaging/dispatcher';
+import { normalizePhone } from '../../core/ids';
+import { verifyWhatsAppSignature } from './whatsapp-signature';
 import type { Prisma } from '@prisma/client';
 
 const router = Router();
@@ -16,15 +18,38 @@ interface CloudApiStatus {
   errors?: { title: string; message?: string }[];
 }
 
+interface CloudApiChangeValue {
+  /**
+   * Which of our salons this change is about. Every salon on the platform
+   * reports to this one webhook URL, and `phone_number_id` is the only thing
+   * in the payload that identifies whose number it is.
+   */
+  metadata?: { display_phone_number?: string; phone_number_id?: string };
+  statuses?: CloudApiStatus[];
+  messages?: { from: string; text?: { body: string }; type: string }[];
+}
+
 interface CloudApiWebhook {
-  entry?: {
-    changes?: {
-      value?: {
-        statuses?: CloudApiStatus[];
-        messages?: { from: string; text?: { body: string }; type: string }[];
-      };
-    }[];
-  }[];
+  entry?: { changes?: { value?: CloudApiChangeValue }[] }[];
+}
+
+/**
+ * The salon a phone number belongs to.
+ *
+ * `waPhoneNumberId` is unique, so this is a single indexed lookup. A number we
+ * do not recognise is not an error: Meta will keep delivering events for a
+ * salon that has since disconnected, and for numbers on the same app that
+ * belong to nobody here yet.
+ */
+async function tenantForPhoneNumber(phoneNumberId: string | undefined): Promise<string | null> {
+  if (!phoneNumberId) return null;
+  const config = await runUnscoped(() =>
+    prisma.tenantMessagingConfig.findUnique({
+      where: { waPhoneNumberId: phoneNumberId },
+      select: { tenantId: true },
+    }),
+  );
+  return config?.tenantId ?? null;
 }
 
 /** Meta's verification handshake. */
@@ -46,6 +71,7 @@ router.get('/whatsapp', (req, res) => {
  */
 router.post(
   '/whatsapp',
+  verifyWhatsAppSignature,
   asyncHandler(async (req, res) => {
     res.status(200).json({ received: true });
 
@@ -57,41 +83,65 @@ router.post(
       }),
     ).catch(() => undefined);
 
-    const statuses = body.entry?.flatMap((e) => e.changes?.flatMap((c) => c.value?.statuses ?? []) ?? []) ?? [];
+    // Walked change by change rather than flattened, because each change
+    // carries its own phone_number_id and therefore its own salon. Flattening
+    // the whole payload first throws that away — which is how a STOP meant for
+    // one salon ended up applied to every salon on the platform.
+    const changes = body.entry?.flatMap((e) => e.changes ?? []) ?? [];
 
-    for (const status of statuses) {
-      const mapped =
-        status.status === 'delivered'
-          ? ('DELIVERED' as const)
-          : status.status === 'read'
-            ? ('READ' as const)
-            : status.status === 'failed'
-              ? ('FAILED' as const)
-              : null;
-      if (!mapped) continue;
+    for (const change of changes) {
+      const value = change.value;
+      if (!value) continue;
 
-      await applyStatusUpdate({
-        providerMessageId: status.id,
-        status: mapped,
-        errorMessage: status.errors?.[0]?.title,
-        at: status.timestamp ? new Date(Number(status.timestamp) * 1000) : new Date(),
-      }).catch((err: unknown) => logger.warn({ err, id: status.id }, 'webhook status update failed'));
-    }
+      const phoneNumberId = value.metadata?.phone_number_id;
+      const tenantId = await tenantForPhoneNumber(phoneNumberId);
 
-    // Inbound replies: STOP / UNSUBSCRIBE must switch marketing consent off.
-    const inbound = body.entry?.flatMap((e) => e.changes?.flatMap((c) => c.value?.messages ?? []) ?? []) ?? [];
-    for (const message of inbound) {
-      const text = message.text?.body?.trim().toUpperCase();
-      if (!text || !['STOP', 'UNSUBSCRIBE', 'OPT OUT', 'OPTOUT'].includes(text)) continue;
+      if (!tenantId) {
+        // Not ours, or a salon that has since disconnected. Recorded above as a
+        // webhook event either way, so nothing is lost.
+        logger.warn({ phoneNumberId }, 'webhook for a phone number no salon has connected');
+        continue;
+      }
 
-      const phone = message.from.replace(/^\+?91/, '');
-      await runUnscoped(() =>
-        prisma.customer.updateMany({
-          where: { phone },
-          data: { whatsappConsent: 'OPTED_OUT', consentUpdatedAt: new Date() },
-        }),
-      ).catch(() => undefined);
-      logger.info({ phone }, 'customer opted out via WhatsApp');
+      // ------------------------------------------------------- delivery ---
+      for (const status of value.statuses ?? []) {
+        const mapped =
+          status.status === 'delivered'
+            ? ('DELIVERED' as const)
+            : status.status === 'read'
+              ? ('READ' as const)
+              : status.status === 'failed'
+                ? ('FAILED' as const)
+                : null;
+        if (!mapped) continue;
+
+        await applyStatusUpdate({
+          providerMessageId: status.id,
+          status: mapped,
+          errorMessage: status.errors?.[0]?.title,
+          at: status.timestamp ? new Date(Number(status.timestamp) * 1000) : new Date(),
+          tenantId,
+        }).catch((err: unknown) => logger.warn({ err, id: status.id }, 'webhook status update failed'));
+      }
+
+      // --------------------------------------------------------- inbound ---
+      // STOP / UNSUBSCRIBE switches marketing consent off — for the salon the
+      // customer actually messaged, and only that one. Someone who tells their
+      // hairdresser to stop has not opted out of the spa across town.
+      for (const message of value.messages ?? []) {
+        const text = message.text?.body?.trim().toUpperCase();
+        if (!text || !['STOP', 'UNSUBSCRIBE', 'OPT OUT', 'OPTOUT'].includes(text)) continue;
+
+        const phone = normalizePhone(message.from);
+        const result = await runUnscoped(() =>
+          prisma.customer.updateMany({
+            where: { tenantId, phone },
+            data: { whatsappConsent: 'OPTED_OUT', consentUpdatedAt: new Date() },
+          }),
+        ).catch(() => ({ count: 0 }));
+
+        logger.info({ tenantId, phone, updated: result.count }, 'customer opted out via WhatsApp');
+      }
     }
   }),
 );

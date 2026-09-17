@@ -426,9 +426,21 @@ export async function applyStatusUpdate(input: {
   status: 'DELIVERED' | 'READ' | 'FAILED' | 'CLICKED';
   errorMessage?: string;
   at?: Date;
+  /**
+   * The salon the webhook was for, worked out from the phone number the event
+   * arrived on. A provider message id ought to be globally unique, so this is
+   * belt and braces — but it costs one indexed column and it means a forged or
+   * misrouted id can never touch another salon's records.
+   */
+  tenantId?: string;
 }) {
   const log = await runUnscoped(() =>
-    prisma.messageLog.findFirst({ where: { providerMessageId: input.providerMessageId } }),
+    prisma.messageLog.findFirst({
+      where: {
+        providerMessageId: input.providerMessageId,
+        ...(input.tenantId ? { tenantId: input.tenantId } : {}),
+      },
+    }),
   );
   if (!log) return null;
 

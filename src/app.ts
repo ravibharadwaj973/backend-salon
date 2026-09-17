@@ -70,7 +70,20 @@ export function createApp(): Express {
     }),
   );
   app.use(compression());
-  app.use(express.json({ limit: '5mb' }));
+  // The raw body is kept for webhook routes only. Meta signs the exact bytes it
+  // sent, so a signature cannot be checked against a re-serialised object —
+  // key order and whitespace would differ. Holding the buffer for every request
+  // would double the memory cost of a large upload, hence the path test.
+  app.use(
+    express.json({
+      limit: '5mb',
+      verify: (req, _res, buf) => {
+        if (req.url?.includes('/webhooks/')) {
+          (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
+        }
+      },
+    }),
+  );
   app.use(express.urlencoded({ extended: true, limit: '5mb' }));
   app.use(cookieParser());
 

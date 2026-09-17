@@ -511,10 +511,20 @@ model TenantMessagingConfig {
 
   // --- WhatsApp Cloud API (per salon, via Meta embedded signup) ---
   waStatus         MessagingSetupStatus @default(NOT_CONNECTED)
-  waPhoneNumberId  String?
+  /// Meta's id for this salon's number. Unique across the platform because one
+  /// WhatsApp number belongs to exactly one salon — and because every webhook
+  /// arrives carrying only this id, so it is how an inbound event finds the
+  /// tenant it belongs to. Without that lookup a STOP from one salon's
+  /// customer would be applied to every salon.
+  waPhoneNumberId  String?  @unique
   waBusinessId     String?
   /// Stored server-side only and never returned to the browser in full.
   waAccessToken    String?
+  /// When Meta says this token stops working. A system-user token is
+  /// effectively permanent and leaves this null; the 24-hour tokens from the
+  /// dashboard do not, and knowing which is which is the difference between
+  /// "reconnect WhatsApp" and messages silently failing.
+  waTokenExpiresAt DateTime?
   waDisplayNumber  String?
   waVerifiedAt     DateTime?
 
