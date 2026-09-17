@@ -128,14 +128,33 @@ export async function sendTestMessage(tenantId: string, channel: Channel, to: st
     prisma.tenant.findUnique({ where: { id: tenantId }, select: { name: true } }),
   );
 
-  const result = await provider.send({
-    to,
-    channel,
-    body: `This is a test message from ${tenant?.name ?? 'your salon'}. If you can read this, your ${channel.toLowerCase()} setup is working.`,
-    subject: 'Test message',
-  });
+  const body = `This is a test message from ${tenant?.name ?? 'your salon'}. If you can read this, your ${channel.toLowerCase()} setup is working.`;
 
-  return { ...result, source };
+  // WhatsApp will not accept free-form text from a business unless the customer
+  // messaged first and the 24-hour service window is still open. On a freshly
+  // connected number nobody has messaged anybody, so a plain text test fails
+  // with error 131047 — which reads like a broken connection when the
+  // connection is in fact fine.
+  //
+  // `hello_world` is the pre-approved template every WhatsApp Business Account
+  // is created with. Sending that proves the token, the phone number ID and the
+  // recipient are all good, which is the only thing this button is for. The
+  // wording is Meta's, not ours; that is the trade for a test that works on a
+  // connection nobody has used yet.
+  const result = await provider.send(
+    channel === 'WHATSAPP'
+      ? { to, channel, body, templateName: 'hello_world', language: 'en_US' }
+      : { to, channel, body, subject: 'Test message' },
+  );
+
+  return {
+    ...result,
+    source,
+    note:
+      channel === 'WHATSAPP'
+        ? 'Sent as the standard hello_world template. WhatsApp only allows your own wording once the customer has replied.'
+        : undefined,
+  };
 }
 
 // ------------------------------------------------------------ automations --
