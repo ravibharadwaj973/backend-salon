@@ -17,7 +17,7 @@ import type { SegmentRules } from './segment.service';
 import type { CampaignInput } from './campaign.service';
 import type { JourneyInput } from './journey.service';
 import type { TemplateInput } from './template.service';
-import type { Channel, MessageStatus } from '@prisma/client';
+import type { Channel, MessageStatus, TemplateCategory } from '@prisma/client';
 import { parseStatusFilter } from './message-filter';
 
 const channelSchema = z.enum(['WHATSAPP', 'SMS', 'EMAIL', 'IN_APP']);
@@ -88,6 +88,29 @@ segmentRouter.post(
   asyncHandler(async (req, res) => {
     const { rules, branchId } = req.body as { rules: SegmentRules; branchId?: string };
     return ok(res, await segments.previewSegment(rules, branchId));
+  }),
+);
+
+/**
+ * What a saved segment can actually reach, per channel.
+ *
+ * Separate from the segment's own size because they are different numbers and
+ * the difference is the whole point: a 2,400-customer segment might be 2,380
+ * on WhatsApp and 900 on email. The confirmation before a send asks this, so
+ * the figure shown is the figure that goes out.
+ */
+segmentRouter.get(
+  '/:id/reach',
+  requirePermission(PERMISSIONS.CAMPAIGN_VIEW),
+  validate({
+    params: idParam,
+    query: z.object({
+      category: z.enum(['UTILITY', 'MARKETING', 'AUTHENTICATION', 'SERVICE']).default('MARKETING'),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const { category } = req.query as unknown as { category: TemplateCategory };
+    return ok(res, await segments.segmentReach(req.params.id!, category));
   }),
 );
 

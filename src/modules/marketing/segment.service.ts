@@ -5,6 +5,9 @@ import { optionalBranchFilter } from '../../core/scope';
 import { BadRequest, Conflict, NotFound } from '../../core/errors';
 import { pageParams } from '../../core/http';
 import { dayjs } from '../../core/dates';
+import { CONTACT_SELECT, reachAll, reachAllInDb } from './reach';
+import type { Reach } from './reach';
+import type { TemplateCategory } from '@prisma/client';
 
 /**
  * Segment rules are stored as JSON so owners can build audiences in the UI
@@ -372,29 +375,28 @@ export async function previewSegment(rules: SegmentRules, branchId?: string, sam
         id: true,
         firstName: true,
         lastName: true,
-        phone: true,
-        email: true,
         dob: true,
         anniversary: true,
         tier: true,
         totalVisits: true,
         totalSpent: true,
         lastVisitAt: true,
-        whatsappConsent: true,
-        emailConsent: true,
+        // phone, email and the three consent columns — the sample shows them
+        // and reachability counts them, so they come from one place.
+        ...CONTACT_SELECT,
       },
     });
     const matched = postFilter(rows, rules);
     return {
       count: matched.length,
       approximate: rows.length === POST_FILTER_CAP,
-      whatsappReachable: matched.filter((c) => c.whatsappConsent === 'OPTED_IN' && c.phone).length,
-      emailReachable: matched.filter((c) => c.emailConsent === 'OPTED_IN' && c.email).length,
+      // Counted from the rows we already pulled, so it costs nothing extra.
+      reach: reachAll(matched, 'MARKETING'),
       sample: matched.slice(0, sampleSize),
     };
   }
 
-  const [count, sample, whatsapp, email] = await Promise.all([
+  const [count, sample, reach] = await Promise.all([
     prisma.customer.count({ where }),
     prisma.customer.findMany({
       where,
@@ -404,23 +406,21 @@ export async function previewSegment(rules: SegmentRules, branchId?: string, sam
         id: true,
         firstName: true,
         lastName: true,
-        phone: true,
-        email: true,
         dob: true,
         anniversary: true,
         tier: true,
         totalVisits: true,
         totalSpent: true,
         lastVisitAt: true,
-        whatsappConsent: true,
-        emailConsent: true,
+        // phone, email and the three consent columns — the sample shows them
+        // and reachability counts them, so they come from one place.
+        ...CONTACT_SELECT,
       },
     }),
-    prisma.customer.count({ where: { ...where, whatsappConsent: 'OPTED_IN' } }),
-    prisma.customer.count({ where: { ...where, emailConsent: 'OPTED_IN', email: { not: null } } }),
+    reachAllInDb(prisma, where, 'MARKETING'),
   ]);
 
-  return { count, approximate: false, whatsappReachable: whatsapp, emailReachable: email, sample };
+  return { count, approximate: false, reach, sample };
 }
 
 export async function listSegments(input: { page?: number; pageSize?: number }) {
@@ -546,6 +546,36 @@ export async function resolveMembers(
   }
 
   return filtered;
+}
+
+/**
+ * How many of a saved segment each channel can actually reach.
+ *
+ * This is the number a campaign is about to send, worked out the same way the
+ * send itself works it out — same rules, same post-filter, same consent test —
+ * so the figure on the confirmation screen is the figure that goes out. A
+ * confirmation that says 2,400 and sends 900 is worse than no confirmation,
+ * because the owner stops reading it.
+ */
+export async function segmentReach(segmentId: string, category: TemplateCategory = 'MARKETING'): Promise<Reach> {
+  const segment = await prisma.segment.findUnique({ where: { id: segmentId } });
+  if (!segment) throw NotFound('Segment');
+
+  const rules = segment.rules as unknown as SegmentRules;
+  const where = await buildSegmentWhere(segment.tenantId, rules);
+
+  // An occasion rule ("birthday this week") is applied in memory, so counting
+  // in the database would count people the send will skip.
+  if (hasPostFilter(rules)) {
+    const rows = await prisma.customer.findMany({
+      where,
+      select: { dob: true, anniversary: true, ...CONTACT_SELECT },
+      take: 50_000,
+    });
+    return reachAll(postFilter(rows, rules), category);
+  }
+
+  return reachAllInDb(prisma, where, category);
 }
 
 /** Materialise a static snapshot of the segment's members. */
