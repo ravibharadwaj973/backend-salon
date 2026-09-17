@@ -62,9 +62,24 @@ const SORTABLE = new Set(['createdAt', 'lastVisitAt', 'totalSpent', 'totalVisits
 
 export function buildCustomerWhere(tenantId: string, input: ListCustomersInput): Prisma.CustomerWhereInput {
   const q = input.q?.trim();
+
+  // Both the branch scope and a multi-word search want to live in `AND`, and
+  // object spread would let the second silently replace the first — dropping
+  // the branch scope the moment somebody typed a name, so a receptionist at
+  // one shop would see customers from every shop. Merge the arrays instead.
+  // Prisma types AND as one object or an array of them, so normalise before
+  // concatenating.
+  const asList = (value: Prisma.CustomerWhereInput['AND']): Prisma.CustomerWhereInput[] =>
+    value === undefined ? [] : Array.isArray(value) ? value : [value];
+
+  const branch = optionalBranchFilter(input.branchId) as Prisma.CustomerWhereInput;
+  const search = searchClause(q);
+  const and = [...asList(branch.AND), ...asList(search.AND)];
+
   return {
     tenantId,
-    ...optionalBranchFilter(input.branchId),
+    ...(and.length ? { AND: and } : {}),
+    ...(search.OR ? { OR: search.OR } : {}),
     ...(input.tier ? { tier: input.tier } : {}),
     ...(input.tag ? { tags: { has: input.tag } } : {}),
     ...(input.source ? { source: input.source } : {}),
@@ -93,17 +108,62 @@ export function buildCustomerWhere(tenantId: string, input: ListCustomersInput):
     ...(input.hasMembership === 'false'
       ? { memberships: { none: { status: 'ACTIVE', endAt: { gte: new Date() } } } }
       : {}),
-    ...(q
-      ? {
-          OR: [
-            { firstName: { contains: q, mode: 'insensitive' as const } },
-            { lastName: { contains: q, mode: 'insensitive' as const } },
-            { phone: { contains: normalizePhone(q) } },
-            { email: { contains: q, mode: 'insensitive' as const } },
-            { code: { contains: q.toUpperCase() } },
-          ],
-        }
-      : {}),
+  };
+}
+
+/**
+ * The search box on the customer list.
+ *
+ * Two things this has to get right, both of which it previously got wrong.
+ *
+ * FIRST: a search for text must not include a phone clause. `normalizePhone`
+ * strips everything that is not a digit, so "priya" reduced to the empty
+ * string and the query became `phone LIKE '%%'` — which matches every row in
+ * the table. The OR then matched everything and the filter appeared to do
+ * nothing at all. The phone clause is only added when the query actually
+ * contains digits.
+ *
+ * SECOND: "Priya Sharma" must find Priya Sharma. Comparing the whole phrase
+ * against firstName and then against lastName can never match a name that
+ * spans both columns. So the words are matched independently and ANDed: every
+ * word must appear somewhere in the name, email or code. That also means
+ * "sharma priya" works, and "pri sha" works, which is how people actually type
+ * at a busy counter.
+ */
+export function searchClause(q: string | undefined): Prisma.CustomerWhereInput {
+  const text = q?.trim();
+  if (!text) return {};
+
+  // `lookupTerms` already decides what looks like a phone number, and it does
+  // it properly: a query is a number only when everything left after removing
+  // spaces, +, brackets and dashes is digits. Counting digits alone is not
+  // enough — the customer code "C-00003" has five of them, and treating that
+  // as a phone number means searching by code silently finds nobody.
+  const { phone } = lookupTerms(text);
+
+  if (phone) {
+    // The code goes in too, so someone who types "00003" off a printed bill
+    // finds C-00003 rather than nothing.
+    return {
+      OR: [
+        { phone: { contains: phone } },
+        { altPhone: { contains: phone } },
+        { code: { contains: phone, mode: 'insensitive' as const } },
+      ],
+    };
+  }
+
+  const words = text.split(/\s+/).filter(Boolean);
+
+  return {
+    AND: words.map((word) => ({
+      OR: [
+        { firstName: { contains: word, mode: 'insensitive' as const } },
+        { lastName: { contains: word, mode: 'insensitive' as const } },
+        { email: { contains: word, mode: 'insensitive' as const } },
+        { code: { contains: word, mode: 'insensitive' as const } },
+      ],
+    })),
   };
 }
 
