@@ -211,7 +211,10 @@ export async function dispatchCampaign(campaignId: string) {
 
   const members = await runUnscoped(() =>
     resolveMembers(campaign.segmentId!, {
-      requireConsent: campaign.template!.category === 'MARKETING' ? campaign.channel as 'WHATSAPP' | 'SMS' | 'EMAIL' : undefined,
+      requireConsent: campaign.template!.category === 'MARKETING' ? (campaign.channel as 'WHATSAPP' | 'SMS' | 'EMAIL') : undefined,
+      // Nobody without an address on this channel. They cannot be sent to and
+      // must not be billed for.
+      reachableOn: campaign.channel as 'WHATSAPP' | 'SMS' | 'EMAIL',
     }),
   );
 

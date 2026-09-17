@@ -17,7 +17,8 @@ import type { SegmentRules } from './segment.service';
 import type { CampaignInput } from './campaign.service';
 import type { JourneyInput } from './journey.service';
 import type { TemplateInput } from './template.service';
-import type { Channel } from '@prisma/client';
+import type { Channel, MessageStatus } from '@prisma/client';
+import { parseStatusFilter } from './message-filter';
 
 const channelSchema = z.enum(['WHATSAPP', 'SMS', 'EMAIL', 'IN_APP']);
 
@@ -432,8 +433,15 @@ messageRouter.get(
   validate({
     query: paginationQuery.extend({
       customerId: idSchema.optional(),
+      /// Narrow the log to one campaign's sends — the link from a campaign's
+      /// page lands here, so the reasons live in one table rather than two.
+      campaignId: idSchema.optional(),
       channel: channelSchema.optional(),
-      status: z.string().optional(),
+      /// One status, or several separated by commas — "everything that went
+      /// wrong" is BOUNCED,COMPLAINED,FAILED and is one filter to a human.
+      /// Parsed here rather than cast, so a typed-in status cannot reach
+      /// Prisma as an unknown enum value and turn the page into a 500.
+      status: z.string().optional().transform(parseStatusFilter),
       from: z.coerce.date().optional(),
       to: z.coerce.date().optional(),
     }),
@@ -443,16 +451,18 @@ messageRouter.get(
       page: number;
       pageSize: number;
       customerId?: string;
+      campaignId?: string;
       channel?: Channel;
-      status?: string;
+      status: MessageStatus[];
       from?: Date;
       to?: Date;
     };
 
     const where = {
       ...(q.customerId ? { customerId: q.customerId } : {}),
+      ...(q.campaignId ? { campaignId: q.campaignId } : {}),
       ...(q.channel ? { channel: q.channel } : {}),
-      ...(q.status ? { status: q.status as never } : {}),
+      ...(q.status.length ? { status: { in: q.status } } : {}),
       ...(q.from || q.to ? { queuedAt: { ...(q.from ? { gte: q.from } : {}), ...(q.to ? { lte: q.to } : {}) } } : {}),
     };
 
@@ -465,6 +475,7 @@ messageRouter.get(
         include: {
           customer: { select: { id: true, firstName: true, lastName: true, phone: true } },
           template: { select: { id: true, name: true, category: true } },
+          campaign: { select: { id: true, name: true } },
         },
       }),
       prisma.messageLog.count({ where }),

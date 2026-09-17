@@ -183,6 +183,10 @@ router.post(
     if (!providerMessageId) return;
     const at = body.created_at ? new Date(body.created_at) : new Date();
 
+    // Each Resend event keeps its own meaning rather than collapsing into
+    // "failed". A bounce, a spam complaint and a temporary deferral call for
+    // three different reactions from a salon, and lumping them together hides
+    // the one that actually threatens the sending domain.
     const mapped =
       type === 'email.delivered'
         ? ('DELIVERED' as const)
@@ -190,21 +194,38 @@ router.post(
           ? ('READ' as const)
           : type === 'email.clicked'
             ? ('CLICKED' as const)
-            : type === 'email.bounced' || type === 'email.complained' || type === 'email.delivery_delayed'
-              ? ('FAILED' as const)
-              : null;
+            : type === 'email.bounced'
+              ? ('BOUNCED' as const)
+              : type === 'email.complained'
+                ? ('COMPLAINED' as const)
+                : type === 'email.delivery_delayed'
+                  ? ('DELAYED' as const)
+                  : type === 'email.failed'
+                    ? ('FAILED' as const)
+                    : null;
+
+    // The salon this message belonged to. Looked up from the message itself,
+    // because a Resend event carries nothing that identifies a tenant — and
+    // without it the consent update below would reach across every salon.
+    const owner = await runUnscoped(() =>
+      prisma.messageLog.findFirst({
+        where: { providerMessageId },
+        select: { tenantId: true, customerId: true, toAddress: true },
+      }),
+    );
 
     if (mapped) {
       await applyStatusUpdate({
         providerMessageId,
         status: mapped,
+        tenantId: owner?.tenantId,
         errorMessage:
           type === 'email.bounced'
             ? `Bounced (${body.data?.bounce?.type ?? 'unknown'})`
             : type === 'email.complained'
               ? 'Marked as spam by the recipient'
               : type === 'email.delivery_delayed'
-                ? 'Delivery delayed by the receiving server'
+                ? 'Delivery delayed by the receiving server — it may still arrive'
                 : undefined,
         at,
       }).catch((err: unknown) => logger.warn({ err, providerMessageId }, 'email status update failed'));
@@ -215,19 +236,31 @@ router.post(
       const hardBounce = type === 'email.complained' || body.data?.bounce?.type !== 'Transient';
       if (!hardBounce) return;
 
-      const log = await runUnscoped(() =>
-        prisma.messageLog.findFirst({ where: { providerMessageId }, select: { customerId: true, toAddress: true } }),
-      );
-      const address = log?.toAddress ?? (Array.isArray(body.data?.to) ? body.data?.to[0] : body.data?.to);
+      const address = owner?.toAddress ?? (Array.isArray(body.data?.to) ? body.data?.to[0] : body.data?.to);
       if (!address) return;
 
-      await runUnscoped(() =>
+      // Scoped to the salon that sent it. Matching on the address alone would
+      // opt that person out of every salon on the platform that happens to
+      // have them on file — the same mistake the WhatsApp STOP handler made.
+      // Without a tenant there is nothing safe to do, so nothing is done.
+      if (!owner?.tenantId) {
+        logger.warn({ providerMessageId, type }, 'bounce for a message no salon owns — consent left alone');
+        return;
+      }
+
+      const result = await runUnscoped(() =>
         prisma.customer.updateMany({
-          where: log?.customerId ? { id: log.customerId } : { email: address },
+          where: owner.customerId
+            ? { id: owner.customerId }
+            : { tenantId: owner.tenantId, email: address },
           data: { emailConsent: 'OPTED_OUT', consentUpdatedAt: new Date() },
         }),
-      ).catch(() => undefined);
-      logger.info({ address, type }, 'email consent switched off after bounce or complaint');
+      ).catch(() => ({ count: 0 }));
+
+      logger.info(
+        { tenantId: owner.tenantId, address, type, updated: result.count },
+        'email consent switched off after bounce or complaint',
+      );
     }
   }),
 );

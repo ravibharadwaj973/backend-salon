@@ -219,12 +219,32 @@ enum CampaignStatus {
   CANCELLED
 }
 
+/// Where a message got to.
+///
+/// The happy path climbs: QUEUED -> SENT -> DELIVERED -> READ -> CLICKED.
+/// READ means the recipient saw it — a WhatsApp read receipt or an email open;
+/// they are the same fact and do not need two names.
+///
+/// The rest are endings rather than steps, and each says something a salon
+/// would act on differently:
+///
+///   DELAYED     the receiving server is deferring it. Usually temporary and it
+///               may still land, so it is not a failure yet.
+///   BOUNCED     the address was rejected. A hard bounce means it will never
+///               work and the address should stop being used.
+///   COMPLAINED  they pressed "spam". Worse than a bounce: a few of these and
+///               every salon on the sending domain lands in junk.
+///   FAILED      we could not hand it over at all.
+///   SKIPPED     never attempted — no address, no consent, no allowance.
 enum MessageStatus {
   QUEUED
   SENT
   DELIVERED
   READ
   CLICKED
+  DELAYED
+  BOUNCED
+  COMPLAINED
   FAILED
   SKIPPED
 }

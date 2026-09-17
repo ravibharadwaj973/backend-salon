@@ -486,8 +486,22 @@ export async function deleteSegment(id: string) {
   return prisma.segment.delete({ where: { id } });
 }
 
-/** Resolve a segment to concrete customer ids, ready for a campaign send. */
-export async function resolveMembers(segmentId: string, options: { requireConsent?: 'WHATSAPP' | 'SMS' | 'EMAIL' } = {}) {
+/**
+ * Resolve a segment to concrete customer ids, ready for a campaign send.
+ *
+ * `reachableOn` drops anyone the channel cannot actually reach. Phone is
+ * required on every customer, so it only bites for email: a salon's book is
+ * mostly phone numbers, and a third of it typically has no email address at
+ * all. Without this the campaign walks every one of them, queueMessage returns
+ * null at the last moment, and the run reports hundreds of unexplained skips.
+ *
+ * Counting them would be worse than pointless — it would bill the salon for
+ * messages that were never going to exist.
+ */
+export async function resolveMembers(
+  segmentId: string,
+  options: { requireConsent?: 'WHATSAPP' | 'SMS' | 'EMAIL'; reachableOn?: 'WHATSAPP' | 'SMS' | 'EMAIL' } = {},
+) {
   const segment = await prisma.segment.findUnique({ where: { id: segmentId } });
   if (!segment) throw NotFound('Segment');
 
@@ -503,18 +517,33 @@ export async function resolveMembers(segmentId: string, options: { requireConsen
           ? { emailConsent: 'OPTED_IN' as const }
           : {};
 
+  // An empty string is as unreachable as null, and both occur: the CSV import
+  // stores a blank cell as null, while an edited-then-cleared field can leave
+  // "". Postgres treats them as different values, so both are excluded.
+  const reachableField =
+    options.reachableOn === 'EMAIL'
+      ? { email: { not: null as string | null }, NOT: { email: '' } }
+      : options.reachableOn === 'WHATSAPP' || options.reachableOn === 'SMS'
+        ? { NOT: { phone: '' } }
+        : {};
+
   const customers = await prisma.customer.findMany({
-    where: { ...where, ...consentField },
+    where: { ...where, ...consentField, ...reachableField },
     select: { id: true, dob: true, anniversary: true, phone: true, email: true },
     take: 50_000,
   });
 
   const filtered = postFilter(customers, rules);
 
-  await prisma.segment.update({
-    where: { id: segmentId },
-    data: { lastCount: filtered.length, lastComputedAt: new Date() },
-  });
+  // Only refresh the stored size on an unfiltered resolve. A campaign asking
+  // "who can I email?" must not overwrite the segment's real membership count
+  // with the smaller reachable-by-email number.
+  if (!options.requireConsent && !options.reachableOn) {
+    await prisma.segment.update({
+      where: { id: segmentId },
+      data: { lastCount: filtered.length, lastComputedAt: new Date() },
+    });
+  }
 
   return filtered;
 }

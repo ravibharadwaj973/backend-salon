@@ -211,14 +211,24 @@ export async function queueMessage(input: QueueMessageInput) {
     input.leadId ? prisma.lead.findUnique({ where: { id: input.leadId } }) : null,
   ]);
 
-  const toAddress =
+  // Trimmed, because a field that was typed into and cleared can hold " ",
+  // which is truthy and would be handed to the provider as a recipient.
+  const raw =
     input.toAddress ??
-    (input.channel === 'EMAIL'
-      ? (customer?.email ?? lead?.email ?? '')
-      : toE164(customer?.phone ?? lead?.phone ?? ''));
+    (input.channel === 'EMAIL' ? (customer?.email ?? lead?.email ?? '') : (customer?.phone ?? lead?.phone ?? ''));
 
+  const trimmed = raw.trim();
+  const toAddress = !trimmed ? '' : input.channel === 'EMAIL' ? trimmed : toE164(trimmed);
+
+  // No address, no message. Returning before the log row is created is what
+  // keeps this free: nothing is recorded, nothing is metered, and the salon is
+  // not charged for a customer who never had an email address in the first
+  // place. Campaigns count these as skipped, which is what they are.
   if (!toAddress) {
-    logger.warn({ customerId: input.customerId, leadId: input.leadId }, 'no destination address for message');
+    logger.debug(
+      { channel: input.channel, customerId: input.customerId, leadId: input.leadId },
+      'no address on this channel — nothing queued',
+    );
     return null;
   }
 
@@ -420,10 +430,35 @@ export async function deliver(messageLogId: string) {
   return { ok: result.ok, reason: result.errorMessage };
 }
 
-/** Provider status callbacks (delivered / read / failed). */
+/**
+ * How far along the happy path each status is.
+ *
+ * Providers do not promise ordered delivery of their own callbacks: a click
+ * and an open are generated milliseconds apart and can arrive either way
+ * round, and a delayed `delivered` can turn up after both. Writing whatever
+ * arrived last would walk a message backwards from CLICKED to DELIVERED and
+ * quietly corrupt every campaign's open rate.
+ *
+ * So progress only ever climbs. The endings — bounced, complained, failed —
+ * are outside this ladder and handled separately, because they are the truth
+ * whenever they arrive.
+ */
+const PROGRESS: Record<string, number> = {
+  QUEUED: 0,
+  SENT: 1,
+  DELAYED: 2,
+  DELIVERED: 3,
+  READ: 4,
+  CLICKED: 5,
+};
+
+/** An ending. Always wins, whatever the row said before. */
+const TERMINAL = new Set(['BOUNCED', 'COMPLAINED', 'FAILED']);
+
+/** Provider status callbacks — delivery, opens, clicks, bounces, complaints. */
 export async function applyStatusUpdate(input: {
   providerMessageId: string;
-  status: 'DELIVERED' | 'READ' | 'FAILED' | 'CLICKED';
+  status: 'DELIVERED' | 'READ' | 'FAILED' | 'CLICKED' | 'DELAYED' | 'BOUNCED' | 'COMPLAINED';
   errorMessage?: string;
   at?: Date;
   /**
@@ -445,15 +480,37 @@ export async function applyStatusUpdate(input: {
   if (!log) return null;
 
   const at = input.at ?? new Date();
-  const data: Prisma.MessageLogUpdateInput = { status: input.status };
+  const data: Prisma.MessageLogUpdateInput = {};
+
+  // The timestamps are facts about what happened and are always recorded, even
+  // when the headline status does not move. An open that arrives after a click
+  // still means they opened it.
   if (input.status === 'DELIVERED') data.deliveredAt = at;
   if (input.status === 'READ') data.readAt = at;
   if (input.status === 'CLICKED') data.clickedAt = at;
-  if (input.status === 'FAILED') data.errorMessage = input.errorMessage ?? 'Delivery failed';
+
+  if (TERMINAL.has(input.status)) {
+    data.status = input.status;
+    data.errorMessage =
+      input.errorMessage ??
+      (input.status === 'BOUNCED'
+        ? 'The receiving server rejected this address'
+        : input.status === 'COMPLAINED'
+          ? 'The recipient marked this as spam'
+          : 'Delivery failed');
+  } else if (!TERMINAL.has(log.status)) {
+    // Never walk backwards, and never overwrite an ending that already landed.
+    const current = PROGRESS[log.status] ?? 0;
+    const next = PROGRESS[input.status] ?? 0;
+    if (next > current) data.status = input.status;
+    if (input.status === 'DELAYED' && input.errorMessage) data.errorMessage = input.errorMessage;
+  }
 
   const updated = await runUnscoped(() => prisma.messageLog.update({ where: { id: log.id }, data }));
 
   if (log.campaignId) {
+    // A delay is not an outcome yet, so it moves no counter — the message is
+    // still in flight and will land in one of the others.
     const field =
       input.status === 'DELIVERED'
         ? 'deliveredCount'
@@ -461,7 +518,10 @@ export async function applyStatusUpdate(input: {
           ? 'readCount'
           : input.status === 'CLICKED'
             ? 'clickedCount'
-            : 'failedCount';
+            : input.status === 'DELAYED'
+              ? null
+              : 'failedCount';
+    if (!field) return updated;
     await runUnscoped(() =>
       prisma.campaign.update({ where: { id: log.campaignId! }, data: { [field]: { increment: 1 } } }),
     );
