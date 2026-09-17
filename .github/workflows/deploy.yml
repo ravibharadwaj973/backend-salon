@@ -33,11 +33,14 @@ jobs:
             --document-name "AWS-RunShellScript" \
             --parameters 'commands=[
               "set -e",
+              "export HOME=/root",
               "cd /home/ubuntu/backend-salon",
-              "git config --global --add safe.directory /home/ubuntu/backend-salon",
+              "git config --system --add safe.directory /home/ubuntu/backend-salon",
               "git fetch origin main",
               "git reset --hard origin/main",
               "docker build -t api:latest .",
+              "docker build --target build -t api:migrate .",
+              "docker run --rm --network salon --env-file .env api:migrate npx prisma db push --skip-generate",
               "docker rm -f salon-api || true",
               "docker run -d --name salon-api --network salon --env-file .env -p 4000:4000 --restart unless-stopped api:latest",
               "sleep 10",
