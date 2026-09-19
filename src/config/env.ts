@@ -66,7 +66,10 @@ const envSchema = z.object({
   WHATSAPP_APP_SECRET: z.string().optional().default(''),
   // Platform-level fallbacks. A real salon connects its own accounts; these
   // exist for the demo tenant and for local development.
-  SMS_DRIVER: z.enum(['console', 'msg91']).default('console'),
+  /// console = log and stop · simulator = pretend carrier that also reports
+  /// back, for building against before an MSG91 account exists · msg91 = real
+  /// The simulator is refused in production at the point of use.
+  SMS_DRIVER: z.enum(['console', 'simulator', 'msg91']).default('console'),
   SMS_API_URL: z.string().default('https://api.msg91.com'),
   SMS_API_KEY: z.string().optional().default(''),
   SMS_SENDER_ID: z.string().optional().default(''),

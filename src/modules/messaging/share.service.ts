@@ -79,7 +79,7 @@ export interface SharePreview {
   /** Variables the template wanted but nothing could fill — shown as gaps. */
   unresolved: string[];
   consent: { allowed: boolean; status: string; reason: string | null };
-  delivery: { live: boolean; source: string; reason: string | null };
+  delivery: { live: boolean; source: string; reason: string | null; simulated: boolean };
   quota: { meter: string | null; available: number | null };
   /** Opens WhatsApp with the message typed in. Null when there is no number. */
   whatsappLink: string | null;
@@ -130,7 +130,7 @@ export async function previewShare(tenantId: string, input: SharePreviewInput): 
   const consentStatus = consentFor(customer, input.channel);
   const consentOk = consentAllows(category, consentStatus as never);
 
-  const { live, source, missing } = await resolveProvider(input.channel, tenantId);
+  const { live, source, missing, simulated } = await resolveProvider(input.channel, tenantId);
 
   const meter = meterFor(input.channel, category);
   let available: number | null = null;
@@ -166,7 +166,12 @@ export async function previewShare(tenantId: string, input: SharePreviewInput): 
     delivery: {
       live,
       source,
-      reason: live ? null : notLiveReason(input.channel, missing),
+      reason: simulated
+        ? 'Simulated: this is recorded and tracked exactly like a real send, but no message leaves the building. Connect a real sender before using this with customers.'
+        : live
+          ? null
+          : notLiveReason(input.channel, missing),
+      simulated: Boolean(simulated),
     },
     quota: { meter, available },
     whatsappLink,

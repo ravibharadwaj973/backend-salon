@@ -3,6 +3,7 @@ import * as notifications from '../../messaging/notifications';
 import { prisma } from '../../core/prisma';
 import { runAsTenant, runUnscoped } from '../../core/context';
 import { logger } from '../../core/logger';
+import { isProd } from '../../config/env';
 import { addDays, dayjs, startOfDay, endOfDay } from '../../core/dates';
 import { enqueue, type JobType } from '../queue';
 import { deliver, queueMessage } from '../../messaging/dispatcher';
@@ -132,6 +133,31 @@ const handlers: Record<JobType, JobHandler> = {
       await customers.refreshCustomerTier(customerId);
       return { ok: true };
     });
+  },
+
+  /**
+   * The delivery report a real carrier would have posted to our webhook.
+   *
+   * Exists so the SMS path can be watched end to end before an MSG91 account
+   * does. Refuses outright in production: a simulated delivery shown to a
+   * salon as a real one is worse than having no SMS feature at all.
+   */
+  'message.simulate_report': async (payload) => {
+    if (isProd) return { skipped: 'simulated delivery reports are refused in production' };
+
+    const providerMessageId = String(payload.providerMessageId ?? '');
+    if (!providerMessageId.startsWith('sim_')) return { skipped: 'not a simulated message' };
+
+    const { applyStatusUpdate } = await import('../../messaging/dispatcher');
+    await applyStatusUpdate({
+      providerMessageId,
+      status: payload.failed ? 'FAILED' : 'DELIVERED',
+      ...(payload.failed
+        ? { errorMessage: 'Simulated failure — the handset was switched off (no real message was sent)' }
+        : {}),
+    });
+
+    return { ok: true, simulated: true };
   },
 
   'inventory.consume': async () => ({ skipped: 'handled inline by billing' }),

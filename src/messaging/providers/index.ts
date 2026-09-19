@@ -1,10 +1,11 @@
 import type { Channel } from '@prisma/client';
-import { env } from '../../config/env';
+import { env, isProd } from '../../config/env';
 import { prisma } from '../../core/prisma';
 import { runUnscoped } from '../../core/context';
 import { ConsoleProvider } from './console.provider';
 import { WhatsAppCloudProvider } from './whatsapp.provider';
 import { Msg91Provider } from './msg91.provider';
+import { SimulatorProvider } from './simulator.provider';
 import { ResendEmailProvider } from './email.provider';
 import type { MessageProvider } from './types';
 
@@ -41,6 +42,15 @@ export interface ResolvedProvider {
    * identical to nothing at all from the send screen.
    */
   missing: string | null;
+  /**
+   * True when nothing actually left the building.
+   *
+   * Every screen that reports a send has to be able to say so. A salon that
+   * believes 400 simulated messages reached its customers will stop chasing
+   * 400 people, and no amount of care in the config file prevents that — only
+   * saying it on the screen does.
+   */
+  simulated?: boolean;
 }
 
 export async function resolveProvider(channel: Channel, tenantId: string | null): Promise<ResolvedProvider> {
@@ -98,6 +108,22 @@ export async function resolveProvider(channel: Channel, tenantId: string | null)
           missing: null,
         };
       }
+      /**
+       * The pretend carrier, for building against before an MSG91 account
+       * exists. Refused in production at the point of use rather than trusted
+       * to be configured correctly: a simulated delivery shown to a salon as a
+       * real one is worse than having no SMS at all.
+       */
+      if (env.SMS_DRIVER === 'simulator' && !isProd) {
+        return {
+          provider: new SimulatorProvider('SMS'),
+          live: true,
+          source: 'environment',
+          missing: null,
+          simulated: true,
+        };
+      }
+
       if (env.SMS_DRIVER === 'msg91' && env.SMS_API_KEY && env.SMS_SENDER_ID) {
         return {
           provider: new Msg91Provider({
