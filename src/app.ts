@@ -8,6 +8,8 @@ import { corsPolicy, env, isTest } from './config/env';
 import { describePolicy, isAllowedOrigin, shouldReportRefusal } from './core/cors';
 import { logger } from './core/logger';
 import { contextMiddleware } from './middleware/context';
+import { resolveClick } from './messaging/tracked-links';
+import { applyStatusUpdate } from './messaging/dispatcher';
 import { errorHandler, notFoundHandler } from './middleware/error';
 import { databaseHealthy } from './core/prisma';
 import { buildRouter } from './routes';
@@ -133,6 +135,37 @@ export function createApp(): Express {
     void databaseHealthy().then((healthy) => {
       res.status(healthy ? 200 : 503).json({ status: healthy ? 'ready' : 'degraded', database: healthy });
     });
+  });
+
+  /**
+   * The tracked-link redirect. Deliberately OUTSIDE the API prefix and outside
+   * every auth layer: this URL is printed in an SMS, where each character is
+   * billed, and it is opened by a customer who has never heard of our API.
+   *
+   * It answers a redirect and nothing else. No page, no script, no cookie —
+   * one hop between the message and where the salon meant to send them.
+   */
+  app.get('/r/:code', (req, res) => {
+    void resolveClick(req.params.code)
+      .then((hit) => {
+        if (!hit) {
+          // An old message forwarded to a friend, or a code that never
+          // existed. Not an error worth a stack trace.
+          res.status(404).type('text/plain').send('This link has expired.');
+          return;
+        }
+
+        if (hit.messageLogId) {
+          void applyStatusUpdate({ providerMessageId: '', messageLogId: hit.messageLogId, status: 'CLICKED' }).catch(
+            () => undefined,
+          );
+        }
+
+        // 302, not 301: a permanent redirect is cached by the phone, and the
+        // second tap would never reach us to be counted.
+        res.redirect(302, hit.targetUrl);
+      })
+      .catch(() => res.status(404).type('text/plain').send('This link has expired.'));
   });
 
   app.use(env.API_PREFIX, buildRouter());

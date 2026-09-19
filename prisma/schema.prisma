@@ -2085,6 +2085,8 @@ model Campaign {
   deliveredCount Int     @default(0)
   readCount      Int     @default(0)
   clickedCount   Int     @default(0)
+  /// Customers who wrote back. The strongest signal short of a booking.
+  repliedCount   Int     @default(0)
   failedCount    Int     @default(0)
   bookingCount   Int     @default(0)
   revenue        Decimal @default(0) @db.Decimal(14, 2)
@@ -2102,6 +2104,37 @@ model Campaign {
 
   @@index([tenantId, status])
   @@map("campaigns")
+}
+
+/// A link in a message, rewritten so the tap can be counted.
+///
+/// This is the only measurement SMS can ever have — a carrier reports that a
+/// message was delivered and nothing more, so without this an SMS campaign is
+/// spend with no outcome attached. It earns its place on WhatsApp and email
+/// too, where a click is the action closest to a booking.
+model TrackedLink {
+  id        String   @id @default(cuid())
+  tenantId  String
+  /// What appears in the message: /r/<code>. Short because an SMS is billed
+  /// by the character and a long link eats a second segment.
+  code      String   @unique
+  /// Where the customer actually ends up.
+  targetUrl String
+  /// The message this link was put in, so a tap can move that message to
+  /// CLICKED and be credited to the right campaign.
+  messageLogId String?
+  campaignId   String?
+  customerId   String?
+
+  clickCount   Int       @default(0)
+  firstClickAt DateTime?
+  lastClickAt  DateTime?
+  createdAt    DateTime  @default(now())
+
+  messageLog MessageLog? @relation(fields: [messageLogId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, campaignId])
+  @@index([messageLogId])
 }
 
 model MessageLog {
@@ -2131,6 +2164,8 @@ model MessageLog {
   deliveredAt  DateTime?
   readAt       DateTime?
   clickedAt    DateTime?
+  /// When the customer wrote back, if they did.
+  repliedAt    DateTime?
   attributedInvoiceId String?
   attributedRevenue   Decimal @default(0) @db.Decimal(12, 2)
   attributionUntil    DateTime?
@@ -2140,6 +2175,7 @@ model MessageLog {
   campaign   Campaign?        @relation(fields: [campaignId], references: [id], onDelete: SetNull)
   template   MessageTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
   journeyRun JourneyRun?      @relation(fields: [journeyRunId], references: [id], onDelete: SetNull)
+  trackedLinks TrackedLink[]
 
   @@index([tenantId, status])
   @@index([tenantId, campaignId])

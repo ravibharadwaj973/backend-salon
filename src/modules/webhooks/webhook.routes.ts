@@ -4,10 +4,11 @@ import { runUnscoped } from '../../core/context';
 import { asyncHandler } from '../../core/http';
 import { env } from '../../config/env';
 import { logger } from '../../core/logger';
-import { applyStatusUpdate } from '../../messaging/dispatcher';
+import { applyStatusUpdate, recordReply } from '../../messaging/dispatcher';
 import { normalizePhone } from '../../core/ids';
 import { verifyWhatsAppSignature } from './whatsapp-signature';
 import { verifyResendSignature } from './resend-signature';
+import { parseReports } from './msg91-status';
 import type { Prisma } from '@prisma/client';
 
 const router = Router();
@@ -131,6 +132,18 @@ router.post(
       // hairdresser to stop has not opted out of the spa across town.
       for (const message of value.messages ?? []) {
         const text = message.text?.body?.trim().toUpperCase();
+
+        /**
+         * Every inbound message is a reply, not only the ones that say STOP.
+         *
+         * A customer writing "yes please, Saturday?" is the strongest thing a
+         * campaign can produce short of a booking, and until now it vanished:
+         * the handler read the text, found it was not STOP, and moved on.
+         */
+        await recordReply({ tenantId, phone: normalizePhone(message.from) }).catch((err: unknown) =>
+          logger.warn({ err, tenantId }, 'reply not credited to a message'),
+        );
+
         if (!text || !['STOP', 'UNSUBSCRIBE', 'OPT OUT', 'OPTOUT'].includes(text)) continue;
 
         const phone = normalizePhone(message.from);
@@ -268,3 +281,50 @@ router.post(
 );
 
 export default router;
+
+/**
+ * MSG91 delivery reports.
+ *
+ * SMS has no read receipt and never will, so this is half of everything the
+ * channel can tell a salon — the other half is whether anybody tapped the
+ * link, which the tracked-link redirect counts.
+ *
+ * Point MSG91's delivery-report webhook at POST /webhooks/sms.
+ *
+ * Unsigned, because MSG91 does not sign these. The endpoint is therefore
+ * written to be useless to anyone who finds it: a report can only move a
+ * message that already exists and already has that exact request id, it can
+ * never create one, and the worst a forged report can do is mark a message
+ * failed that in fact arrived. Worth knowing; not worth blocking on.
+ */
+router.post(
+  '/sms',
+  asyncHandler(async (req, res) => {
+    res.status(200).json({ received: true });
+
+    const reports = parseReports(req.body);
+
+    await runUnscoped(() =>
+      prisma.webhookEvent.create({
+        data: {
+          provider: 'msg91',
+          eventType: reports[0]?.status.toLowerCase() ?? 'unknown',
+          payload: req.body as Prisma.InputJsonValue,
+        },
+      }),
+    ).catch(() => undefined);
+
+    for (const report of reports) {
+      // A bare "sent" adds nothing: the message was already marked SENT when
+      // the provider accepted it. Only an ending is worth writing.
+      if (report.status === 'SENT') continue;
+
+      await applyStatusUpdate({
+        providerMessageId: report.requestId,
+        status: report.status === 'DELIVERED' ? 'DELIVERED' : 'FAILED',
+        ...(report.reason ? { errorMessage: report.reason } : {}),
+        ...(report.at ? { at: report.at } : {}),
+      }).catch((err: unknown) => logger.warn({ err, requestId: report.requestId }, 'sms status not applied'));
+    }
+  }),
+);

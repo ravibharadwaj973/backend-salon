@@ -7,6 +7,7 @@ import { addDays, dateKey, dayjs } from '../core/dates';
 import { formatINR } from '../core/money';
 import { resolveProvider } from './providers';
 import { enqueue } from '../jobs/queue';
+import { rewriteLinks } from './tracked-links';
 import { consume, meterFor } from '../modules/quotas/quota.service';
 import { tenantHasFeature } from '../modules/quotas/limits.service';
 import { FEATURES } from '../core/features';
@@ -390,10 +391,35 @@ export async function deliver(messageLogId: string) {
 
   const variables = (log.payload as Record<string, string>) ?? {};
 
+  /**
+   * Links are rewritten here rather than at queue time, so a message that is
+   * queued and never sent — quota gone, no consent, campaign cancelled — does
+   * not leave a tracked link behind that nobody will ever click.
+   *
+   * The stored body is updated to match what actually went out. A salon
+   * reading the log later should see the message the customer saw, tracked
+   * link and all, not a tidier version of it.
+   */
+  const body = await runUnscoped(() =>
+    rewriteLinks({
+      body: log.renderedBody ?? '',
+      tenantId: log.tenantId,
+      messageLogId: log.id,
+      campaignId: log.campaignId,
+      customerId: log.customerId,
+    }),
+  );
+
+  if (body !== log.renderedBody) {
+    await runUnscoped(() =>
+      prisma.messageLog.update({ where: { id: log.id }, data: { renderedBody: body } }),
+    ).catch(() => undefined);
+  }
+
   const result = await provider.send({
     to: log.toAddress,
     channel: log.channel,
-    body: log.renderedBody ?? '',
+    body,
     templateName: log.template?.providerTemplateName ?? null,
     language: log.template?.language ?? 'en',
     variables,
@@ -457,7 +483,13 @@ const TERMINAL = new Set(['BOUNCED', 'COMPLAINED', 'FAILED']);
 
 /** Provider status callbacks — delivery, opens, clicks, bounces, complaints. */
 export async function applyStatusUpdate(input: {
+  /**
+   * The provider's own id for the message. Empty when the event did not come
+   * from a provider — a link click is our own record, found by messageLogId.
+   */
   providerMessageId: string;
+  /** Used instead of the provider id when we already know which message. */
+  messageLogId?: string;
   status: 'DELIVERED' | 'READ' | 'FAILED' | 'CLICKED' | 'DELAYED' | 'BOUNCED' | 'COMPLAINED';
   errorMessage?: string;
   at?: Date;
@@ -469,10 +501,16 @@ export async function applyStatusUpdate(input: {
    */
   tenantId?: string;
 }) {
+  // A blank provider id would otherwise match the first unsent message in the
+  // table, so the two ways of identifying a message are kept strictly apart.
+  if (!input.messageLogId && !input.providerMessageId) return null;
+
   const log = await runUnscoped(() =>
     prisma.messageLog.findFirst({
       where: {
-        providerMessageId: input.providerMessageId,
+        ...(input.messageLogId
+          ? { id: input.messageLogId }
+          : { providerMessageId: input.providerMessageId }),
         ...(input.tenantId ? { tenantId: input.tenantId } : {}),
       },
     }),
@@ -509,6 +547,31 @@ export async function applyStatusUpdate(input: {
   const updated = await runUnscoped(() => prisma.messageLog.update({ where: { id: log.id }, data }));
 
   if (log.campaignId) {
+    /**
+     * Only the FIRST time a message reaches a state moves the campaign's
+     * counter.
+     *
+     * Providers retry webhooks — Meta and Resend both redeliver when our 200
+     * is slow — and a customer can open an email five times. Counting each one
+     * gives a campaign more opens than it had recipients, which is the kind of
+     * number that quietly destroys a salon's trust in the whole screen.
+     *
+     * The timestamps on the row before this update are the record of what has
+     * already been counted.
+     */
+    const already =
+      input.status === 'DELIVERED'
+        ? log.deliveredAt
+        : input.status === 'READ'
+          ? log.readAt
+          : input.status === 'CLICKED'
+            ? log.clickedAt
+            : TERMINAL.has(log.status)
+              ? log.queuedAt // a terminal message has already been counted once
+              : null;
+
+    if (already) return updated;
+
     // A delay is not an outcome yet, so it moves no counter — the message is
     // still in flight and will land in one of the others.
     const field =
@@ -525,6 +588,45 @@ export async function applyStatusUpdate(input: {
     await runUnscoped(() =>
       prisma.campaign.update({ where: { id: log.campaignId! }, data: { [field]: { increment: 1 } } }),
     );
+  }
+
+  return updated;
+}
+
+/**
+ * A customer wrote back.
+ *
+ * The strongest signal any campaign produces short of a booking: somebody read
+ * it, cared enough to answer, and is now sitting in the salon's inbox. It is
+ * credited to the most recent message sent to that number, within the window
+ * that message was given — a reply three months later is a new conversation,
+ * not a response to the September offer.
+ */
+export async function recordReply(input: { tenantId: string; phone: string; at?: Date }) {
+  const at = input.at ?? new Date();
+
+  const log = await runUnscoped(() =>
+    prisma.messageLog.findFirst({
+      where: {
+        tenantId: input.tenantId,
+        toAddress: { contains: input.phone },
+        repliedAt: null,
+        sentAt: { not: null },
+        attributionUntil: { gte: at },
+      },
+      orderBy: { sentAt: 'desc' },
+    }),
+  );
+  if (!log) return null;
+
+  const updated = await runUnscoped(() =>
+    prisma.messageLog.update({ where: { id: log.id }, data: { repliedAt: at } }),
+  );
+
+  if (log.campaignId) {
+    await runUnscoped(() =>
+      prisma.campaign.update({ where: { id: log.campaignId! }, data: { repliedCount: { increment: 1 } } }),
+    ).catch(() => undefined);
   }
 
   return updated;
