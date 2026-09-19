@@ -90,6 +90,16 @@ messagingRouter.post(
 
 // ------------------------------------------------------------- automations --
 
+/**
+ * What a salon can build an automation on. Served so the builder cannot offer
+ * a trigger the job runner has never heard of.
+ */
+messagingRouter.get(
+  '/automation-triggers',
+  requirePermission(PERMISSIONS.CAMPAIGN_VIEW),
+  asyncHandler(async (_req, res) => ok(res, setup.listTriggers())),
+);
+
 /** Every automation with its current timing, in the words an owner would use. */
 messagingRouter.get(
   '/automations',
@@ -106,6 +116,10 @@ const timingSchema = z.object({
   /** Only send between these hours, so nobody is woken at 6am. */
   sendAfterHour: z.coerce.number().int().min(0).max(23).optional(),
   sendBeforeHour: z.coerce.number().int().min(0).max(23).optional(),
+  /** Which channel each step sends on — the salon's choice, per step. */
+  stepChannels: z.record(z.enum(['WHATSAPP', 'SMS', 'EMAIL'])).optional(),
+  /** Which template each step sends. Null clears it back to free text. */
+  stepTemplates: z.record(z.string().min(1).nullable()).optional(),
 });
 
 messagingRouter.patch(

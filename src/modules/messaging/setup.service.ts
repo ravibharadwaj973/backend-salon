@@ -128,19 +128,38 @@ export async function sendTestMessage(tenantId: string, channel: Channel, to: st
     prisma.tenant.findUnique({ where: { id: tenantId }, select: { name: true } }),
   );
 
-  const result = await provider.send({
-    to,
-    channel,
-    body: `This is a test message from ${tenant?.name ?? 'your salon'}. If you can read this, your ${channel.toLowerCase()} setup is working.`,
-    subject: 'Test message',
-  });
+  const body = `This is a test message from ${tenant?.name ?? 'your salon'}. If you can read this, your ${channel.toLowerCase()} setup is working.`;
 
-  return { ...result, source };
+  // WhatsApp will not accept free-form text from a business unless the customer
+  // messaged first and the 24-hour service window is still open. On a freshly
+  // connected number nobody has messaged anybody, so a plain text test fails
+  // with error 131047 — which reads like a broken connection when the
+  // connection is in fact fine.
+  //
+  // `hello_world` is the pre-approved template every WhatsApp Business Account
+  // is created with. Sending that proves the token, the phone number ID and the
+  // recipient are all good, which is the only thing this button is for. The
+  // wording is Meta's, not ours; that is the trade for a test that works on a
+  // connection nobody has used yet.
+  const result = await provider.send(
+    channel === 'WHATSAPP'
+      ? { to, channel, body, templateName: 'hello_world', language: 'en_US' }
+      : { to, channel, body, subject: 'Test message' },
+  );
+
+  return {
+    ...result,
+    source,
+    note:
+      channel === 'WHATSAPP'
+        ? 'Sent as the standard hello_world template. WhatsApp only allows your own wording once the customer has replied.'
+        : undefined,
+  };
 }
 
 // ------------------------------------------------------------ automations --
 
-const TRIGGER_LABELS: Record<string, { label: string; timingLabel: string | null; help: string }> = {
+export const TRIGGER_LABELS: Record<string, { label: string; timingLabel: string | null; help: string }> = {
   APPOINTMENT_BOOKED: {
     label: 'When an appointment is booked',
     timingLabel: null,
@@ -184,6 +203,24 @@ const TRIGGER_LABELS: Record<string, { label: string; timingLabel: string | null
   REVIEW_REQUEST: { label: 'Asking for a review', timingLabel: 'Hours after', help: '' },
   MANUAL: { label: 'Run by hand', timingLabel: null, help: 'Only runs when you start it.' },
 };
+
+/**
+ * The triggers a salon can build an automation on, in their own words.
+ *
+ * Served rather than duplicated in the client, for the same reason the segment
+ * fields are: the builder can then never offer a trigger the job runner does
+ * not know how to fire.
+ */
+export function listTriggers() {
+  return Object.entries(TRIGGER_LABELS).map(([key, meta]) => ({
+    key,
+    label: meta.label,
+    timingLabel: meta.timingLabel,
+    help: meta.help,
+    /** Whether this trigger needs a "how many days" number alongside it. */
+    needsDays: meta.timingLabel !== null,
+  }));
+}
 
 export async function listAutomations(tenantId: string) {
   const journeys = await runUnscoped(() =>
@@ -235,6 +272,17 @@ export interface AutomationTiming {
   stepDelays?: Record<string, number>;
   sendAfterHour?: number;
   sendBeforeHour?: number;
+  /**
+   * Which channel each step sends on, keyed by step id.
+   *
+   * The salon's choice, not ours. WhatsApp is the default because it is what
+   * gets read in India, but a salon whose book is corporate clients may want
+   * invoices by email, and one without a WhatsApp number yet needs SMS or
+   * nothing at all.
+   */
+  stepChannels?: Record<string, 'WHATSAPP' | 'SMS' | 'EMAIL'>;
+  /** Which template each step sends, keyed by step id. */
+  stepTemplates?: Record<string, string | null>;
 }
 
 export async function updateAutomation(journeyId: string, input: AutomationTiming) {
@@ -254,12 +302,57 @@ export async function updateAutomation(journeyId: string, input: AutomationTimin
     throw BadRequest('The "send after" hour must be earlier than the "send before" hour');
   }
 
+  /**
+   * A step's channel and its template have to agree.
+   *
+   * Templates are per channel — a WhatsApp template is registered with Meta
+   * and an email one has a subject line. Pointing a step at an email template
+   * while it sends on WhatsApp produces a message the provider rejects, hours
+   * later, in a log nobody is watching. Cheaper to refuse it here.
+   */
+  const channelChanges = Object.entries(input.stepChannels ?? {});
+  const templateChanges = Object.entries(input.stepTemplates ?? {});
+
+  if (channelChanges.length > 0 || templateChanges.length > 0) {
+    const steps = await prisma.journeyStep.findMany({
+      where: { journeyId },
+      select: { id: true, channel: true, templateId: true },
+    });
+
+    for (const step of steps) {
+      const channel = (input.stepChannels?.[step.id] ?? step.channel) as Channel | null;
+      const templateId =
+        step.id in (input.stepTemplates ?? {}) ? input.stepTemplates![step.id] : step.templateId;
+      if (!templateId || !channel) continue;
+
+      const template = await prisma.messageTemplate.findUnique({
+        where: { id: templateId },
+        select: { channel: true, name: true },
+      });
+      if (!template) throw NotFound('Message template');
+      if (template.channel !== channel) {
+        throw BadRequest(
+          `"${template.name}" is a ${template.channel.toLowerCase()} template, so it cannot be sent on ` +
+            `${channel.toLowerCase()}. Pick a ${channel.toLowerCase()} template, or change the step's channel.`,
+        );
+      }
+    }
+  }
+
   return prisma.$transaction(async (tx) => {
     for (const [stepId, delayMinutes] of Object.entries(input.stepDelays ?? {})) {
       await tx.journeyStep.updateMany({
         where: { id: stepId, journeyId },
         data: { delayMinutes },
       });
+    }
+
+    for (const [stepId, channel] of channelChanges) {
+      await tx.journeyStep.updateMany({ where: { id: stepId, journeyId }, data: { channel } });
+    }
+
+    for (const [stepId, templateId] of templateChanges) {
+      await tx.journeyStep.updateMany({ where: { id: stepId, journeyId }, data: { templateId } });
     }
 
     return tx.journey.update({
