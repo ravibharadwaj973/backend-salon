@@ -20,11 +20,34 @@ function mask(value: string | null | undefined): string | null {
   return value.length <= 4 ? '••••' : `••••${value.slice(-4)}`;
 }
 
+/**
+ * CAN THIS CHANNEL ACTUALLY SEND, RIGHT NOW?
+ *
+ * Not the same question as "has the salon filled the form in", and the
+ * difference is what made the Send test button unusable on a server whose
+ * credentials live in the environment: the button was disabled unless the
+ * TENANT row said CONNECTED, while the send it triggers goes through
+ * resolveProvider, which also accepts the platform's own account. A deployment
+ * that could send perfectly well showed a greyed-out button and no explanation.
+ *
+ * So ask the thing that does the sending, and report what it says.
+ */
+async function deliveryFor(channel: Channel, tenantId: string) {
+  const { live, source, missing, simulated } = await resolveProvider(channel, tenantId);
+  return { live, source, missing, simulated: Boolean(simulated) };
+}
+
 export async function getMessagingSetup(tenantId: string) {
-  const config = await runUnscoped(() => prisma.tenantMessagingConfig.findUnique({ where: { tenantId } }));
+  const [config, waDelivery, smsDelivery, emailDelivery] = await Promise.all([
+    runUnscoped(() => prisma.tenantMessagingConfig.findUnique({ where: { tenantId } })),
+    deliveryFor('WHATSAPP', tenantId),
+    deliveryFor('SMS', tenantId),
+    deliveryFor('EMAIL', tenantId),
+  ]);
 
   return {
     whatsapp: {
+      delivery: waDelivery,
       status: config?.waStatus ?? 'NOT_CONNECTED',
       phoneNumberId: config?.waPhoneNumberId ?? null,
       businessId: config?.waBusinessId ?? null,
@@ -33,6 +56,7 @@ export async function getMessagingSetup(tenantId: string) {
       verifiedAt: config?.waVerifiedAt ?? null,
     },
     sms: {
+      delivery: smsDelivery,
       status: config?.smsStatus ?? 'NOT_CONNECTED',
       senderId: config?.smsSenderId ?? null,
       dltEntityId: config?.smsDltEntityId ?? null,
@@ -40,6 +64,7 @@ export async function getMessagingSetup(tenantId: string) {
       apiKey: mask(config?.smsApiKey),
     },
     email: {
+      delivery: emailDelivery,
       status: config?.emailStatus ?? 'NOT_CONNECTED',
       fromName: config?.emailFromName ?? null,
       fromAddress: config?.emailFromAddress ?? null,
@@ -116,11 +141,14 @@ export async function updateMessagingSetup(tenantId: string, input: MessagingSet
 
 /** Prove a channel works before trusting it with customers. */
 export async function sendTestMessage(tenantId: string, channel: Channel, to: string) {
-  const { provider, live, source } = await resolveProvider(channel, tenantId);
+  const { provider, live, source, missing, simulated } = await resolveProvider(channel, tenantId);
 
   if (!live) {
+    // Say what is missing. "Not connected" sends somebody back to a form they
+    // have already filled in, to fill it in again the same way.
     throw BadRequest(
-      `${channel.toLowerCase()} is not connected yet, so nothing was sent. Add the details above and save first.`,
+      `${channel.toLowerCase()} is not connected yet, so nothing was sent.` +
+        (missing ? ` What is missing: ${missing}.` : ' Add the details above and save first.'),
     );
   }
 
@@ -150,9 +178,15 @@ export async function sendTestMessage(tenantId: string, channel: Channel, to: st
   return {
     ...result,
     source,
-    note:
-      channel === 'WHATSAPP'
-        ? 'Sent as the standard hello_world template. WhatsApp only allows your own wording once the customer has replied.'
+    simulated: Boolean(simulated),
+    note: simulated
+      ? // The one thing this button must never do is say "sent" when nothing
+        // left the building. A simulated success is indistinguishable from a
+        // real one on the screen, and somebody who trusts it switches an
+        // automation on for real customers.
+        'NOTHING WAS SENT. This channel is running the simulator, which records and tracks a message exactly like a real send but delivers nothing. Connect a real account before trusting this.'
+      : channel === 'WHATSAPP'
+        ? 'Sent as the standard hello_world template. WhatsApp only allows your own wording once the customer has replied — and if the Meta app is still in development mode, only to a number added as a test recipient.'
         : undefined,
   };
 }

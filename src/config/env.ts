@@ -56,6 +56,13 @@ const envSchema = z.object({
 
   MESSAGING_DRIVER: z.enum(['console', 'whatsapp_cloud', 'gupshup']).default('console'),
   WHATSAPP_API_URL: z.string().default('https://graph.facebook.com/v20.0'),
+  /// The WhatsApp Business Account the number belongs to. Nothing in the send
+  /// path needs it — a message is addressed to the PHONE NUMBER ID — but it is
+  /// what Meta's own setup screen shows next to the token, so it gets pasted
+  /// into .env expecting to matter. Declared here so it is carried rather than
+  /// silently dropped, and so nobody spends an evening wondering why setting it
+  /// changed nothing.
+  WHATSAPP_WABA_ID: z.string().optional().default(''),
   WHATSAPP_PHONE_NUMBER_ID: z.string().optional().default(''),
   WHATSAPP_ACCESS_TOKEN: z.string().optional().default(''),
   WHATSAPP_WEBHOOK_VERIFY_TOKEN: z.string().optional().default(''),
