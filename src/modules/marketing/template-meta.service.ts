@@ -7,7 +7,9 @@ import {
   mapStatus,
   submitTemplate,
   toMetaTemplate,
+  probeAccess,
   type MetaCredentials,
+  type ProbeResult,
 } from '../../messaging/whatsapp-templates';
 
 /**
@@ -255,5 +257,68 @@ export async function syncTemplatesFromMeta(): Promise<SyncOutcome> {
       .map((row) => ({ name: row.name, status: row.status, language: row.language ?? 'en' })),
     notSubmitted,
     source,
+  };
+}
+
+
+// ------------------------------------------------------------ diagnosis ---
+
+export interface AccessReport {
+  configured: boolean;
+  source: 'tenant' | 'environment' | 'none';
+  wabaId: string | null;
+  phoneNumberId: string | null;
+  missing: string | null;
+  probes: ProbeResult[];
+  /** The one sentence to act on, derived from which probes failed. */
+  verdict: string;
+}
+
+/**
+ * What is actually wrong with this WhatsApp connection.
+ *
+ * Built because error 100/33 is unfalsifiable from the outside: one message,
+ * four causes, and Meta will not narrow it down. Guessing costs an evening per
+ * salon, and every salon onboarding hits this.
+ */
+export async function diagnoseWhatsAppAccess(): Promise<AccessReport> {
+  const tenantId = requireTenantId();
+  const { credentials, source, missing } = await resolveTemplateCredentials(tenantId);
+  const config = await runUnscoped(() => prisma.tenantMessagingConfig.findUnique({ where: { tenantId } }));
+  const phoneNumberId = config?.waPhoneNumberId || env.WHATSAPP_PHONE_NUMBER_ID || null;
+
+  if (!credentials) {
+    return {
+      configured: false,
+      source,
+      wabaId: null,
+      phoneNumberId,
+      missing,
+      probes: [],
+      verdict: `WhatsApp is not connected.${missing ? ` What is missing: ${missing}.` : ''}`,
+    };
+  }
+
+  const probes = await probeAccess(credentials, phoneNumberId);
+  const failed = (step: string) => probes.some((p) => p.step === step && !p.ok);
+
+  const verdict = failed('token')
+    ? 'The access token itself is not valid. Generate a new one and paste it in.'
+    : failed('waba')
+      ? `The token is valid but cannot see ${credentials.wabaId}. Either that id is not a WhatsApp Business Account, or the System User holding the token has not been assigned it — Business Settings → Users → System Users → Assign Assets → WhatsApp Accounts. If the System User sits in a different Business Portfolio than the account, no permission will help; it has to be moved or recreated in the same portfolio.`
+      : failed('templates')
+        ? 'The token can see the account but not its templates, which means it is missing the whatsapp_business_management permission. Regenerate it with both whatsapp_business_management and whatsapp_business_messaging ticked.'
+        : failed('phone')
+          ? 'Templates are reachable but the phone number is not. Check the Phone number ID against the one on Meta\'s API Setup panel.'
+          : 'Everything Meta was asked about answered. Templates can be submitted and messages can be sent.';
+
+  return {
+    configured: true,
+    source,
+    wabaId: credentials.wabaId,
+    phoneNumberId,
+    missing: null,
+    probes,
+    verdict,
   };
 }

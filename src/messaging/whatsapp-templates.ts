@@ -1,6 +1,6 @@
 import type { MessageTemplate } from '@prisma/client';
 import { env } from '../config/env';
-import type { MetaTemplatePayload } from './whatsapp-template-format';
+import type { MetaComponent, MetaTemplatePayload } from './whatsapp-template-format';
 
 export {
   SAMPLE_VALUES,
@@ -197,4 +197,101 @@ export function sendabilityProblem(
     default:
       return `"${template.name}" is not approved by Meta, so WhatsApp will not deliver it.`;
   }
+}
+
+// ------------------------------------------------------------ diagnosis ---
+
+export interface ProbeResult {
+  step: string;
+  what: string;
+  ok: boolean;
+  detail: string;
+}
+
+/**
+ * ASK META WHAT THIS TOKEN CAN ACTUALLY SEE.
+ *
+ * Error 100/33 — "does not exist, cannot be loaded due to missing permissions,
+ * or does not support this operation" — is one message covering four unrelated
+ * causes, and Meta will not say which, because confirming an object exists to a
+ * token that cannot see it would let anyone enumerate ids.
+ *
+ * So take the question apart. Each call below fails independently, and which
+ * ones fail names the cause:
+ *
+ *   token invalid            → every probe fails
+ *   wrong WABA id, or the
+ *   System User is in another
+ *   business portfolio       → identity passes, WABA fails
+ *   missing management scope → WABA passes, templates fail
+ *   everything fine          → all pass, and the problem is the payload
+ *
+ * Read-only throughout: nothing here creates, changes or sends anything.
+ */
+export async function probeAccess(credentials: MetaCredentials, phoneNumberId?: string | null): Promise<ProbeResult[]> {
+  const results: ProbeResult[] = [];
+
+  const identity = await call<{ id: string; name?: string }>(
+    `${env.WHATSAPP_API_URL}/me?fields=id,name`,
+    { method: 'GET' },
+    credentials,
+  );
+  results.push({
+    step: 'token',
+    what: 'Is the access token valid at all?',
+    ok: identity.ok,
+    detail: identity.ok
+      ? `Valid. Meta knows it as ${identity.data?.name ?? 'an unnamed system user'} (${identity.data?.id}).`
+      : (identity.error?.message ?? 'No answer'),
+  });
+
+  const waba = await call<{ id: string; name?: string }>(
+    `${env.WHATSAPP_API_URL}/${credentials.wabaId}?fields=id,name`,
+    { method: 'GET' },
+    credentials,
+  );
+  results.push({
+    step: 'waba',
+    what: `Can it see WhatsApp Business Account ${credentials.wabaId}?`,
+    ok: waba.ok,
+    detail: waba.ok
+      ? `Yes — "${waba.data?.name ?? credentials.wabaId}".`
+      : `${waba.error?.message ?? 'No answer'}${
+          waba.error?.subcode === 33
+            ? ' — this is Meta saying the token cannot see that object. Either the id is not a WhatsApp Business Account, or the System User holding this token has not been assigned that account as an asset, or the System User belongs to a different Business Portfolio.'
+            : ''
+        }`,
+  });
+
+  const templates = await call<{ data: unknown[] }>(
+    `${env.WHATSAPP_API_URL}/${credentials.wabaId}/message_templates?limit=1`,
+    { method: 'GET' },
+    credentials,
+  );
+  results.push({
+    step: 'templates',
+    what: 'Can it read and write templates on that account?',
+    ok: templates.ok,
+    detail: templates.ok
+      ? 'Yes. Submitting a template should work.'
+      : `${templates.error?.message ?? 'No answer'} — if the account check above passed but this one failed, the token is missing the whatsapp_business_management permission. Sending only needs whatsapp_business_messaging, so a messaging-only token sends fine and cannot touch templates.`,
+  });
+
+  if (phoneNumberId) {
+    const phone = await call<{ display_phone_number?: string; verified_name?: string }>(
+      `${env.WHATSAPP_API_URL}/${phoneNumberId}?fields=display_phone_number,verified_name,quality_rating`,
+      { method: 'GET' },
+      credentials,
+    );
+    results.push({
+      step: 'phone',
+      what: `Can it send from phone number ${phoneNumberId}?`,
+      ok: phone.ok,
+      detail: phone.ok
+        ? `Yes — ${phone.data?.display_phone_number ?? 'number'} as "${phone.data?.verified_name ?? 'unverified'}".`
+        : (phone.error?.message ?? 'No answer'),
+    });
+  }
+
+  return results;
 }

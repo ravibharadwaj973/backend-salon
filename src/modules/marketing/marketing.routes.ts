@@ -479,6 +479,19 @@ templateRouter.post(
   }),
 );
 
+/**
+ * Ask Meta what this token can see, and say which thing is wrong.
+ *
+ * Read-only. Exists because Meta answers a wrong id, an unassigned asset, a
+ * missing scope and a System User in the wrong Business Portfolio with one
+ * identical sentence, and will not say which.
+ */
+templateRouter.get(
+  '/meta-access',
+  requirePermission(PERMISSIONS.TEMPLATE_MANAGE),
+  asyncHandler(async (_req, res) => ok(res, await templateMeta.diagnoseWhatsAppAccess())),
+);
+
 /** Ask Meta what it decided, for every WhatsApp template on the account. */
 templateRouter.post(
   '/sync-from-meta',
