@@ -47,7 +47,7 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     category: 'UTILITY',
     language: 'en',
     bodyText:
-      'Hi {{customer_name}}, your appointment at {{salon_name}} is in about 2 hours ({{appointment_time}}). {{branch_address}}',
+      'Hi {{customer_name}}, your appointment at {{salon_name}} is in about 2 hours ({{appointment_time}}). We are at {{branch_address}} — see you shortly.',
     variables: ['customer_name', 'salon_name', 'appointment_time', 'branch_address'],
     approvalStatus: 'DRAFT',
   },
@@ -57,7 +57,7 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     category: 'UTILITY',
     language: 'en',
     bodyText:
-      'Hi {{customer_name}}, your appointment on {{appointment_date}} at {{salon_name}} has been cancelled. Book again any time: {{booking_link}}',
+      'Hi {{customer_name}}, your appointment on {{appointment_date}} at {{salon_name}} has been cancelled. Book again any time: {{booking_link}} — we hope to see you soon.',
     variables: ['customer_name', 'appointment_date', 'salon_name', 'booking_link'],
     approvalStatus: 'DRAFT',
   },
@@ -87,7 +87,7 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     category: 'UTILITY',
     language: 'en',
     bodyText:
-      'Hi {{customer_name}}, how was your experience at {{salon_name}} today? Rate us in one tap: {{feedback_link}}',
+      'Hi {{customer_name}}, how was your experience at {{salon_name}} today? Rate us in one tap: {{feedback_link}} — it takes a few seconds and it genuinely helps.',
     variables: ['customer_name', 'salon_name', 'feedback_link'],
     approvalStatus: 'DRAFT',
   },
@@ -99,7 +99,7 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     category: 'UTILITY',
     language: 'en',
     bodyText:
-      'So glad you enjoyed it, {{customer_name}}! If you have a moment, a review on Google helps {{salon_name}} more than you know: {{google_review_link}}',
+      'So glad you enjoyed it, {{customer_name}}! If you have a moment, a review on Google helps {{salon_name}} more than you know: {{google_review_link}} — thank you.',
     variables: ['customer_name', 'salon_name', 'google_review_link'],
     approvalStatus: 'DRAFT',
   },
@@ -141,8 +141,8 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     category: 'MARKETING',
     language: 'en',
     bodyText:
-      'Happy birthday, {{customer_name}}! 🎉 {{salon_name}} has a gift for you: {{offer}}, valid this month. Book: {{booking_link}}',
-    variables: ['customer_name', 'salon_name', 'offer', 'booking_link'],
+      'Happy birthday, {{customer_name}}! 🎉 {{salon_name}} would love to treat you this month. Book whenever suits you: {{booking_link}} — enjoy your day.',
+    variables: ['customer_name', 'salon_name', 'booking_link'],
     approvalStatus: 'DRAFT',
   },
   {
@@ -161,7 +161,7 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     category: 'UTILITY',
     language: 'en',
     bodyText:
-      'Hi {{customer_name}}, you still have {{sessions_left}} sessions left in your {{package_name}} at {{salon_name}}. It expires on {{expiry_date}} — book now: {{booking_link}}',
+      'Hi {{customer_name}}, you still have {{sessions_left}} sessions left in your {{package_name}} at {{salon_name}}. It expires on {{expiry_date}} — book now: {{booking_link}} so none of them go to waste.',
     variables: ['customer_name', 'sessions_left', 'package_name', 'salon_name', 'expiry_date', 'booking_link'],
     approvalStatus: 'DRAFT',
   },
@@ -181,7 +181,7 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     category: 'MARKETING',
     language: 'en',
     bodyText:
-      'Hi {{lead_name}}, thanks for your interest in {{salon_name}}! Reply here or book directly: {{booking_link}}',
+      'Hi {{lead_name}}, thanks for your interest in {{salon_name}}! Reply here or book directly: {{booking_link}} — happy to answer anything first.',
     variables: ['lead_name', 'salon_name', 'booking_link'],
     approvalStatus: 'DRAFT',
   },
