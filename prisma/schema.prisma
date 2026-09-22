@@ -223,6 +223,12 @@ enum TemplateApprovalStatus {
   PENDING
   APPROVED
   REJECTED
+  /// Meta pauses a template whose quality rating drops, and disables it if that
+  /// continues. Both still exist on the account and neither can carry a
+  /// message, so folding them into APPROVED would mean queueing sends that
+  /// cannot go out.
+  PAUSED
+  DISABLED
 }
 
 enum CampaignStatus {
@@ -2046,6 +2052,22 @@ model MessageTemplate {
   category       TemplateCategory       @default(UTILITY)
   language       String                 @default("en")
   providerTemplateName String?
+  /// Meta's own id for this template, returned when it is submitted. Present
+  /// only for templates that exist on a WABA.
+  providerTemplateId   String?
+  /// Why Meta refused it, in Meta's words. Paraphrasing it helps nobody: the
+  /// salon has to change the thing Meta objected to, not a summary of it.
+  rejectedReason       String?
+  submittedAt          DateTime?
+  /// Last time the status here was checked against Meta's.
+  syncedAt             DateTime?
+  /// Our variable names in the order Meta numbered them, recorded at submission.
+  ///
+  /// Meta stores {{1}}, {{2}}; we store {{customer_name}}. The mapping is fixed
+  /// the moment a template is approved. Deriving it from the body at send time
+  /// instead works right up until somebody reorders a sentence, after which
+  /// every customer receives another customer's values with no error anywhere.
+  metaVariableOrder    String[]  @default([])
   headerText     String?
   bodyText       String
   footerText     String?

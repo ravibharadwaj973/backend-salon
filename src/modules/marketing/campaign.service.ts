@@ -11,6 +11,7 @@ import { resolveMembers } from './segment.service';
 import { logger } from '../../core/logger';
 import { assertCampaignAllowed } from '../quotas/limits.service';
 import { canAfford, meterFor } from '../quotas/quota.service';
+import { sendabilityProblem } from '../../messaging/whatsapp-templates';
 
 export interface CampaignInput {
   name: string;
@@ -99,9 +100,12 @@ export async function createCampaign(input: CampaignInput) {
     const template = await prisma.messageTemplate.findUnique({ where: { id: input.templateId } });
     if (!template) throw NotFound('Message template');
     if (template.channel !== input.channel) throw BadRequest('The template is for a different channel');
-    if (template.category === 'MARKETING' && template.approvalStatus !== 'APPROVED' && input.channel === 'WHATSAPP') {
-      logger.warn({ templateId: template.id }, 'marketing template is not approved by the provider yet');
-    }
+
+    // Refuse rather than warn. This used to log and carry on, which meant a
+    // campaign to 500 customers was accepted, scheduled, and failed one
+    // message at a time inside a job nobody reads.
+    const problem = sendabilityProblem(template);
+    if (problem) throw BadRequest(problem);
   }
 
   let targetCount = 0;

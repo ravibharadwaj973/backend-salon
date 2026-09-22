@@ -12,6 +12,7 @@ import { FIELD_GROUPS, SEGMENT_FIELDS, SEGMENT_PRESETS } from './segment-fields'
 import * as campaigns from './campaign.service';
 import * as journeys from './journey.service';
 import * as templates from './template.service';
+import * as templateMeta from './template-meta.service';
 import { prisma } from '../../core/prisma';
 import type { SegmentRules } from './segment.service';
 import type { CampaignInput } from './campaign.service';
@@ -450,6 +451,41 @@ templateRouter.post(
   asyncHandler(async (_req, res) => {
     const result = await templates.restoreDefaultTemplates();
     audit({ action: 'template.defaults_restored', entity: 'MessageTemplate' });
+    return ok(res, result);
+  }),
+);
+
+/**
+ * Send a template to Meta for review, and hand back what Meta said.
+ *
+ * Deliberately a separate press from saving. Submitting cannot be undone in the
+ * way that matters — the name is consumed, a template cannot be renamed
+ * afterwards, and deleting one to correct a name restarts review — so it is not
+ * something to do on a salon's behalf while they are still typing.
+ */
+templateRouter.post(
+  '/:id/submit-to-meta',
+  requirePermission(PERMISSIONS.TEMPLATE_MANAGE),
+  validate({ params: idParam }),
+  asyncHandler(async (req, res) => {
+    const result = await templateMeta.submitTemplateToMeta(req.params.id!);
+    audit({
+      action: 'template.submitted_to_meta',
+      entity: 'MessageTemplate',
+      entityId: req.params.id!,
+      after: { ok: result.ok, metaId: result.meta?.id, status: result.meta?.status },
+    });
+    return ok(res, result);
+  }),
+);
+
+/** Ask Meta what it decided, for every WhatsApp template on the account. */
+templateRouter.post(
+  '/sync-from-meta',
+  requirePermission(PERMISSIONS.TEMPLATE_MANAGE),
+  asyncHandler(async (_req, res) => {
+    const result = await templateMeta.syncTemplatesFromMeta();
+    audit({ action: 'template.synced_from_meta', entity: 'MessageTemplate', after: { updated: result.updated.length } });
     return ok(res, result);
   }),
 );

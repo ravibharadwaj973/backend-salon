@@ -3,6 +3,7 @@ import { prisma } from '../../core/prisma';
 import { runUnscoped } from '../../core/context';
 import { NotFound, BadRequest } from '../../core/errors';
 import { resolveProvider } from '../../messaging/providers';
+import { sendabilityProblem } from '../../messaging/whatsapp-templates';
 
 /**
  * MESSAGING SETUP AND AUTOMATION TIMING
@@ -361,7 +362,13 @@ export async function updateAutomation(journeyId: string, input: AutomationTimin
 
       const template = await prisma.messageTemplate.findUnique({
         where: { id: templateId },
-        select: { channel: true, name: true },
+        select: {
+          channel: true,
+          name: true,
+          approvalStatus: true,
+          providerTemplateName: true,
+          rejectedReason: true,
+        },
       });
       if (!template) throw NotFound('Message template');
       if (template.channel !== channel) {
@@ -370,6 +377,18 @@ export async function updateAutomation(journeyId: string, input: AutomationTimin
             `${channel.toLowerCase()}. Pick a ${channel.toLowerCase()} template, or change the step's channel.`,
         );
       }
+
+      /**
+       * And Meta has to have approved it.
+       *
+       * Automations are where the Utility templates live — every confirmation
+       * and reminder the product exists to send — and nothing checked this at
+       * all. An automation switched on against an unapproved template runs
+       * happily for weeks, failing one message at a time in a job log, while
+       * the salon believes their reminders are going out.
+       */
+      const problem = sendabilityProblem(template);
+      if (problem) throw BadRequest(problem);
     }
   }
 

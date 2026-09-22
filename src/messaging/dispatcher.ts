@@ -416,6 +416,20 @@ export async function deliver(messageLogId: string) {
     ).catch(() => undefined);
   }
 
+  /**
+   * The order Meta numbered the placeholders in, not the order they happen to
+   * appear in today's wording.
+   *
+   * Meta stores {{1}}, {{2}}; we store {{customer_name}}. metaVariableOrder is
+   * recorded at submission and is the only record of which is which. Falling
+   * back to `variables` (first-appearance order) is right for a template that
+   * predates submission, and quietly wrong for one whose sentence was reordered
+   * after approval — there, every customer receives another customer's values,
+   * with nothing anywhere reporting an error.
+   */
+  const orderedVariables =
+    log.template?.metaVariableOrder?.length ? log.template.metaVariableOrder : (log.template?.variables ?? []);
+
   const result = await provider.send({
     to: log.toAddress,
     channel: log.channel,
@@ -423,7 +437,7 @@ export async function deliver(messageLogId: string) {
     templateName: log.template?.providerTemplateName ?? null,
     language: log.template?.language ?? 'en',
     variables,
-    variableOrder: log.template?.variables ?? [],
+    variableOrder: orderedVariables,
   });
 
   await runUnscoped(() =>
