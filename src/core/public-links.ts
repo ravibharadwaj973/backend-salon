@@ -70,3 +70,14 @@ export function refererHost(referer: string | undefined): string | undefined {
     return undefined;
   }
 }
+
+/**
+ * A customer's own copy of their bill.
+ *
+ * View only. Money is collected at the counter and recorded by hand — there is
+ * no pay-online link here and there is not meant to be one, so this page shows
+ * what was charged and says how it was settled, nothing more.
+ */
+export function invoiceUrl(token: string): string {
+  return new URL(`/invoice/${encodeURIComponent(token)}`, env.PUBLIC_APP_URL).toString();
+}

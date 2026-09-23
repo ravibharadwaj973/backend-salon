@@ -1544,6 +1544,13 @@ model Invoice {
 
   status         InvoiceStatus @default(DRAFT)
   notes          String?
+  /// The unguessable half of the customer's link to this bill.
+  ///
+  /// Deliberately not the row's own id: an id that appears in customers'
+  /// WhatsApp messages is no longer internal, and welding a public address to
+  /// a primary key means neither can change without breaking the other. Issued
+  /// on demand, so invoices nobody ever shared have no public address at all.
+  publicToken    String?       @unique
   sentOnWhatsappAt DateTime?
   createdById    String?
   voidedAt       DateTime?

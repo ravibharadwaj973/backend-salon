@@ -3,6 +3,14 @@ import { randomBytes, createHash } from 'node:crypto';
 
 const CODE_ALPHABET = '0123456789ABCDEFGHJKLMNPQRSTUVWXYZ'; // no I/O to avoid misreads
 export const shortCode = customAlphabet(CODE_ALPHABET, 8);
+/**
+ * A token for a link handed to a customer — an invoice, a feedback page.
+ *
+ * The only thing between this link and somebody else's bill is the difficulty
+ * of guessing it: there is no password behind it. 24 characters of a 36-letter
+ * alphabet is about 124 bits, which is not walkable. Lower case throughout so
+ * it survives being read aloud, retyped, or lower-cased by a mail client.
+ */
 export const publicToken = customAlphabet('abcdefghijklmnopqrstuvwxyz0123456789', 24);
 
 export function requestId(): string {

@@ -44,6 +44,7 @@ export const SAMPLE_VALUES: Record<string, string> = {
   branch_address: '12 MG Road, Bengaluru',
   booking_link: 'https://parlon.jharavi.in/book/aster',
   invoice_number: 'INV-1042',
+  invoice_link: 'https://parlon.jharavi.in/invoice/7hK2mQx9pR4tVn6wYb3zAc',
   offer: '20% off colour',
   points: '120',
 };
@@ -234,6 +235,7 @@ export const KNOWN_VARIABLES = [
   'amount',
   'due_amount',
   'invoice_number',
+  'invoice_link',
   'points_balance',
   'package_name',
   'sessions_left',

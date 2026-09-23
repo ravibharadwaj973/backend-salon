@@ -544,4 +544,107 @@ router.post(
   asyncHandler(async (req, res) => ok(res, await feedback.recordGoogleReviewClick(req.params.appointmentId!))),
 );
 
+/**
+ * A CUSTOMER'S OWN COPY OF THEIR BILL.
+ *
+ * Reached from a WhatsApp or email link, by somebody who is not signed in and
+ * never will be. The token IS the authorisation, which shapes everything here:
+ *
+ *  - it decides the tenant. Two salons can both have invoice INV-1042, so the
+ *    lookup is by token alone and the salon follows from the row — never from
+ *    anything the caller sends.
+ *  - it is bearer access. Whoever holds the link sees the page, including
+ *    whoever the customer forwards it to, so this returns the bill and not the
+ *    customer: no phone number, no email, no history, no other visits.
+ *  - a wrong token is a plain 404. Saying "that invoice exists but is not
+ *    yours" would turn this into an oracle for walking tokens.
+ *
+ * Draft and voided bills are not served. A draft is not a document anybody
+ * should be shown, and a voided one must not keep circulating as though it
+ * still stood.
+ */
+router.get(
+  '/invoice/:token',
+  validate({ params: z.object({ token: z.string().trim().min(20).max(64) }) }),
+  asyncHandler(async (req, res) => {
+    const invoice = await runUnscoped(() =>
+      prisma.invoice.findUnique({
+        where: { publicToken: req.params.token! },
+        select: {
+          invoiceNumber: true,
+          invoiceDate: true,
+          status: true,
+          isGst: true,
+          grossAmount: true,
+          itemDiscount: true,
+          billDiscount: true,
+          taxableAmount: true,
+          cgstAmount: true,
+          sgstAmount: true,
+          igstAmount: true,
+          totalTax: true,
+          roundOff: true,
+          grandTotal: true,
+          paidAmount: true,
+          dueAmount: true,
+          voidedAt: true,
+          items: {
+            select: {
+              name: true,
+              hsnSac: true,
+              quantity: true,
+              unitPrice: true,
+              discount: true,
+              taxableValue: true,
+              taxRatePct: true,
+              lineTotal: true,
+            },
+          },
+          // Only the first name. The bill is addressed to somebody; it does not
+          // need to identify them to whoever else opens the link.
+          customer: { select: { firstName: true } },
+          // The salon's own details, which a tax invoice must carry.
+          tenant: { select: { name: true, gstin: true, phone: true, email: true } },
+          branch: { select: { name: true, addressLine: true, city: true, pincode: true, phone: true } },
+        },
+      }),
+    );
+
+    if (!invoice || invoice.status === 'DRAFT' || invoice.voidedAt) throw NotFound('Invoice');
+
+    return ok(res, {
+      invoiceNumber: invoice.invoiceNumber,
+      invoiceDate: invoice.invoiceDate,
+      status: invoice.status,
+      isGst: invoice.isGst,
+      customerName: invoice.customer?.firstName ?? null,
+      salon: {
+        name: invoice.tenant.name,
+        gstin: invoice.tenant.gstin,
+        phone: invoice.branch.phone ?? invoice.tenant.phone,
+        email: invoice.tenant.email,
+        address: [invoice.branch.addressLine, invoice.branch.city, invoice.branch.pincode]
+          .filter(Boolean)
+          .join(', '),
+        branch: invoice.branch.name,
+      },
+      items: invoice.items,
+      totals: {
+        grossAmount: invoice.grossAmount,
+        itemDiscount: invoice.itemDiscount,
+        billDiscount: invoice.billDiscount,
+        taxableAmount: invoice.taxableAmount,
+        cgstAmount: invoice.cgstAmount,
+        sgstAmount: invoice.sgstAmount,
+        igstAmount: invoice.igstAmount,
+        totalTax: invoice.totalTax,
+        roundOff: invoice.roundOff,
+        grandTotal: invoice.grandTotal,
+        paidAmount: invoice.paidAmount,
+        dueAmount: invoice.dueAmount,
+      },
+    });
+  }),
+);
+
 export default router;

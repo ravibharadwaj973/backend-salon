@@ -12,6 +12,8 @@ import { consume, meterFor } from '../modules/quotas/quota.service';
 import { tenantHasFeature } from '../modules/quotas/limits.service';
 import { FEATURES } from '../core/features';
 import { bookingUrl, feedbackUrl, googleReviewUrl } from '../core/public-links';
+import { invoiceUrl } from '../core/public-links';
+import { publicToken } from '../core/ids';
 
 export interface QueueMessageInput {
   tenantId: string;
@@ -82,6 +84,23 @@ function consentForChannel(
  * Resolves the standard merge variables for a message from whatever context is
  * available (customer, appointment, invoice, membership...).
  */
+/**
+ * The token for this invoice's public link, minted on first use.
+ *
+ * Issued here rather than when the invoice is created, so a bill nobody ever
+ * shared has no public address at all — the smallest number of guessable URLs
+ * in existence is the ones that had to exist.
+ *
+ * Unscoped because the caller has already established which invoice this is,
+ * and a token is not tenant data.
+ */
+async function ensureInvoiceToken(invoiceId: string, existing: string | null): Promise<string> {
+  if (existing) return existing;
+  const token = publicToken();
+  await runUnscoped(() => prisma.invoice.update({ where: { id: invoiceId }, data: { publicToken: token } }));
+  return token;
+}
+
 export async function buildVariables(input: {
   tenantId: string;
   customerId?: string | null;
@@ -152,14 +171,23 @@ export async function buildVariables(input: {
   if (input.invoiceId) {
     const invoice = await prisma.invoice.findUnique({
       where: { id: input.invoiceId },
-      select: { invoiceNumber: true, grandTotal: true, dueAmount: true, items: { select: { name: true } } },
+      select: {
+        id: true,
+        invoiceNumber: true,
+        grandTotal: true,
+        dueAmount: true,
+        publicToken: true,
+        items: { select: { name: true } },
+      },
     });
     if (invoice) {
       vars.invoice_number = invoice.invoiceNumber;
       vars.amount = formatINR(invoice.grandTotal);
       vars.due_amount = formatINR(invoice.dueAmount);
       // Deliberately no pay-online link: money is only ever collected at the
-      // counter and recorded by hand. See "Payments" in the README.
+      // counter and recorded by hand. See "Payments" in the README. The link
+      // below is the bill to read, not a bill to pay.
+      vars.invoice_link = invoiceUrl(await ensureInvoiceToken(invoice.id, invoice.publicToken));
       if (!vars.services) vars.services = invoice.items.map((i) => i.name).join(', ');
       vars.last_service = invoice.items[0]?.name ?? 'visit';
     }
