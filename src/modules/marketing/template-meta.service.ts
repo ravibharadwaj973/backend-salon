@@ -83,6 +83,13 @@ export async function resolveTemplateCredentials(tenantId: string): Promise<Reso
 
 export interface SubmitOutcome {
   ok: boolean;
+  /** True when Meta already had this name and we linked to it instead. */
+  adopted?: boolean;
+  /**
+   * Set when Meta accepted the template but we failed to record that.
+   * Loud on purpose: it is the one outcome where the two sides disagree.
+   */
+  unsaved?: string;
   /** What we sent, so a rejection can be read against the actual submission. */
   sent?: { name: string; language: string; category: string; body: string };
   /** Meta's answer, unedited. */
@@ -104,8 +111,10 @@ export async function submitTemplateToMeta(templateId: string): Promise<SubmitOu
 
   if (template.providerTemplateId) {
     throw BadRequest(
-      'This template has already been submitted. Meta does not accept a second submission under the same name — ' +
-        'use Sync to refresh its status, or create a new template with a different name.',
+      `"${template.name}" is already on your WhatsApp account as ${template.providerTemplateName} ` +
+        `(${template.approvalStatus.toLowerCase()}). Meta does not accept a second copy under the same name. ` +
+        'Press “Sync with Meta” to refresh its status, or write a new template under a different name — ' +
+        'a template cannot be renamed or its wording changed once Meta holds it.',
     );
   }
 
@@ -124,7 +133,6 @@ export async function submitTemplateToMeta(templateId: string): Promise<SubmitOu
     return { ok: false, problems, source };
   }
 
-  const result = await submitTemplate(payload, credentials);
   const bodyComponent = payload.components.find((c) => c.type === 'BODY');
   const sent = {
     name: payload.name,
@@ -133,7 +141,42 @@ export async function submitTemplateToMeta(templateId: string): Promise<SubmitOu
     body: bodyComponent?.text ?? '',
   };
 
+  /**
+   * Record the ATTEMPT before making it.
+   *
+   * Everything after this line is a side effect on somebody else's system that
+   * cannot be undone. If the process dies, the network drops, or the write
+   * below fails, this row is the only evidence that Meta may already hold this
+   * name — and without it the next press looks like a first attempt and comes
+   * back "there is already English content for this template", which reads like
+   * a bug in the app rather than a record we lost.
+   */
+  await prisma.messageTemplate.update({ where: { id: templateId }, data: { submittedAt: new Date() } });
+
+  const result = await submitTemplate(payload, credentials);
+
   if (!result.ok) {
+    /**
+     * Meta already has this name. That is not a failure — the thing we wanted
+     * to exist exists. Adopt it rather than making somebody press a second
+     * button to repair a state they did not cause.
+     *
+     * This is what makes Submit idempotent: pressing it twice is safe, and a
+     * submission whose result we lost heals itself on the next press.
+     */
+    if (result.error?.subcode === 2388024) {
+      const adopted = await adoptExistingTemplate(templateId, payload.name, payload.language, credentials, variableOrder);
+      if (adopted) {
+        return {
+          ok: true,
+          adopted: true,
+          sent,
+          source,
+          meta: { id: adopted.id, status: adopted.status },
+        };
+      }
+    }
+
     return {
       ok: false,
       sent,
@@ -154,25 +197,75 @@ export async function submitTemplateToMeta(templateId: string): Promise<SubmitOu
     };
   }
 
-  await prisma.messageTemplate.update({
-    where: { id: templateId },
-    data: {
-      providerTemplateName: payload.name,
-      providerTemplateId: result.data?.id ?? null,
-      approvalStatus: mapStatus(result.data?.status ?? 'PENDING'),
-      metaVariableOrder: variableOrder,
-      rejectedReason: null,
-      submittedAt: new Date(),
-      syncedAt: new Date(),
-    },
-  });
+  /**
+   * Meta has accepted it. Saving that is now the only thing standing between
+   * us and a template that exists there and is unknown here — so a failure to
+   * save is reported rather than thrown, together with the id, because the id
+   * is the thing that would otherwise be lost forever.
+   */
+  let unsaved: string | undefined;
+  try {
+    await prisma.messageTemplate.update({
+      where: { id: templateId },
+      data: {
+        providerTemplateName: payload.name,
+        providerTemplateId: result.data?.id ?? null,
+        approvalStatus: mapStatus(result.data?.status ?? 'PENDING'),
+        metaVariableOrder: variableOrder,
+        rejectedReason: null,
+        syncedAt: new Date(),
+      },
+    });
+  } catch (err) {
+    unsaved =
+      `Meta accepted the template (id ${result.data?.id}) but it could not be recorded here: ` +
+      `${err instanceof Error ? err.message : 'unknown error'}. The template EXISTS on your WhatsApp account. ` +
+      `Press “Sync with Meta” to link it — do not submit it again.`;
+  }
 
   return {
     ok: true,
     sent,
     source,
+    unsaved,
     meta: { id: result.data?.id, status: result.data?.status },
   };
+}
+
+/**
+ * Link a local template to the copy Meta already holds.
+ *
+ * Used when a submission is refused for a name that exists — including the
+ * common case where we submitted it ourselves and lost the answer.
+ */
+async function adoptExistingTemplate(
+  templateId: string,
+  name: string,
+  language: string,
+  credentials: MetaCredentials,
+  variableOrder: string[],
+): Promise<{ id: string; status: string } | null> {
+  const listed = await listMetaTemplates(credentials);
+  if (!listed.ok) return null;
+
+  const row = (listed.data?.data ?? []).find(
+    (t) => t.name.toLowerCase() === name.toLowerCase() && (t.language ?? 'en').toLowerCase() === language.toLowerCase(),
+  );
+  if (!row) return null;
+
+  await prisma.messageTemplate.update({
+    where: { id: templateId },
+    data: {
+      providerTemplateName: row.name,
+      providerTemplateId: row.id,
+      approvalStatus: mapStatus(row.status),
+      metaVariableOrder: variableOrder,
+      rejectedReason: row.rejected_reason && row.rejected_reason !== 'NONE' ? row.rejected_reason : null,
+      syncedAt: new Date(),
+    },
+  });
+
+  return { id: row.id, status: row.status };
 }
 
 // ------------------------------------------------------------------ sync ---
