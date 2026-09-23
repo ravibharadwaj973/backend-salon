@@ -39,20 +39,20 @@ const VARIABLE = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g;
  * Sample values shown to Meta's reviewer.
  *
  * Deliberately the same ones the in-app preview uses. A reviewer judging
- * "Hi Priya, your appointment at Aster is confirmed" and a salon owner reading
+ * "Hi Priya, your appointment at Glow Studio is confirmed" and a salon owner
  * the preview should be looking at the same sentence — otherwise the thing that
  * was approved is not the thing anybody checked.
  */
 export const SAMPLE_VALUES: Record<string, string> = {
   customer_name: 'Priya',
-  salon_name: 'Aster Hair & Skin',
+  salon_name: 'Glow Studio',
   appointment_date: '12 Sep 2026',
   appointment_time: '4:30 PM',
   staff_name: 'Riya',
   services: 'Hair Spa, Haircut',
   amount: '1,650',
   branch_address: '12 MG Road, Bengaluru',
-  booking_link: 'https://parlon.jharavi.in/book/aster',
+  booking_link: 'https://parlon.jharavi.in/book/glow-studio',
   invoice_number: 'INV-1042',
   invoice_link: 'https://parlon.jharavi.in/invoice/7hK2mQx9pR4tVn6wYb3zAc',
   invoice_token: '7hK2mQx9pR4tVn6wYb3zAc',

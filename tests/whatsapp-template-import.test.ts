@@ -27,7 +27,7 @@ describe('guessing a position from its example', () => {
     // A template submitted from Parlon carries our own sample values, which is
     // the strongest evidence available — better than any shape heuristic.
     expect(guessVariable('Priya', 0)).toBe('customer_name');
-    expect(guessVariable('Aster Hair & Skin', 0)).toBe('salon_name');
+    expect(guessVariable('Glow Studio', 0)).toBe('salon_name');
   });
 
   it('refuses to guess a bare name', () => {
@@ -82,7 +82,7 @@ describe('turning Meta components back into a template', () => {
       {
         type: 'BODY' as const,
         text: 'Hi {{1}}, see you at {{2}}. Thanks, {{1}}!',
-        example: { body_text: [['Priya', 'Aster Hair & Skin']] },
+        example: { body_text: [['Priya', 'Glow Studio']] },
       },
     ]);
     expect(imported.bodyText).toBe('Hi {{customer_name}}, see you at {{salon_name}}. Thanks, {{customer_name}}!');
@@ -98,7 +98,7 @@ describe('turning Meta components back into a template', () => {
 
   it('numbers a header separately from the body', () => {
     const imported = fromMetaComponents([
-      { type: 'HEADER' as const, text: 'Booking at {{1}}', example: { header_text: ['Aster Hair & Skin'] } },
+      { type: 'HEADER' as const, text: 'Booking at {{1}}', example: { header_text: ['Glow Studio'] } },
       { type: 'BODY' as const, text: 'Hi {{1}}, confirmed for {{2}}. See you.', example: { body_text: [['Priya', '4:30 PM']] } },
       { type: 'FOOTER' as const, text: 'Reply STOP to opt out' },
     ]);
