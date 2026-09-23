@@ -202,3 +202,150 @@ export function toMetaTemplate(template: {
     problems,
   };
 }
+
+// ------------------------------------------------------- importing back ----
+
+/**
+ * The variable names buildVariables can actually produce.
+ *
+ * Kept here as data so two things can check against it: the importer, which
+ * has to turn Meta's {{1}} into a name we can fill, and the send guard, which
+ * must refuse a template referring to a name nothing fills. A placeholder
+ * nothing fills is not cosmetic on WhatsApp — Meta counts parameters, so one
+ * unfillable name fails every send of that template.
+ */
+export const KNOWN_VARIABLES = [
+  'customer_name',
+  'customer_full_name',
+  'lead_name',
+  'salon_name',
+  'salon_phone',
+  'branch_name',
+  'branch_address',
+  'appointment_date',
+  'appointment_day',
+  'appointment_time',
+  'staff_name',
+  'services',
+  'last_service',
+  'last_visit_date',
+  'days_since_visit',
+  'total_visits',
+  'amount',
+  'due_amount',
+  'invoice_number',
+  'points_balance',
+  'package_name',
+  'sessions_left',
+  'plan_name',
+  'expiry_date',
+  'days_left',
+  'booking_link',
+  'feedback_link',
+  'google_review_link',
+] as const;
+
+const KNOWN = new Set<string>(KNOWN_VARIABLES);
+
+export function isFillable(name: string): boolean {
+  return KNOWN.has(name);
+}
+
+/** A position we could not name. Deliberately not fillable, so it cannot send. */
+export const unmappedName = (index: number) => `unmapped_${index + 1}`;
+export const isUnmapped = (name: string) => /^unmapped_\d+$/.test(name);
+
+/**
+ * GUESS WHAT META'S {{1}} MEANT, FROM THE EXAMPLE BESIDE IT.
+ *
+ * Meta stores positions, not names — `Hi {{1}}, your appointment on {{2}}` —
+ * and nothing in the API says what those positions are for. The only clue is
+ * the example value the template was submitted with: "John", "January 25,
+ * 2026".
+ *
+ * So this matches on the SHAPE of that example, and only where the shape is
+ * unambiguous. Everything else becomes an unmapped_N placeholder, which is not
+ * in KNOWN_VARIABLES and therefore cannot pass the send guard. That is the
+ * point: a wrong guess here does not look wrong, it sends one customer another
+ * customer's date, so a guess we are unsure of must block rather than proceed.
+ */
+export function guessVariable(example: string | undefined, index: number): string {
+  const value = (example ?? '').trim();
+  if (!value) return unmappedName(index);
+
+  // An exact match against a sample we ourselves supply is the strongest clue:
+  // the template was very likely submitted from this app.
+  for (const [name, sample] of Object.entries(SAMPLE_VALUES)) {
+    if (sample.toLowerCase() === value.toLowerCase() && isFillable(name)) return name;
+  }
+
+  if (/^https?:\/\//i.test(value)) return 'booking_link';
+  // 4:30 PM, 16:30
+  if (/^\d{1,2}[:.]\d{2}\s*(am|pm)?$/i.test(value)) return 'appointment_time';
+  // 12 Sep 2026, January 25, 2026, 25/01/2026, 2026-01-25
+  if (
+    /\d{1,2}\s+[a-z]{3,}\s+\d{4}/i.test(value) ||
+    /[a-z]{3,}\s+\d{1,2},?\s+\d{4}/i.test(value) ||
+    /^\d{1,4}[/-]\d{1,2}[/-]\d{1,4}$/.test(value)
+  ) {
+    return 'appointment_date';
+  }
+  // ₹1,650 / Rs 1650 / 1,650.00
+  if (/^(₹|rs\.?\s*)?[\d,]+(\.\d{2})?$/i.test(value) && /\d/.test(value)) return 'amount';
+
+  // A bare capitalised word is probably a person, but "probably" is not good
+  // enough when being wrong means a customer reads somebody else's name.
+  return unmappedName(index);
+}
+
+export interface ImportedTemplate {
+  bodyText: string;
+  headerText: string | null;
+  footerText: string | null;
+  variables: string[];
+  /** Positions we could not name. Non-empty means it cannot send yet. */
+  unmapped: number[];
+}
+
+/**
+ * Turn Meta's components back into a template this app can render.
+ *
+ * The reverse of toMetaTemplate, and lossier: names have to be inferred where
+ * the forward direction simply discarded them.
+ */
+export function fromMetaComponents(components: MetaComponent[]): ImportedTemplate {
+  const body = components.find((c) => c.type === 'BODY');
+  const header = components.find((c) => c.type === 'HEADER');
+  const footer = components.find((c) => c.type === 'FOOTER');
+
+  const examples = body?.example?.body_text?.[0] ?? [];
+  const names: string[] = [];
+  const unmapped: number[] = [];
+
+  const text = (body?.text ?? '').replace(/\{\{\s*(\d+)\s*\}\}/g, (_m, digits: string) => {
+    const position = Number(digits) - 1;
+    if (!names[position]) {
+      const guess = guessVariable(examples[position], position);
+      names[position] = guess;
+      if (isUnmapped(guess)) unmapped.push(position + 1);
+    }
+    return `{{${names[position]}}}`;
+  });
+
+  // A header numbers its own placeholders, so it gets its own guesses.
+  const headerExamples = header?.example?.header_text ?? [];
+  const headerText = (header?.text ?? '').replace(/\{\{\s*(\d+)\s*\}\}/g, (_m, digits: string) => {
+    const position = Number(digits) - 1;
+    const guess = guessVariable(headerExamples[position], position);
+    return `{{${guess}}}`;
+  });
+
+  return {
+    bodyText: text,
+    headerText: headerText || null,
+    footerText: footer?.text ?? null,
+    // Positions Meta never used leave holes; fill them so the order is exact.
+    variables: Array.from(names, (n, i) => n ?? unmappedName(i)),
+    unmapped,
+  };
+}

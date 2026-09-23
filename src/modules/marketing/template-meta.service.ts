@@ -7,6 +7,7 @@ import {
   mapStatus,
   submitTemplate,
   toMetaTemplate,
+  fromMetaComponents,
   probeAccess,
   type MetaCredentials,
   type ProbeResult,
@@ -274,8 +275,11 @@ export interface SyncOutcome {
   ok: boolean;
   checked: number;
   updated: { name: string; from: string; to: string; rejectedReason: string | null }[];
-  /** On Meta but not here — usually written in Business Manager by hand. */
-  onlyOnMeta: { name: string; status: string; language: string }[];
+  /**
+   * On Meta but not here. Carries enough to import: the wording, the category,
+   * and how many values a send has to supply.
+   */
+  onlyOnMeta: { name: string; status: string; language: string; category: string; body: string; parameters: number }[];
   /** Here but never submitted. These are the ones that cannot send. */
   notSubmitted: string[];
   source?: string;
@@ -355,7 +359,17 @@ export async function syncTemplatesFromMeta(): Promise<SyncOutcome> {
     updated,
     onlyOnMeta: metaRows
       .filter((row) => !claimed.has(row.id))
-      .map((row) => ({ name: row.name, status: row.status, language: row.language ?? 'en' })),
+      .map((row) => {
+        const imported = fromMetaComponents(row.components ?? []);
+        return {
+          name: row.name,
+          status: row.status,
+          language: row.language ?? 'en',
+          category: row.category ?? 'UTILITY',
+          body: imported.bodyText,
+          parameters: imported.variables.length,
+        };
+      }),
     notSubmitted,
     source,
   };
@@ -426,5 +440,116 @@ export async function diagnoseWhatsAppAccess(): Promise<AccessReport> {
     missing: null,
     probes,
     verdict,
+  };
+}
+
+
+// ---------------------------------------------------------------- import ---
+
+export interface ImportOutcome {
+  ok: boolean;
+  templateId?: string;
+  name?: string;
+  language?: string;
+  status?: string;
+  parameters?: number;
+  /**
+   * Positions whose meaning could not be inferred. Non-empty means the
+   * template is created but cannot send until somebody names them.
+   */
+  unmapped?: number[];
+  message: string;
+}
+
+/**
+ * CREATE A LOCAL TEMPLATE FROM ONE META ALREADY HOLDS.
+ *
+ * The reverse of submitting, and the lossy direction. Meta stores positions —
+ * `Hi {{1}}, your appointment on {{2}}` — and nothing in the API records what
+ * those positions were for. The example values are the only clue.
+ *
+ * So shapes that are unambiguous are mapped (a URL, a time, a date, a sum, or
+ * a sample this app itself supplies) and everything else becomes unmapped_N,
+ * which nothing fills and which the send guard refuses. Creating a template
+ * that looks imported and fails at send would be worse than not importing it,
+ * and a confident wrong guess is worse still: it does not look wrong, it just
+ * sends one customer another customer's appointment date.
+ */
+export async function importTemplateFromMeta(input: { name: string; language: string }): Promise<ImportOutcome> {
+  const tenantId = requireTenantId();
+  const { credentials, missing } = await resolveTemplateCredentials(tenantId);
+  if (!credentials) {
+    throw BadRequest(`WhatsApp is not connected.${missing ? ` What is missing: ${missing}.` : ''}`);
+  }
+
+  const listed = await listMetaTemplates(credentials);
+  if (!listed.ok) {
+    return { ok: false, message: listed.error?.message ?? 'Meta did not answer' };
+  }
+
+  const row = (listed.data?.data ?? []).find(
+    (t) =>
+      t.name.toLowerCase() === input.name.toLowerCase() &&
+      (t.language ?? 'en').toLowerCase() === input.language.toLowerCase(),
+  );
+  if (!row) {
+    return { ok: false, message: `Meta no longer lists a template called ${input.name} in ${input.language}.` };
+  }
+
+  const existing = await prisma.messageTemplate.findFirst({
+    where: { tenantId, name: row.name, channel: 'WHATSAPP' },
+  });
+  if (existing) {
+    return {
+      ok: false,
+      templateId: existing.id,
+      message: `A template called ${row.name} already exists here. Press “Sync with Meta” to link it rather than importing a second copy.`,
+    };
+  }
+
+  const imported = fromMetaComponents(row.components ?? []);
+
+  // Meta has no SERVICE category, and AUTHENTICATION templates are a different
+  // product; anything unrecognised is a utility message by their taxonomy.
+  const category =
+    row.category?.toUpperCase() === 'MARKETING'
+      ? 'MARKETING'
+      : row.category?.toUpperCase() === 'AUTHENTICATION'
+        ? 'AUTHENTICATION'
+        : 'UTILITY';
+
+  const created = await prisma.messageTemplate.create({
+    data: {
+      tenantId,
+      name: row.name,
+      channel: 'WHATSAPP',
+      category,
+      // Meta's language, not ours. WhatsApp treats it as part of the
+      // template's identity, so en where Meta holds en_US fails every send.
+      language: row.language ?? 'en',
+      providerTemplateName: row.name,
+      providerTemplateId: row.id,
+      approvalStatus: mapStatus(row.status),
+      rejectedReason: row.rejected_reason && row.rejected_reason !== 'NONE' ? row.rejected_reason : null,
+      bodyText: imported.bodyText,
+      headerText: imported.headerText,
+      footerText: imported.footerText,
+      variables: imported.variables,
+      metaVariableOrder: imported.variables,
+      syncedAt: new Date(),
+    },
+  });
+
+  return {
+    ok: true,
+    templateId: created.id,
+    name: created.name,
+    language: created.language,
+    status: created.approvalStatus,
+    parameters: imported.variables.length,
+    unmapped: imported.unmapped,
+    message: imported.unmapped.length
+      ? `Imported "${row.name}". ${imported.unmapped.length === 1 ? 'One placeholder' : `${imported.unmapped.length} placeholders`} could not be matched to a customer field — open it and replace ${imported.unmapped.map((n) => `{{unmapped_${n}}}`).join(', ')} before using it. It will not send until you do.`
+      : `Imported "${row.name}" with ${imported.variables.length} field${imported.variables.length === 1 ? '' : 's'} matched. It is ready to use.`,
   };
 }

@@ -492,6 +492,36 @@ templateRouter.get(
   asyncHandler(async (_req, res) => ok(res, await templateMeta.diagnoseWhatsAppAccess())),
 );
 
+/**
+ * Create a local template from one Meta already holds.
+ *
+ * The lossy direction: Meta stores {{1}}, we store {{customer_name}}, and
+ * nothing in the API records which is which. Positions whose example value has
+ * an unambiguous shape are matched; the rest are imported as unmapped and the
+ * template is refused by the send guard until somebody names them.
+ */
+templateRouter.post(
+  '/import-from-meta',
+  requirePermission(PERMISSIONS.TEMPLATE_MANAGE),
+  validate({
+    body: z.object({
+      name: z.string().trim().min(1).max(512),
+      language: z.string().trim().min(2).max(8),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const { name, language } = req.body as { name: string; language: string };
+    const result = await templateMeta.importTemplateFromMeta({ name, language });
+    audit({
+      action: 'template.imported_from_meta',
+      entity: 'MessageTemplate',
+      entityId: result.templateId,
+      after: { name, language, ok: result.ok },
+    });
+    return ok(res, result);
+  }),
+);
+
 /** Ask Meta what it decided, for every WhatsApp template on the account. */
 templateRouter.post(
   '/sync-from-meta',

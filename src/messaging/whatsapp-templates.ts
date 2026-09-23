@@ -1,8 +1,14 @@
 import type { MessageTemplate } from '@prisma/client';
 import { env } from '../config/env';
+import { isFillable, isUnmapped } from './whatsapp-template-format';
 import type { MetaComponent, MetaTemplatePayload } from './whatsapp-template-format';
 
 export {
+  KNOWN_VARIABLES,
+  fromMetaComponents,
+  guessVariable,
+  isFillable,
+  isUnmapped,
   SAMPLE_VALUES,
   templateProblems,
   toMetaTemplate,
@@ -114,7 +120,7 @@ export async function listTemplates(credentials: MetaCredentials): Promise<MetaR
   const rows: MetaTemplateRow[] = [];
   let url =
     `${env.WHATSAPP_API_URL}/${credentials.wabaId}/message_templates` +
-    `?fields=id,name,status,category,language,rejected_reason&limit=100`;
+    `?fields=id,name,status,category,language,rejected_reason,components&limit=100`;
 
   for (let page = 0; page < 20; page += 1) {
     const result = await call<{ data: MetaTemplateRow[]; paging?: { next?: string } }>(url, { method: 'GET' }, credentials);
@@ -169,12 +175,36 @@ export function isSendable(template: Pick<MessageTemplate, 'approvalStatus' | 'c
  * nowhere, because a WhatsApp send against an unapproved template fails at the
  * provider, inside a job, hours later.
  */
+/**
+ * A template whose placeholders name things we cannot fill.
+ *
+ * On WhatsApp this is fatal rather than untidy: Meta counts the parameters it
+ * expects, so one unfillable name means every send of that template fails, one
+ * message at a time, in a job. Imported templates carry unmapped_N names
+ * precisely so they land here instead of going out wrong.
+ */
+export function unfillableVariables(variables: string[]): string[] {
+  return variables.filter((v) => !isFillable(v));
+}
+
 export function sendabilityProblem(
   template: Pick<MessageTemplate, 'approvalStatus' | 'channel' | 'name' | 'providerTemplateName'> & {
     rejectedReason?: string | null;
+    variables?: string[];
+    metaVariableOrder?: string[];
   },
 ): string | null {
   if (template.channel !== 'WHATSAPP') return null;
+
+  const unfillable = unfillableVariables(
+    template.metaVariableOrder?.length ? template.metaVariableOrder : (template.variables ?? []),
+  );
+  if (unfillable.length > 0) {
+    const positions = unfillable.filter(isUnmapped);
+    return positions.length > 0
+      ? `"${template.name}" was imported from Meta and ${positions.length === 1 ? 'one placeholder was' : `${positions.length} placeholders were`} not matched to a customer field (${positions.join(', ')}). Open it and replace ${positions.length === 1 ? 'it' : 'them'} with a real field, or every message will be rejected.`
+      : `"${template.name}" uses ${unfillable.join(', ')}, which nothing fills. Every send would be rejected for a parameter mismatch. Replace ${unfillable.length === 1 ? 'it' : 'them'} with a field the app knows.`;
+  }
 
   switch (template.approvalStatus) {
     case 'APPROVED':

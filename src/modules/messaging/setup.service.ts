@@ -368,6 +368,11 @@ export async function updateAutomation(journeyId: string, input: AutomationTimin
           approvalStatus: true,
           providerTemplateName: true,
           rejectedReason: true,
+          // The guard also refuses placeholders nothing can fill, so it needs
+          // to see them. Selecting too little here would silently skip that
+          // check for automations while campaigns still ran it.
+          variables: true,
+          metaVariableOrder: true,
         },
       });
       if (!template) throw NotFound('Message template');
