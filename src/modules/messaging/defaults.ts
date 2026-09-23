@@ -94,9 +94,14 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
   {
     // Sent only after a 4- or 5-star rating: the one message that should ever
     // carry the Google link.
+    //
+    // MARKETING because Meta says so, not because we wanted it that way. It was
+    // submitted as utility and came back marketing: asking a customer for a
+    // favour is promotional in their taxonomy however politely it is worded.
+    // Recorded here so a new salon does not repeat the discovery.
     name: 'google_review_request',
     channel: 'WHATSAPP',
-    category: 'UTILITY',
+    category: 'MARKETING',
     language: 'en',
     bodyText:
       'So glad you enjoyed it, {{customer_name}}! If you have a moment, a review on Google helps {{salon_name}} more than you know: {{google_review_link}} — thank you.',
@@ -186,12 +191,25 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     approvalStatus: 'DRAFT',
   },
   {
+    /**
+     * MARKETING, and no wording makes it otherwise.
+     *
+     * Submitted as utility with every nudge removed — no "keep visiting", no
+     * link, just the numbers — and Meta still filed it as marketing. A points
+     * scheme IS an incentive to return, so the subject is promotional to them
+     * whatever the sentence says.
+     *
+     * Which is why invoice_sent above carries the points too: attached to a
+     * receipt they ride along as utility, because the message's purpose is the
+     * invoice. That is the copy to rely on. This one exists for salons that
+     * want a standalone points message and have the opt-in to send it.
+     */
     name: 'loyalty_points_earned',
     channel: 'WHATSAPP',
-    category: 'UTILITY',
+    category: 'MARKETING',
     language: 'en',
     bodyText:
-      'You earned {{points_earned}} points at {{salon_name}}, {{customer_name}}. Total balance: {{points_balance}} — worth {{points_value}}.',
+      'You earned {{points_earned}} points at {{salon_name}}, {{customer_name}}. Your balance is now {{points_balance}} points — worth {{points_value}}.',
     variables: ['points_earned', 'salon_name', 'customer_name', 'points_balance', 'points_value'],
     approvalStatus: 'DRAFT',
   },
