@@ -430,7 +430,28 @@ templateRouter.post(
       headerText: z.string().trim().max(200).optional(),
       bodyText: z.string().trim().min(1).max(2000),
       footerText: z.string().trim().max(200).optional(),
-      buttons: z.array(z.record(z.unknown())).max(5).optional(),
+      // Shaped rather than z.record(unknown): the send path reads `variable`
+      // and `url` off these, and a malformed button becomes a template Meta
+      // approves and a link that opens nothing.
+      buttons: z
+        .array(
+          z.discriminatedUnion('type', [
+            z.object({
+              type: z.literal('URL'),
+              text: z.string().trim().min(1).max(25),
+              url: z.string().trim().url().max(2000),
+              variable: z.string().trim().max(40).nullable().optional(),
+            }),
+            z.object({ type: z.literal('QUICK_REPLY'), text: z.string().trim().min(1).max(25) }),
+            z.object({
+              type: z.literal('PHONE_NUMBER'),
+              text: z.string().trim().min(1).max(25),
+              phone: z.string().trim().min(8).max(20),
+            }),
+          ]),
+        )
+        .max(10)
+        .optional(),
       variables: z.array(z.string().max(40)).max(30).optional(),
     }),
   }),

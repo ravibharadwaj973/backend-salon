@@ -13,6 +13,7 @@ import { tenantHasFeature } from '../modules/quotas/limits.service';
 import { FEATURES } from '../core/features';
 import { bookingUrl, feedbackUrl, googleReviewUrl } from '../core/public-links';
 import { invoiceUrl } from '../core/public-links';
+import type { TemplateButton } from './whatsapp-template-format';
 import { publicToken } from '../core/ids';
 
 export interface QueueMessageInput {
@@ -187,7 +188,12 @@ export async function buildVariables(input: {
       // Deliberately no pay-online link: money is only ever collected at the
       // counter and recorded by hand. See "Payments" in the README. The link
       // below is the bill to read, not a bill to pay.
-      vars.invoice_link = invoiceUrl(await ensureInvoiceToken(invoice.id, invoice.publicToken));
+      const token = await ensureInvoiceToken(invoice.id, invoice.publicToken);
+      vars.invoice_link = invoiceUrl(token);
+      // The same thing without the origin, for a WhatsApp URL button — Meta
+      // stores the base and appends only this. Putting the full link there
+      // produces an address with the origin in it twice.
+      vars.invoice_token = token;
       if (!vars.services) vars.services = invoice.items.map((i) => i.name).join(', ');
       vars.last_service = invoice.items[0]?.name ?? 'visit';
     }
@@ -458,6 +464,19 @@ export async function deliver(messageLogId: string) {
   const orderedVariables =
     log.template?.metaVariableOrder?.length ? log.template.metaVariableOrder : (log.template?.variables ?? []);
 
+  /**
+   * A value per button, in button order, holes included.
+   *
+   * Meta addresses a button's parameter by its position among ALL the buttons,
+   * so a static button in front of a dynamic one still occupies an index.
+   * Compacting this list would send the invoice token to whichever button came
+   * first — accepted by Meta, and opening the wrong page.
+   */
+  const templateButtons = Array.isArray(log.template?.buttons) ? (log.template.buttons as TemplateButton[]) : [];
+  const buttonValues = templateButtons.map((button) =>
+    button?.type === 'URL' && button.variable ? (variables[button.variable] ?? null) : null,
+  );
+
   const result = await provider.send({
     to: log.toAddress,
     channel: log.channel,
@@ -466,6 +485,7 @@ export async function deliver(messageLogId: string) {
     language: log.template?.language ?? 'en',
     variables,
     variableOrder: orderedVariables,
+    buttonValues,
   });
 
   await runUnscoped(() =>

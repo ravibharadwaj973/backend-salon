@@ -23,6 +23,16 @@ const MAX_BODY = 1024;
 const MAX_HEADER = 60;
 const MAX_FOOTER = 60;
 const NAME_PATTERN = /^[a-z0-9_]{1,512}$/;
+const MAX_BUTTON_TEXT = 25;
+/**
+ * Meta's button limits. Checked here rather than discovered by rejection,
+ * because a rejection consumes the template's name and a template cannot be
+ * renamed.
+ */
+const MAX_URL_BUTTONS = 2;
+const MAX_PHONE_BUTTONS = 1;
+const MAX_QUICK_REPLIES = 3;
+const MAX_BUTTONS = 10;
 const VARIABLE = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g;
 
 /**
@@ -45,6 +55,7 @@ export const SAMPLE_VALUES: Record<string, string> = {
   booking_link: 'https://parlon.jharavi.in/book/aster',
   invoice_number: 'INV-1042',
   invoice_link: 'https://parlon.jharavi.in/invoice/7hK2mQx9pR4tVn6wYb3zAc',
+  invoice_token: '7hK2mQx9pR4tVn6wYb3zAc',
   offer: '20% off colour',
   points: '120',
 };
@@ -55,12 +66,39 @@ function sampleFor(name: string): string {
 
 // ------------------------------------------------------------ conversion ---
 
+/**
+ * A button as a salon writes it.
+ *
+ * The URL case carries the awkwardness of Meta's design. A dynamic URL button
+ * is NOT a whole address in a variable — Meta stores a fixed base and appends
+ * one variable at the very end:
+ *
+ *     https://parlon.jharavi.in/invoice/{{1}}
+ *
+ * and at send time you supply only the tail. So `variable` names the field that
+ * fills that tail (invoice_token), never the field that holds a whole link
+ * (invoice_link). Putting a full URL in the suffix produces an address with the
+ * origin in it twice, which Meta accepts and which opens nothing.
+ */
+export type TemplateButton =
+  | { type: 'URL'; text: string; url: string; variable?: string | null }
+  | { type: 'QUICK_REPLY'; text: string }
+  | { type: 'PHONE_NUMBER'; text: string; phone: string };
+
+export interface MetaButton {
+  type: 'URL' | 'QUICK_REPLY' | 'PHONE_NUMBER';
+  text: string;
+  url?: string;
+  phone_number?: string;
+  example?: string[];
+}
+
 export interface MetaComponent {
   type: 'HEADER' | 'BODY' | 'FOOTER' | 'BUTTONS';
   format?: 'TEXT';
   text?: string;
   example?: { body_text?: string[][]; header_text?: string[] };
-  buttons?: unknown[];
+  buttons?: MetaButton[];
 }
 
 export interface MetaTemplatePayload {
@@ -78,6 +116,12 @@ export interface Converted {
    * placeholders in whatever order the object happened to iterate.
    */
   variableOrder: string[];
+  /**
+   * The variable filling each dynamic URL button's suffix, by button index.
+   * Sparse: a static button leaves a hole, and the index must survive that,
+   * because Meta addresses a button's parameter by its position.
+   */
+  buttonVariables: (string | null)[];
   /** Reasons Meta would refuse this. Non-empty means do not call the API. */
   problems: string[];
 }
@@ -111,11 +155,57 @@ function toPositional(text: string): { text: string; order: string[] } {
  * between them. Several of our own starter templates end on {{booking_link}}
  * or {{branch_address}}, so this catches real ones.
  */
+export function buttonProblems(buttons: TemplateButton[]): string[] {
+  const problems: string[] = [];
+  if (buttons.length === 0) return problems;
+
+  const count = (type: TemplateButton['type']) => buttons.filter((b) => b.type === type).length;
+
+  if (buttons.length > MAX_BUTTONS) problems.push(`A template can have at most ${MAX_BUTTONS} buttons.`);
+  if (count('URL') > MAX_URL_BUTTONS) problems.push(`A template can have at most ${MAX_URL_BUTTONS} link buttons.`);
+  if (count('PHONE_NUMBER') > MAX_PHONE_BUTTONS) problems.push('A template can have only one call button.');
+  if (count('QUICK_REPLY') > MAX_QUICK_REPLIES) {
+    problems.push(`A template can have at most ${MAX_QUICK_REPLIES} quick-reply buttons.`);
+  }
+
+  const seen = new Set<string>();
+  for (const button of buttons) {
+    const label = button.text?.trim() ?? '';
+    if (!label) problems.push('Every button needs a label.');
+    if (label.length > MAX_BUTTON_TEXT) {
+      problems.push(`The button "${label.slice(0, 20)}…" is longer than ${MAX_BUTTON_TEXT} characters.`);
+    }
+    // Meta refuses two buttons with the same label, and a customer could not
+    // tell them apart anyway.
+    if (label && seen.has(label.toLowerCase())) problems.push(`Two buttons are both labelled "${label}".`);
+    seen.add(label.toLowerCase());
+
+    if (button.type === 'URL') {
+      if (!/^https:\/\//i.test(button.url ?? '')) problems.push(`The link button "${label}" needs an https:// address.`);
+      if (button.variable && !button.url.endsWith('/')) {
+        // Meta appends the value to the end of the stored URL, so the base must
+        // stop where the variable begins. Without this the address arrives as
+        // ".../invoiceabc123".
+        problems.push(
+          `The link button "${label}" fills in ${button.variable} at the end, so its address must end with "/" — for example https://parlon.jharavi.in/invoice/`,
+        );
+      }
+    }
+
+    if (button.type === 'PHONE_NUMBER' && !/^\+?[0-9]{8,15}$/.test((button.phone ?? '').replace(/[\s-]/g, ''))) {
+      problems.push(`The call button "${label}" needs a phone number with a country code.`);
+    }
+  }
+
+  return problems;
+}
+
 export function templateProblems(input: {
   name: string;
   bodyText: string;
   headerText?: string | null;
   footerText?: string | null;
+  buttons?: TemplateButton[];
 }): string[] {
   const problems: string[] = [];
   const body = input.bodyText.trim();
@@ -141,6 +231,8 @@ export function templateProblems(input: {
   }
 
   // A header may hold at most one variable, and buttons none of ours.
+  problems.push(...buttonProblems(input.buttons ?? []));
+
   const headerVars = [...(input.headerText ?? '').matchAll(VARIABLE)];
   if (headerVars.length > 1) problems.push('A header can contain at most one variable.');
   if (VARIABLE.test(input.footerText ?? '')) problems.push('A footer cannot contain variables.');
@@ -157,6 +249,7 @@ export function toMetaTemplate(template: {
   headerText?: string | null;
   footerText?: string | null;
   providerTemplateName?: string | null;
+  buttons?: TemplateButton[] | null;
 }): Converted {
   // The name Meta knows it by. Falls back to our own name, which is why our
   // names are validated against Meta's pattern rather than ours.
@@ -190,6 +283,28 @@ export function toMetaTemplate(template: {
     components.push({ type: 'FOOTER', text: template.footerText.trim() });
   }
 
+  const buttons = template.buttons ?? [];
+  if (buttons.length > 0) {
+    components.push({
+      type: 'BUTTONS',
+      buttons: buttons.map((button) => {
+        if (button.type === 'QUICK_REPLY') return { type: 'QUICK_REPLY' as const, text: button.text.trim() };
+        if (button.type === 'PHONE_NUMBER') {
+          return { type: 'PHONE_NUMBER' as const, text: button.text.trim(), phone_number: button.phone.trim() };
+        }
+        const url = button.variable ? `${button.url}{{1}}` : button.url;
+        return {
+          type: 'URL' as const,
+          text: button.text.trim(),
+          url,
+          // Every variable needs an example, buttons included — and this one is
+          // a sample of the SUFFIX, not of the whole address.
+          ...(button.variable ? { example: [`${button.url}${sampleFor(button.variable)}`] } : {}),
+        };
+      }),
+    });
+  }
+
   return {
     payload: {
       name,
@@ -200,6 +315,7 @@ export function toMetaTemplate(template: {
     // The header's variables are numbered separately by Meta, so only the
     // body's order describes the send-time parameters we build.
     variableOrder: body.order,
+    buttonVariables: buttons.map((b) => (b.type === 'URL' && b.variable ? b.variable : null)),
     problems,
   };
 }
@@ -236,6 +352,7 @@ export const KNOWN_VARIABLES = [
   'due_amount',
   'invoice_number',
   'invoice_link',
+  'invoice_token',
   'points_balance',
   'package_name',
   'sessions_left',
@@ -304,6 +421,7 @@ export interface ImportedTemplate {
   bodyText: string;
   headerText: string | null;
   footerText: string | null;
+  buttons: TemplateButton[];
   variables: string[];
   /** Positions we could not name. Non-empty means it cannot send yet. */
   unmapped: number[];
@@ -342,10 +460,32 @@ export function fromMetaComponents(components: MetaComponent[]): ImportedTemplat
     return `{{${guess}}}`;
   });
 
+  /**
+   * Buttons come back with the variable already inside the URL, so the base and
+   * the suffix have to be separated again — the reverse of building it. The
+   * variable's NAME is gone, as ever, so an imported dynamic button arrives
+   * unmapped and cannot send until somebody names it.
+   */
+  const buttonComponent = components.find((c) => c.type === 'BUTTONS');
+  const buttons: TemplateButton[] = (buttonComponent?.buttons ?? []).map((b, index) => {
+    if (b.type === 'QUICK_REPLY') return { type: 'QUICK_REPLY', text: b.text };
+    if (b.type === 'PHONE_NUMBER') return { type: 'PHONE_NUMBER', text: b.text, phone: b.phone_number ?? '' };
+
+    const url = b.url ?? '';
+    const dynamic = /\{\{\s*\d+\s*\}\}\s*$/.test(url);
+    return {
+      type: 'URL',
+      text: b.text,
+      url: dynamic ? url.replace(/\{\{\s*\d+\s*\}\}\s*$/, '') : url,
+      variable: dynamic ? unmappedName(index) : null,
+    };
+  });
+
   return {
     bodyText: text,
     headerText: headerText || null,
     footerText: footer?.text ?? null,
+    buttons,
     // Positions Meta never used leave holes; fill them so the order is exact.
     variables: Array.from(names, (n, i) => n ?? unmappedName(i)),
     unmapped,

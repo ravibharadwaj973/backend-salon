@@ -10,6 +10,12 @@ export interface OutboundMessage {
   variables?: Record<string, string>;
   /** Ordered variable values, which is what the WhatsApp template API expects. */
   variableOrder?: string[];
+  /**
+   * The value filling each dynamic URL button's suffix, by button index.
+   * Sparse: a static button leaves a hole, because Meta addresses a button's
+   * parameter by its position among the buttons, not among the dynamic ones.
+   */
+  buttonValues?: (string | null)[];
   subject?: string;
   mediaUrl?: string;
 }

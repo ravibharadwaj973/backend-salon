@@ -50,17 +50,41 @@ export class WhatsAppCloudProvider implements MessageProvider {
           template: {
             name: message.templateName,
             language: { code: message.language ?? 'en' },
-            components: message.variableOrder?.length
-              ? [
-                  {
-                    type: 'body',
-                    parameters: message.variableOrder.map((key) => ({
-                      type: 'text',
-                      text: message.variables?.[key] ?? '',
-                    })),
-                  },
-                ]
-              : [],
+            components: [
+              ...(message.variableOrder?.length
+                ? [
+                    {
+                      type: 'body',
+                      parameters: message.variableOrder.map((key) => ({
+                        type: 'text',
+                        text: message.variables?.[key] ?? '',
+                      })),
+                    },
+                  ]
+                : []),
+              /**
+               * One component per DYNAMIC button, each carrying its own index.
+               *
+               * The index is the button's position among all the buttons, not
+               * among the dynamic ones — so a template whose second button is
+               * the dynamic one sends index "1" even though it is the first
+               * (and only) parameter. Counting the dynamic ones instead sends
+               * the invoice token to whichever button happens to be first,
+               * which Meta accepts and which opens the wrong page.
+               */
+              ...(message.buttonValues ?? []).flatMap((value, index) =>
+                value
+                  ? [
+                      {
+                        type: 'button',
+                        sub_type: 'url',
+                        index: String(index),
+                        parameters: [{ type: 'text', text: value }],
+                      },
+                    ]
+                  : [],
+              ),
+            ],
           },
         }
       : {

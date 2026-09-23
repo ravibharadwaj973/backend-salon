@@ -1,3 +1,4 @@
+import type { Prisma } from '@prisma/client';
 import { prisma } from '../../core/prisma';
 import { requireTenantId, runUnscoped } from '../../core/context';
 import { BadRequest, NotFound } from '../../core/errors';
@@ -8,6 +9,7 @@ import {
   submitTemplate,
   toMetaTemplate,
   fromMetaComponents,
+  type TemplateButton,
   probeAccess,
   type MetaCredentials,
   type ProbeResult,
@@ -126,7 +128,10 @@ export async function submitTemplateToMeta(templateId: string): Promise<SubmitOu
     );
   }
 
-  const { payload, variableOrder, problems } = toMetaTemplate(template);
+  const { payload, variableOrder, problems } = toMetaTemplate({
+    ...template,
+    buttons: Array.isArray(template.buttons) ? (template.buttons as TemplateButton[]) : [],
+  });
 
   // Refused here rather than by Meta. The difference matters: a rejection
   // consumes the name, and a template cannot be renamed afterwards.
@@ -536,6 +541,7 @@ export async function importTemplateFromMeta(input: { name: string; language: st
       bodyText: imported.bodyText,
       headerText: imported.headerText,
       footerText: imported.footerText,
+      buttons: imported.buttons as unknown as Prisma.InputJsonValue,
       variables: imported.variables,
       metaVariableOrder: imported.variables,
       syncedAt: new Date(),
