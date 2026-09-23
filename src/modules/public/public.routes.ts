@@ -647,4 +647,64 @@ router.get(
   }),
 );
 
+/**
+ * THE REVIEWS A SALON HAS CHOSEN TO PUBLISH.
+ *
+ * Read by the salon's own website, so its testimonials are the real ones its
+ * customers left rather than three sentences somebody wrote once and forgot.
+ *
+ * `isPublic` is the whole gate, and it defaults to false: nothing a customer
+ * writes appears anywhere until the salon puts it there. That matters both ways
+ * — a customer filling in a feedback form is talking to the salon, not
+ * publishing to the internet, and a salon should not discover a bad afternoon
+ * quoted on its own home page.
+ *
+ * Only a first name goes out, never the surname, the phone number or the
+ * appointment. And a review with nothing written in it is not returned at all:
+ * a wall of five-star ratings with no words is not a testimonial, it is a
+ * statistic, and it reads as one.
+ */
+router.get(
+  '/:slug/reviews',
+  resolveTenantBySlug,
+  validate({ query: z.object({ limit: z.coerce.number().int().min(1).max(24).default(6) }) }),
+  asyncHandler(async (req, res) => {
+    const reviews = await prisma.feedback.findMany({
+      where: {
+        tenantId: req.publicTenantId!,
+        isPublic: true,
+        comment: { not: null },
+        // A published complaint is almost always a mistake rather than a
+        // choice. The salon can still publish one deliberately by resolving it
+        // first, which is the conversation that should happen anyway.
+        isComplaint: false,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: Number(req.query.limit ?? 6),
+      select: {
+        id: true,
+        rating: true,
+        comment: true,
+        createdAt: true,
+        customer: { select: { firstName: true } },
+        staff: { select: { displayName: true } },
+      },
+    });
+
+    return ok(
+      res,
+      reviews.map((review) => ({
+        id: review.id,
+        rating: review.rating,
+        comment: review.comment,
+        at: review.createdAt,
+        // "Meera" rather than "Meera Krishnan" — enough to read as a person,
+        // not enough to identify one.
+        name: review.customer?.firstName ?? 'A customer',
+        staff: review.staff?.displayName ?? null,
+      })),
+    );
+  }),
+);
+
 export default router;
