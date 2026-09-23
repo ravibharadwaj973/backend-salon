@@ -277,6 +277,69 @@ export async function probeAccess(credentials: MetaCredentials, phoneNumberId?: 
       : `${templates.error?.message ?? 'No answer'} — if the account check above passed but this one failed, the token is missing the whatsapp_business_management permission. Sending only needs whatsapp_business_messaging, so a messaging-only token sends fine and cannot touch templates.`,
   });
 
+  /**
+   * The decisive one: which accounts is this token ACTUALLY scoped to?
+   *
+   * Meta will not say whether a given id exists, but it will happily describe
+   * the token you already hold — and granular_scopes lists the exact target ids
+   * each permission was granted over. When the configured WABA is not in that
+   * list, the list contains the id that should have been configured, which
+   * turns "does not exist" into a value to copy.
+   *
+   * Returns nothing useful for some token types, so a failure here is reported
+   * as unknown rather than as a fault.
+   */
+  const debug = await call<{
+    data?: { granular_scopes?: { scope: string; target_ids?: string[] }[]; scopes?: string[]; app_id?: string };
+  }>(
+    `${env.WHATSAPP_API_URL}/debug_token?input_token=${encodeURIComponent(credentials.accessToken)}`,
+    { method: 'GET' },
+    credentials,
+  );
+
+  const granular = debug.data?.data?.granular_scopes ?? [];
+  const management = granular.find((g) => g.scope === 'whatsapp_business_management');
+  const messaging = granular.find((g) => g.scope === 'whatsapp_business_messaging');
+  const reachable = [...new Set([...(management?.target_ids ?? []), ...(messaging?.target_ids ?? [])])];
+  const scopes = debug.data?.data?.scopes ?? granular.map((g) => g.scope);
+
+  /**
+   * Informational, never a verdict.
+   *
+   * An EMPTY target_ids list does not mean the token reaches no accounts — it
+   * means Meta did not scope-limit it, which is what a System User with
+   * business_management looks like and is stronger, not weaker. The first
+   * version of this read empty as "not created against a WhatsApp Business
+   * Account at all" and told somebody to go and make a token they had already
+   * made, directly underneath two probes that had just succeeded.
+   *
+   * So this probe only ever contradicts the others when it has positive
+   * evidence: a target list that exists and excludes the configured account.
+   * The probes above actually attempted the operation; an attempt beats an
+   * inference about an attempt.
+   */
+  const limited = reachable.length > 0;
+  const wabaReachable = results.find((r) => r.step === 'waba')?.ok ?? false;
+
+  results.push({
+    step: 'scopes',
+    what: 'Which WhatsApp accounts is this token scoped to?',
+    ok: limited ? reachable.includes(credentials.wabaId) : wabaReachable,
+    detail: !debug.ok
+      ? `Meta would not describe this token (${debug.error?.message ?? 'no answer'}). Normal for some token types, and not a fault — the checks above tested the real thing.`
+      : limited
+        ? reachable.includes(credentials.wabaId)
+          ? `${credentials.wabaId}, which is the one configured. Permissions: ${scopes.join(', ') || 'none listed'}.`
+          : `${reachable.join(', ')} — and NOT the configured ${credentials.wabaId}. Put ${
+              reachable.length === 1 ? reachable[0] : 'the right one of those'
+            } in WHATSAPP_WABA_ID (or the WhatsApp Business Account ID field) and try again.`
+        : `Not restricted to particular accounts — it carries ${
+            scopes.join(', ') || 'no listed permissions'
+          } across the whole business, which is normal for a System User token.${
+            wabaReachable ? '' : ' The account check above still failed, so the token has the permissions but not this account as an assigned asset.'
+          }`,
+  });
+
   if (phoneNumberId) {
     const phone = await call<{ display_phone_number?: string; verified_name?: string }>(
       `${env.WHATSAPP_API_URL}/${phoneNumberId}?fields=display_phone_number,verified_name,quality_rating`,

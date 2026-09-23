@@ -302,9 +302,14 @@ export async function diagnoseWhatsAppAccess(): Promise<AccessReport> {
   const probes = await probeAccess(credentials, phoneNumberId);
   const failed = (step: string) => probes.some((p) => p.step === step && !p.ok);
 
+  // The scopes probe knows the answer when it fires, so it speaks first.
+  const scopeProbe = probes.find((p) => p.step === 'scopes');
+
   const verdict = failed('token')
     ? 'The access token itself is not valid. Generate a new one and paste it in.'
-    : failed('waba')
+    : scopeProbe && !scopeProbe.ok && scopeProbe.detail.includes('NOT the configured')
+      ? scopeProbe.detail
+      : failed('waba')
       ? `The token is valid but cannot see ${credentials.wabaId}. Either that id is not a WhatsApp Business Account, or the System User holding the token has not been assigned it — Business Settings → Users → System Users → Assign Assets → WhatsApp Accounts. If the System User sits in a different Business Portfolio than the account, no permission will help; it has to be moved or recreated in the same portfolio.`
       : failed('templates')
         ? 'The token can see the account but not its templates, which means it is missing the whatsapp_business_management permission. Regenerate it with both whatsapp_business_management and whatsapp_business_messaging ticked.'
