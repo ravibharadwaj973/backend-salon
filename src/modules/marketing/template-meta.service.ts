@@ -428,7 +428,9 @@ export async function diagnoseWhatsAppAccess(): Promise<AccessReport> {
       ? `The token is valid but cannot see ${credentials.wabaId}. Either that id is not a WhatsApp Business Account, or the System User holding the token has not been assigned it — Business Settings → Users → System Users → Assign Assets → WhatsApp Accounts. If the System User sits in a different Business Portfolio than the account, no permission will help; it has to be moved or recreated in the same portfolio.`
       : failed('templates')
         ? 'The token can see the account but not its templates, which means it is missing the whatsapp_business_management permission. Regenerate it with both whatsapp_business_management and whatsapp_business_messaging ticked.'
-        : failed('phone')
+        : failed('webhooks')
+        ? probes.find((p) => p.step === 'webhooks')?.detail ?? 'No app is subscribed to this account, so no delivery receipts will ever arrive.'
+      : failed('phone')
           ? 'Templates are reachable but the phone number is not. Check the Phone number ID against the one on Meta\'s API Setup panel.'
           : 'Everything Meta was asked about answered. Templates can be submitted and messages can be sent.';
 

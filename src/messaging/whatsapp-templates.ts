@@ -370,6 +370,40 @@ export async function probeAccess(credentials: MetaCredentials, phoneNumberId?: 
           }`,
   });
 
+  /**
+   * IS ANY APP SUBSCRIBED TO THIS ACCOUNT'S WEBHOOKS?
+   *
+   * The check for the exact symptom of messages arriving on the customer's
+   * phone while every row here stays at "sent".
+   *
+   * Configuring a callback URL on the app is only half of it: the WhatsApp
+   * Business Account must also be subscribed to that app before Meta sends it
+   * anything. Usually that happens automatically, and when it does not there is
+   * no error anywhere — the callback URL verifies, the field is ticked, sending
+   * works perfectly, and not one status ever arrives.
+   */
+  const subs = await call<{ data?: { whatsapp_business_api_data?: { id: string; name?: string }; id?: string; name?: string }[] }>(
+    `${env.WHATSAPP_API_URL}/${credentials.wabaId}/subscribed_apps`,
+    { method: 'GET' },
+    credentials,
+  );
+
+  const apps = subs.data?.data ?? [];
+  results.push({
+    step: 'webhooks',
+    what: 'Is an app subscribed to this account, so delivery receipts are sent?',
+    ok: subs.ok && apps.length > 0,
+    detail: !subs.ok
+      ? `Could not check (${subs.error?.message ?? 'no answer'}).`
+      : apps.length === 0
+        ? 'No. Meta will never send a delivery receipt for this account, however the webhook is configured — messages will reach customers and every one of them will sit at "sent" forever. Subscribe the account to your app: Meta app → WhatsApp → Configuration, or POST /' +
+          credentials.wabaId +
+          '/subscribed_apps.'
+        : `Yes — ${apps
+            .map((a) => a.whatsapp_business_api_data?.name ?? a.name ?? a.whatsapp_business_api_data?.id ?? a.id ?? 'an app')
+            .join(', ')}. Receipts are sent; if none arrive, the callback URL is not reachable from the internet.`,
+  });
+
   if (phoneNumberId) {
     const phone = await call<{ display_phone_number?: string; verified_name?: string }>(
       `${env.WHATSAPP_API_URL}/${phoneNumberId}?fields=display_phone_number,verified_name,quality_rating`,
