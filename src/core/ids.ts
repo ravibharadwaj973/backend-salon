@@ -54,3 +54,45 @@ export function toE164(raw: string, countryCode = '91'): string {
   if (local.length === 10) return `+${countryCode}${local}`;
   return `+${local}`;
 }
+
+/**
+ * A person's name, capitalised the way a salon would write it on a bill.
+ *
+ * "arihant rana" → "Arihant Rana". Applied on the way in rather than on the way
+ * out, because the name is not only read on screen: it goes into WhatsApp
+ * messages, invoices and review requests, and a customer greeted as "Hi
+ * arihant" reads as a mail merge that went wrong.
+ *
+ * The decision is made about the WHOLE name, not each word, and that is the
+ * part worth getting right. Capitalising word by word turns "van der Berg"
+ * into "Van Der Berg" — a test caught exactly that — because no per-word rule
+ * can know that "der" is a particle and "Der" is not a surname.
+ *
+ * So: a name that already mixes cases has been spelled deliberately by
+ * somebody, and is left exactly alone. Only a name typed entirely in one case
+ * is touched.
+ *
+ *   arihant rana   → Arihant Rana     (nothing was decided; decide)
+ *   RAVI BHARADWAJ → Ravi Bharadwaj   (shouting; quieten)
+ *   van der Berg   → van der Berg     (spelled on purpose)
+ *   McDonald       → McDonald
+ *   d'Souza        → d'Souza
+ *
+ * Which also makes it safe to run over a whole table: a name a salon has
+ * corrected by hand is never un-corrected on the next save.
+ */
+export function toDisplayName(value: string | null | undefined): string | null | undefined {
+  if (value === null || value === undefined) return value;
+
+  const name = value.replace(/\s+/g, ' ').trim();
+  if (!name) return name;
+
+  const hasLower = /[a-z]/.test(name);
+  const hasUpper = /[A-Z]/.test(name);
+
+  // Mixed case is somebody's deliberate spelling. Leave it.
+  if (hasLower && hasUpper) return name;
+
+  const lowered = hasUpper ? name.toLowerCase() : name;
+  return lowered.replace(/(^|[\s-])([a-z])/g, (_m, before: string, letter: string) => before + letter.toUpperCase());
+}

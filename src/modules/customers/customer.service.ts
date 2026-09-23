@@ -5,7 +5,7 @@ import { requireTenantId } from '../../core/context';
 import { activeBranchId, branchFilter, optionalBranchFilter } from '../../core/scope';
 import { BadRequest, Conflict, NotFound } from '../../core/errors';
 import { pageParams } from '../../core/http';
-import { normalizePhone, sequenceNumber } from '../../core/ids';
+import { normalizePhone, sequenceNumber, toDisplayName } from '../../core/ids';
 import { visitRhythm } from './visit-rhythm';
 import { add, div, round2 } from '../../core/money';
 import { dateKey, dayjs, DEFAULT_TZ } from '../../core/dates';
@@ -285,6 +285,12 @@ export async function createCustomer(input: CustomerInput) {
   const tenantId = requireTenantId();
   const phone = normalizePhone(input.phone);
 
+  // Tidied on the way in, like the phone number beside it. The name is not
+  // only read on screen — it is greeted in WhatsApp messages and printed on
+  // bills, and "Hi arihant" reads as a mail merge that went wrong.
+  input.firstName = toDisplayName(input.firstName) as string;
+  if (input.lastName !== undefined) input.lastName = toDisplayName(input.lastName) as string | undefined;
+
   await assertCustomerAllowed(tenantId);
 
   const existing = await prisma.customer.findFirst({ where: { tenantId, phone } });
@@ -348,6 +354,9 @@ export async function updateCustomer(id: string, input: Partial<CustomerInput>) 
   const tenantId = requireTenantId();
   const customer = await prisma.customer.findUnique({ where: { id } });
   if (!customer) throw NotFound('Customer');
+
+  if (input.firstName !== undefined) input.firstName = toDisplayName(input.firstName) as string;
+  if (input.lastName !== undefined) input.lastName = toDisplayName(input.lastName) as string | undefined;
 
   if (input.phone) {
     const phone = normalizePhone(input.phone);
@@ -729,8 +738,10 @@ export async function importCustomers(input: {
     toCreate.push({
       tenantId,
       code: sequenceNumber('C', counter, 5),
-      firstName: row.lastName ? name : (parts[0] ?? name),
-      lastName: row.lastName?.trim() || (parts.length > 1 ? parts.slice(1).join(' ') : null),
+      // A spreadsheet is where lower-case names arrive by the hundred, so the
+      // import needs this more than the form does.
+      firstName: toDisplayName(row.lastName ? name : (parts[0] ?? name)) as string,
+      lastName: toDisplayName(row.lastName?.trim() || (parts.length > 1 ? parts.slice(1).join(' ') : null)) ?? null,
       phone,
       email: row.email?.trim() || null,
       gender,
