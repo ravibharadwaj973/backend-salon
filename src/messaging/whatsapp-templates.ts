@@ -160,6 +160,38 @@ export function mapStatus(metaStatus: string): 'PENDING' | 'APPROVED' | 'REJECTE
   }
 }
 
+/**
+ * What Meta says the category IS — which is not always what we asked for.
+ *
+ * Meta re-reads the wording of every template it reviews and re-files it
+ * under the category the CONTENT belongs to, ignoring the one submitted.
+ * Anything that promotes, invites, offers or asks a favour — a review
+ * request, an offer, a "we miss you" — lands in MARKETING however it was
+ * sent up. That matters here for one reason: MARKETING needs an explicit
+ * opt-in (see consentAllows), UTILITY does not. A template Meta has moved
+ * to MARKETING while we still believe it is UTILITY would be sent to
+ * customers who never agreed to marketing — so Meta's answer wins, always.
+ *
+ * Returns null when Meta said nothing about the category, so the caller can
+ * leave what it already had rather than guessing UTILITY over the top of it.
+ */
+export function mapCategory(metaCategory: string | null | undefined): 'UTILITY' | 'MARKETING' | 'AUTHENTICATION' | null {
+  switch ((metaCategory ?? '').toUpperCase()) {
+    case 'MARKETING':
+      return 'MARKETING';
+    case 'AUTHENTICATION':
+      return 'AUTHENTICATION';
+    case 'UTILITY':
+    // Meta retired these names; accounts created before the change still
+    // return them, and they are both utility work.
+    case 'TRANSACTIONAL':
+    case 'OTP':
+      return metaCategory?.toUpperCase() === 'OTP' ? 'AUTHENTICATION' : 'UTILITY';
+    default:
+      return null;
+  }
+}
+
 /** True when this template can carry a message to a customer right now. */
 export function isSendable(template: Pick<MessageTemplate, 'approvalStatus' | 'channel'>): boolean {
   if (template.channel !== 'WHATSAPP') return true;

@@ -6,6 +6,7 @@ import { env } from '../../config/env';
 import {
   listTemplates as listMetaTemplates,
   mapStatus,
+  mapCategory,
   submitTemplate,
   toMetaTemplate,
   fromMetaComponents,
@@ -217,6 +218,11 @@ export async function submitTemplateToMeta(templateId: string): Promise<SubmitOu
         providerTemplateName: payload.name,
         providerTemplateId: result.data?.id ?? null,
         approvalStatus: mapStatus(result.data?.status ?? 'PENDING'),
+        // Meta answers the submission with the category it FILED the template
+        // under, which is often not the one we sent. Taking it now means the
+        // consent gate is right from the first second, without waiting for a
+        // sync somebody may never press.
+        ...(mapCategory(result.data?.category) ? { category: mapCategory(result.data?.category)! } : {}),
         metaVariableOrder: variableOrder,
         rejectedReason: null,
         syncedAt: new Date(),
@@ -265,6 +271,7 @@ async function adoptExistingTemplate(
       providerTemplateName: row.name,
       providerTemplateId: row.id,
       approvalStatus: mapStatus(row.status),
+      ...(mapCategory(row.category) ? { category: mapCategory(row.category)! } : {}),
       metaVariableOrder: variableOrder,
       rejectedReason: row.rejected_reason && row.rejected_reason !== 'NONE' ? row.rejected_reason : null,
       syncedAt: new Date(),
@@ -279,7 +286,14 @@ async function adoptExistingTemplate(
 export interface SyncOutcome {
   ok: boolean;
   checked: number;
-  updated: { name: string; from: string; to: string; rejectedReason: string | null }[];
+  updated: {
+    name: string;
+    from: string;
+    to: string;
+    rejectedReason: string | null;
+    /** Set only when Meta has filed the template under a different category than we had. */
+    recategorised?: { from: string; to: string };
+  }[];
   /**
    * On Meta but not here. Carries enough to import: the wording, the category,
    * and how many values a send has to supply.
@@ -339,7 +353,22 @@ export async function syncTemplatesFromMeta(): Promise<SyncOutcome> {
     const status = mapStatus(row.status);
     const rejectedReason = row.rejected_reason && row.rejected_reason !== 'NONE' ? row.rejected_reason : null;
 
-    if (status === local.approvalStatus && rejectedReason === local.rejectedReason && local.providerTemplateId === row.id) {
+    // Meta files a template under the category its WORDING belongs to, not the
+    // one we submitted — a review request sent up as UTILITY comes back as
+    // MARKETING. Believing our own answer would let a marketing message
+    // through the consent gate as if it were transactional, so Meta's wins.
+    const metaCategory = mapCategory(row.category);
+    const recategorised =
+      metaCategory && metaCategory !== local.category
+        ? { from: local.category as string, to: metaCategory as string }
+        : undefined;
+
+    if (
+      status === local.approvalStatus &&
+      rejectedReason === local.rejectedReason &&
+      local.providerTemplateId === row.id &&
+      !recategorised
+    ) {
       await prisma.messageTemplate.update({ where: { id: local.id }, data: { syncedAt: new Date() } });
       continue;
     }
@@ -351,11 +380,12 @@ export async function syncTemplatesFromMeta(): Promise<SyncOutcome> {
         rejectedReason,
         providerTemplateId: row.id,
         providerTemplateName: row.name,
+        ...(recategorised ? { category: metaCategory! } : {}),
         syncedAt: new Date(),
       },
     });
 
-    updated.push({ name: local.name, from: local.approvalStatus, to: status, rejectedReason });
+    updated.push({ name: local.name, from: local.approvalStatus, to: status, rejectedReason, recategorised });
   }
 
   return {
@@ -516,14 +546,9 @@ export async function importTemplateFromMeta(input: { name: string; language: st
 
   const imported = fromMetaComponents(row.components ?? []);
 
-  // Meta has no SERVICE category, and AUTHENTICATION templates are a different
-  // product; anything unrecognised is a utility message by their taxonomy.
-  const category =
-    row.category?.toUpperCase() === 'MARKETING'
-      ? 'MARKETING'
-      : row.category?.toUpperCase() === 'AUTHENTICATION'
-        ? 'AUTHENTICATION'
-        : 'UTILITY';
+  // Meta has no SERVICE category; anything unrecognised is a utility message
+  // by their taxonomy.
+  const category = mapCategory(row.category) ?? 'UTILITY';
 
   const created = await prisma.messageTemplate.create({
     data: {
