@@ -136,10 +136,54 @@ export async function updateTemplate(id: string, input: Partial<TemplateInput>) 
   });
 }
 
-export async function deleteTemplate(id: string) {
+/**
+ * Archive, or actually delete.
+ *
+ * Archiving is the default and the right answer nearly always: the row stays,
+ * so every message ever sent from it keeps its wording and every journey that
+ * points at it still resolves.
+ *
+ * Permanent deletion exists for the case archiving does not answer — a
+ * template that is not on Meta and never will be: a test, a mistake, or one
+ * deleted in WhatsApp Manager. Those are clutter rather than history, and a
+ * list nobody can tidy stops being read.
+ *
+ * It is refused while Meta still holds the template. Deleting our record would
+ * not delete Meta's copy; it would only lose the id that links the two, and the
+ * next sync would offer the same template back as an import. Meta first, then
+ * here — which is also what the salon means when they say it is gone.
+ */
+export async function deleteTemplate(id: string, options?: { permanent?: boolean }) {
+  const template = await getTemplate(id);
+
   const inUse = await prisma.campaign.count({ where: { templateId: id, status: { in: ['SCHEDULED', 'RUNNING'] } } });
   if (inUse) throw Conflict('This template is used by a scheduled or running campaign');
-  return prisma.messageTemplate.update({ where: { id }, data: { isActive: false } });
+
+  if (!options?.permanent) {
+    return { ...(await prisma.messageTemplate.update({ where: { id }, data: { isActive: false } })), permanent: false };
+  }
+
+  if (template.providerTemplateId && template.approvalStatus !== 'DISABLED') {
+    throw Conflict(
+      `"${template.name}" still exists on your WhatsApp account (${template.approvalStatus.toLowerCase()}). ` +
+        'Delete it in WhatsApp Manager first, then press Sync with Meta — deleting it here alone would only lose ' +
+        'the link between the two, and the next sync would offer it back as an import.',
+    );
+  }
+
+  // Counted before the delete, because afterwards there is nothing to count.
+  // MessageLog, Campaign and JourneyStep all hold templateId as a nullable
+  // SetNull reference, so none of them are destroyed by this — a sent message
+  // keeps the wording it was sent with, and a journey step loses its template
+  // and says so rather than silently sending nothing.
+  const [sent, steps] = await Promise.all([
+    prisma.messageLog.count({ where: { templateId: id } }),
+    prisma.journeyStep.count({ where: { templateId: id } }),
+  ]);
+
+  await prisma.messageTemplate.delete({ where: { id } });
+
+  return { id, name: template.name, permanent: true, sentMessages: sent, journeySteps: steps };
 }
 
 /** Renders the template against sample data so the owner sees the real message. */

@@ -597,11 +597,28 @@ templateRouter.patch(
   asyncHandler(async (req, res) => ok(res, await templates.updateTemplate(req.params.id!, req.body as Partial<TemplateInput>))),
 );
 
+/**
+ * Archive by default; ?permanent=true really deletes.
+ *
+ * Permanent is refused while Meta still holds the template — see
+ * deleteTemplate — so the only things it can destroy are templates Meta does
+ * not have.
+ */
 templateRouter.delete(
   '/:id',
   requirePermission(PERMISSIONS.TEMPLATE_MANAGE),
-  validate({ params: idParam }),
-  asyncHandler(async (req, res) => ok(res, await templates.deleteTemplate(req.params.id!))),
+  validate({
+    params: idParam,
+    query: z.object({
+      permanent: z
+        .enum(['true', 'false'])
+        .optional()
+        .transform((v) => v === 'true'),
+    }),
+  }),
+  asyncHandler(async (req, res) =>
+    ok(res, await templates.deleteTemplate(req.params.id!, { permanent: (req.query as { permanent?: boolean }).permanent })),
+  ),
 );
 
 templateRouter.post(

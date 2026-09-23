@@ -442,12 +442,33 @@ export function fromMetaComponents(components: MetaComponent[]): ImportedTemplat
   const names: string[] = [];
   const unmapped: number[] = [];
 
+  /**
+   * A NAME MAY BE USED ONCE.
+   *
+   * guessVariable reads one example at a time and has no idea what the other
+   * positions got, so a template whose samples are all numbers had every
+   * position guessed as `amount` — and a body reading
+   *
+   *   Hi {{amount}}, thank you for visiting {{amount}}! You earned {{amount}}...
+   *
+   * renders as "Hi 640, thank you for visiting 640". Five positions, one value,
+   * no error anywhere: the template is valid, it sends, and the customer reads
+   * nonsense with their own money in it.
+   *
+   * So the second claim on a name loses. The position becomes unmapped, which
+   * is the honest answer — we do not know what it is — and unmapped positions
+   * already block the template from sending until somebody says.
+   */
+  const taken = new Set<string>();
+
   const text = (body?.text ?? '').replace(/\{\{\s*(\d+)\s*\}\}/g, (_m, digits: string) => {
     const position = Number(digits) - 1;
     if (!names[position]) {
       const guess = guessVariable(examples[position], position);
-      names[position] = guess;
-      if (isUnmapped(guess)) unmapped.push(position + 1);
+      const name = isUnmapped(guess) || !taken.has(guess) ? guess : unmappedName(position);
+      taken.add(name);
+      names[position] = name;
+      if (isUnmapped(name)) unmapped.push(position + 1);
     }
     return `{{${names[position]}}}`;
   });

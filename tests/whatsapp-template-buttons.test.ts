@@ -155,3 +155,39 @@ describe('importing buttons back from Meta', () => {
     expect(imported.buttons[0]).toEqual({ type: 'URL', text: 'Website', url: 'https://aster.example.com', variable: null });
   });
 });
+
+/**
+ * The loyalty_points incident: five positions, five numeric samples, and
+ * guessVariable — which sees one example at a time — named every one of them
+ * `amount`. The template was valid, it submitted, and it would have sent
+ * "Hi 640, thank you for visiting 640! You earned 640 points".
+ */
+describe('imported variable names are unique', () => {
+  it('does not give two positions the same name', () => {
+    const imported = fromMetaComponents([
+      {
+        type: 'BODY',
+        text: 'Hi {{1}}, thank you for visiting {{2}}! You earned {{3}} points, balance {{4}} — worth {{5}}.',
+        example: { body_text: [['1200', '640', '120', '640', '640']] },
+      },
+    ]);
+
+    const used = imported.variables.filter((v) => !v.startsWith('unmapped_'));
+    expect(new Set(used).size).toBe(used.length);
+    expect(imported.bodyText).not.toMatch(/\{\{amount\}\}[\s\S]*\{\{amount\}\}/);
+    // Everything it could not name honestly is flagged, so it cannot send.
+    expect(imported.unmapped.length).toBeGreaterThan(0);
+  });
+
+  it('still names a position when the guess is unambiguous', () => {
+    const imported = fromMetaComponents([
+      {
+        type: 'BODY',
+        text: 'Your appointment on {{1}} at {{2}} costs {{3}}.',
+        example: { body_text: [['12 Sep 2026', '4:30 PM', '1,650']] },
+      },
+    ]);
+    expect(imported.variables).toEqual(['appointment_date', 'appointment_time', 'amount']);
+    expect(imported.unmapped).toEqual([]);
+  });
+});
