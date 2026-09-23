@@ -113,7 +113,11 @@ export async function submitTemplateToMeta(templateId: string): Promise<SubmitOu
     );
   }
 
-  if (template.providerTemplateId) {
+  // A template Meta has DELETED is the one case where holding an id is not a
+  // reason to refuse: the copy that id pointed at is gone, so this is a first
+  // submission again. Meta reserves the name for about 30 days afterwards and
+  // will say so itself if it is too soon, which is a better answer than ours.
+  if (template.providerTemplateId && template.approvalStatus !== 'DISABLED') {
     throw BadRequest(
       `"${template.name}" is already on your WhatsApp account as ${template.providerTemplateName} ` +
         `(${template.approvalStatus.toLowerCase()}). Meta does not accept a second copy under the same name. ` +
@@ -164,7 +168,14 @@ export async function submitTemplateToMeta(templateId: string): Promise<SubmitOu
   // ever differed — only silently show a category the salon did not choose.
   await prisma.messageTemplate.update({
     where: { id: templateId },
-    data: { submittedAt: new Date(), requestedCategory: template.category },
+    data: {
+      submittedAt: new Date(),
+      requestedCategory: template.category,
+      // Resubmitting a template Meta deleted: the old id points at nothing, and
+      // leaving it would make a failure here look like the template still
+      // exists over there.
+      ...(template.approvalStatus === 'DISABLED' ? { providerTemplateId: null, rejectedReason: null } : {}),
+    },
   });
 
   const result = await submitTemplate(payload, credentials);
@@ -308,6 +319,12 @@ export interface SyncOutcome {
   onlyOnMeta: { name: string; status: string; language: string; category: string; body: string; parameters: number }[];
   /** Here but never submitted. These are the ones that cannot send. */
   notSubmitted: string[];
+  /**
+   * Meta had these and no longer does — deleted in WhatsApp Manager, by
+   * somebody, at some point. They are dead weight here: they cannot send and
+   * they cannot come back.
+   */
+  removedOnMeta: { id: string; name: string; language: string; wasStatus: string }[];
   source?: string;
   error?: string;
 }
@@ -330,6 +347,7 @@ export async function syncTemplatesFromMeta(): Promise<SyncOutcome> {
       updated: [],
       onlyOnMeta: [],
       notSubmitted: [],
+      removedOnMeta: [],
       source,
       error: result.error?.message ?? 'Meta did not answer',
     };
@@ -345,6 +363,7 @@ export async function syncTemplatesFromMeta(): Promise<SyncOutcome> {
 
   const updated: SyncOutcome['updated'] = [];
   const notSubmitted: string[] = [];
+  const removedOnMeta: SyncOutcome['removedOnMeta'] = [];
 
   for (const local of locals) {
     const name = (local.providerTemplateName || local.name).toLowerCase();
@@ -352,7 +371,40 @@ export async function syncTemplatesFromMeta(): Promise<SyncOutcome> {
     const row = byName.get(`${name}::${language}`) ?? byName.get(`${name}::en`);
 
     if (!row) {
-      if (!local.providerTemplateId) notSubmitted.push(local.name);
+      if (!local.providerTemplateId) {
+        notSubmitted.push(local.name);
+        continue;
+      }
+
+      /**
+       * We hold Meta's id for this template and Meta's list does not contain
+       * it. Meta drops a deleted template from the listing rather than
+       * reporting it as deleted, so absence IS the deletion notice — there is
+       * no other one.
+       *
+       * Marked, not removed. A template deleted in WhatsApp Manager is still
+       * referenced by journeys, campaigns and every message ever sent from it,
+       * and quietly deleting the row here would break all of that to tidy up a
+       * card. So it is marked DISABLED, which already means "cannot send", and
+       * offered to the salon to archive. Their app, their decision.
+       */
+      if (local.approvalStatus !== 'DISABLED') {
+        await prisma.messageTemplate.update({
+          where: { id: local.id },
+          data: {
+            approvalStatus: 'DISABLED',
+            rejectedReason: 'Deleted on Meta. This template no longer exists on your WhatsApp account and cannot be sent.',
+            syncedAt: new Date(),
+          },
+        });
+      }
+
+      removedOnMeta.push({
+        id: local.id,
+        name: local.name,
+        language: local.language || 'en',
+        wasStatus: local.approvalStatus,
+      });
       continue;
     }
 
@@ -413,6 +465,7 @@ export async function syncTemplatesFromMeta(): Promise<SyncOutcome> {
         };
       }),
     notSubmitted,
+    removedOnMeta,
     source,
   };
 }

@@ -437,6 +437,12 @@ templateRouter.get(
     query: paginationQuery.extend({
       channel: channelSchema.optional(),
       category: z.enum(['UTILITY', 'MARKETING', 'AUTHENTICATION', 'SERVICE']).optional(),
+      // Archived templates are hidden unless asked for. A query string carries
+      // strings, so "true" is the value that arrives.
+      includeArchived: z
+        .enum(['true', 'false'])
+        .optional()
+        .transform((v) => v === 'true'),
     }),
   }),
   asyncHandler(async (req, res) => {

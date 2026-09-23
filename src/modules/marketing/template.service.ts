@@ -65,12 +65,28 @@ export async function restoreDefaultTemplates() {
   return { added: missing.length, byChannel };
 }
 
-export async function listTemplates(input: { page?: number; pageSize?: number; channel?: Channel; category?: TemplateCategory }) {
+/**
+ * Archived templates are hidden by default.
+ *
+ * deleteTemplate has always been a soft delete -- it sets isActive false so
+ * that campaigns, journeys and the message log keep pointing at something
+ * real. But this listing never filtered on it, so pressing Delete removed
+ * nothing anybody could see, and the only way to tell was that the card was
+ * still there after the page refreshed.
+ */
+export async function listTemplates(input: {
+  page?: number;
+  pageSize?: number;
+  channel?: Channel;
+  category?: TemplateCategory;
+  includeArchived?: boolean;
+}) {
   const tenantId = requireTenantId();
   const { skip, take, page, pageSize } = pageParams(input);
 
   const where: Prisma.MessageTemplateWhereInput = {
     tenantId,
+    ...(input.includeArchived ? {} : { isActive: true }),
     ...(input.channel ? { channel: input.channel } : {}),
     ...(input.category ? { category: input.category } : {}),
   };
