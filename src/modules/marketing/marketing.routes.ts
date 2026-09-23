@@ -399,6 +399,34 @@ journeyRouter.post(
 
 // ------------------------------------------------------------ templates ----
 
+/**
+ * A template's buttons, shaped rather than waved through.
+ *
+ * Shared by create and update on purpose: update validated the whole body as
+ * z.record(z.unknown()), so a button create would have refused could be written
+ * by editing the same template a moment later. The send path reads `variable`
+ * and `url` off these, and a malformed one becomes a template Meta approves and
+ * a link that opens nothing.
+ */
+const templateButtonsSchema = z
+  .array(
+    z.discriminatedUnion('type', [
+      z.object({
+        type: z.literal('URL'),
+        text: z.string().trim().min(1).max(25),
+        url: z.string().trim().url().max(2000),
+        variable: z.string().trim().max(40).nullable().optional(),
+      }),
+      z.object({ type: z.literal('QUICK_REPLY'), text: z.string().trim().min(1).max(25) }),
+      z.object({
+        type: z.literal('PHONE_NUMBER'),
+        text: z.string().trim().min(1).max(25),
+        phone: z.string().trim().min(8).max(20),
+      }),
+    ]),
+  )
+  .max(10);
+
 export const templateRouter = Router();
 templateRouter.use(authenticate);
 
@@ -430,28 +458,7 @@ templateRouter.post(
       headerText: z.string().trim().max(200).optional(),
       bodyText: z.string().trim().min(1).max(2000),
       footerText: z.string().trim().max(200).optional(),
-      // Shaped rather than z.record(unknown): the send path reads `variable`
-      // and `url` off these, and a malformed button becomes a template Meta
-      // approves and a link that opens nothing.
-      buttons: z
-        .array(
-          z.discriminatedUnion('type', [
-            z.object({
-              type: z.literal('URL'),
-              text: z.string().trim().min(1).max(25),
-              url: z.string().trim().url().max(2000),
-              variable: z.string().trim().max(40).nullable().optional(),
-            }),
-            z.object({ type: z.literal('QUICK_REPLY'), text: z.string().trim().min(1).max(25) }),
-            z.object({
-              type: z.literal('PHONE_NUMBER'),
-              text: z.string().trim().min(1).max(25),
-              phone: z.string().trim().min(8).max(20),
-            }),
-          ]),
-        )
-        .max(10)
-        .optional(),
+      buttons: templateButtonsSchema.optional(),
       variables: z.array(z.string().max(40)).max(30).optional(),
     }),
   }),
@@ -564,7 +571,23 @@ templateRouter.get(
 templateRouter.patch(
   '/:id',
   requirePermission(PERMISSIONS.TEMPLATE_MANAGE),
-  validate({ params: idParam, body: z.record(z.unknown()) }),
+  validate({
+    params: idParam,
+    body: z.object({
+      name: z.string().trim().min(1).max(120).optional(),
+      channel: channelSchema.optional(),
+      category: z.enum(['UTILITY', 'MARKETING', 'AUTHENTICATION', 'SERVICE']).optional(),
+      language: z.string().max(8).optional(),
+      providerTemplateName: z.string().trim().max(120).optional(),
+      headerText: z.string().trim().max(200).nullable().optional(),
+      bodyText: z.string().trim().min(1).max(2000).optional(),
+      footerText: z.string().trim().max(200).nullable().optional(),
+      buttons: templateButtonsSchema.optional(),
+      variables: z.array(z.string().max(40)).max(30).optional(),
+      approvalStatus: z.enum(['DRAFT', 'PENDING', 'APPROVED', 'REJECTED', 'PAUSED', 'DISABLED']).optional(),
+      isActive: z.boolean().optional(),
+    }),
+  }),
   asyncHandler(async (req, res) => ok(res, await templates.updateTemplate(req.params.id!, req.body as Partial<TemplateInput>))),
 );
 
