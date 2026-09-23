@@ -86,7 +86,7 @@ export interface SubmitOutcome {
   /** What we sent, so a rejection can be read against the actual submission. */
   sent?: { name: string; language: string; category: string; body: string };
   /** Meta's answer, unedited. */
-  meta?: { id?: string; status?: string; message?: string; code?: number; subcode?: number };
+  meta?: { id?: string; status?: string; message?: string; code?: number; subcode?: number; hint?: string };
   problems?: string[];
   source?: string;
 }
@@ -142,6 +142,14 @@ export async function submitTemplateToMeta(templateId: string): Promise<SubmitOu
         message: result.error?.message,
         code: result.error?.code,
         subcode: result.error?.subcode,
+        // 2388024 is a name collision, not a fault: a template with this name
+        // and language is already on the account. It is the one Meta error with
+        // an answer better than "fix it and try again" — the thing you wanted
+        // exists, and Sync adopts it.
+        hint:
+          result.error?.subcode === 2388024
+            ? 'This name already exists on your WhatsApp account, so Meta refused a second copy. Press “Sync with Meta” — it will adopt the existing one and fill in its status here. Nothing needs submitting.'
+            : undefined,
       },
     };
   }
