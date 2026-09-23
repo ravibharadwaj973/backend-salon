@@ -99,10 +99,23 @@ router.post(
       const tenantId = await tenantForPhoneNumber(phoneNumberId);
 
       if (!tenantId) {
-        // Not ours, or a salon that has since disconnected. Recorded above as a
-        // webhook event either way, so nothing is lost.
-        logger.warn({ phoneNumberId }, 'webhook for a phone number no salon has connected');
-        continue;
+        // Not ours, a salon that has since disconnected — or, much more often,
+        // a salon whose WhatsApp credentials live in the server environment
+        // rather than in TenantMessagingConfig, so there is no row mapping this
+        // phone number to anybody.
+        //
+        // This used to `continue`, which threw away every delivery receipt on
+        // an env-configured deployment: messages sent fine (the env supplied
+        // the credentials) and then sat on "sent" forever, because the receipt
+        // that came back could not be attributed and was dropped one line
+        // before it would have been applied.
+        //
+        // Statuses do not actually need the mapping. A status carries the
+        // provider's own message id, which we stored when we sent it and which
+        // is globally unique, and the message log row we find by it already
+        // knows its tenant. So the receipt is applied regardless; the tenant,
+        // when we have it, stays as the extra check it was always meant to be.
+        logger.warn({ phoneNumberId }, 'webhook for a phone number no salon has connected — statuses still applied by message id');
       }
 
       // ------------------------------------------------------- delivery ---
@@ -130,6 +143,20 @@ router.post(
       // STOP / UNSUBSCRIBE switches marketing consent off — for the salon the
       // customer actually messaged, and only that one. Someone who tells their
       // hairdresser to stop has not opted out of the spa across town.
+      //
+      // Unlike a status, a reply carries no id of ours — only the customer's
+      // phone number, which is meaningless without knowing whose salon it
+      // reached. So this half genuinely does need the mapping.
+      if (!tenantId) {
+        if (value.messages?.length) {
+          logger.warn(
+            { phoneNumberId, replies: value.messages.length },
+            'inbound replies dropped: no salon has this phone number connected. Connect WhatsApp under Settings so replies and opt-outs can be attributed.',
+          );
+        }
+        continue;
+      }
+
       for (const message of value.messages ?? []) {
         const text = message.text?.body?.trim().toUpperCase();
 

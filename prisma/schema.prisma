@@ -2056,7 +2056,17 @@ model MessageTemplate {
   libraryKey     String?
   name           String
   channel        Channel
+  /// What this template is FOR, as far as anyone here is concerned — and, once
+  /// it has been submitted, whatever Meta decided it is instead.
+  ///
+  /// Meta re-reads the wording at review and files the template under the
+  /// category the content belongs to, ignoring the one submitted. This column
+  /// holds their answer, because it is the one that governs sending: MARKETING
+  /// requires an explicit opt-in, UTILITY does not.
   category       TemplateCategory       @default(UTILITY)
+  /// The category we ASKED for, kept only so the app can say that Meta
+  /// disagreed. Null until the template has been submitted.
+  requestedCategory TemplateCategory?
   language       String                 @default("en")
   providerTemplateName String?
   /// Meta's own id for this template, returned when it is submitted. Present

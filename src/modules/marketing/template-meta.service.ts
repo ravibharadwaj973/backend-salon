@@ -158,7 +158,14 @@ export async function submitTemplateToMeta(templateId: string): Promise<SubmitOu
    * back "there is already English content for this template", which reads like
    * a bug in the app rather than a record we lost.
    */
-  await prisma.messageTemplate.update({ where: { id: templateId }, data: { submittedAt: new Date() } });
+  // requestedCategory is recorded here, next to submittedAt, because this is
+  // the last moment it is still ours. From the moment Meta answers, `category`
+  // holds THEIR verdict, and without this the app could never say that the two
+  // ever differed — only silently show a category the salon did not choose.
+  await prisma.messageTemplate.update({
+    where: { id: templateId },
+    data: { submittedAt: new Date(), requestedCategory: template.category },
+  });
 
   const result = await submitTemplate(payload, credentials);
 
@@ -450,6 +457,39 @@ export async function diagnoseWhatsAppAccess(): Promise<AccessReport> {
   }
 
   const probes = await probeAccess(credentials, phoneNumberId);
+
+  // THE ONLY PROBE THAT ASKS OUR OWN SERVER RATHER THAN META.
+  //
+  // Every other probe establishes what Meta will let us do. This one answers
+  // the question those cannot: has Meta's webhook ever actually arrived here?
+  // Meta reports an app as subscribed whether or not its POSTs are reaching
+  // the URL — a server behind a firewall, on http, with a bad certificate or
+  // at an address that changed still shows as subscribed.
+  //
+  // Every webhook POST writes a WebhookEvent before anything else is done with
+  // it, so a count of zero is proof of a delivery problem rather than a guess,
+  // and any count at all proves the pipe works and moves the search to what we
+  // do with the events after they land.
+  const received = await runUnscoped(() =>
+    prisma.webhookEvent.findFirst({
+      where: { provider: 'whatsapp_cloud' },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    }),
+  ).catch(() => null);
+
+  const hoursAgo = received ? Math.round((Date.now() - received.createdAt.getTime()) / 3_600_000) : null;
+  probes.push({
+    step: 'delivery',
+    what: 'Has Meta ever reached this server?',
+    ok: Boolean(received),
+    detail: received
+      ? `Yes — the last webhook arrived ${hoursAgo === 0 ? 'less than an hour' : `${hoursAgo} hour${hoursAgo === 1 ? '' : 's'}`} ago. Delivery receipts are reaching us.`
+      : 'No webhook has ever arrived. In Meta → WhatsApp → Configuration, the Callback URL must be this server\'s public https address followed by ' +
+        `${env.API_PREFIX}/webhooks/whatsapp, the Verify token must match WHATSAPP_WEBHOOK_VERIFY_TOKEN, and "messages" must be ticked under Webhook fields. ` +
+        'Until one webhook lands, every message will send and then sit on "sent" for ever.',
+  });
+
   const failed = (step: string) => probes.some((p) => p.step === step && !p.ok);
 
   // The scopes probe knows the answer when it fires, so it speaks first.
@@ -467,7 +507,10 @@ export async function diagnoseWhatsAppAccess(): Promise<AccessReport> {
         ? probes.find((p) => p.step === 'webhooks')?.detail ?? 'No app is subscribed to this account, so no delivery receipts will ever arrive.'
       : failed('phone')
           ? 'Templates are reachable but the phone number is not. Check the Phone number ID against the one on Meta\'s API Setup panel.'
-          : 'Everything Meta was asked about answered. Templates can be submitted and messages can be sent.';
+          : failed('delivery')
+            ? probes.find((p) => p.step === 'delivery')?.detail ??
+              'Meta answers everything, but no webhook has ever arrived here, so messages will send and then sit on "sent" forever.'
+            : 'Everything Meta was asked about answered. Templates can be submitted, messages can be sent, and delivery receipts are arriving.';
 
   return {
     configured: true,
