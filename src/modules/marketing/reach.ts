@@ -1,4 +1,4 @@
-import type { Channel, ConsentStatus, Prisma, TemplateCategory } from '@prisma/client';
+import type { Channel, ConsentStatus, Prisma, ReachStatus, TemplateCategory } from '@prisma/client';
 import { consentAllows } from '../../messaging/dispatcher';
 
 /**
@@ -30,6 +30,14 @@ export interface ChannelReach {
   noAddress: number;
   /** Has an address but consent forbids this category on this channel. */
   noConsent: number;
+  /**
+   * Has an address, and a provider has permanently refused it.
+   *
+   * Counted apart from noAddress because the two need different actions from
+   * the salon: an empty field is somebody to ask at their next visit, a dead
+   * address is a digit to correct on a profile.
+   */
+  undeliverable: number;
 }
 
 export type Reach = Record<Channel, ChannelReach>;
@@ -41,6 +49,9 @@ export interface ContactRow {
   whatsappConsent: ConsentStatus;
   smsConsent: ConsentStatus;
   emailConsent: ConsentStatus;
+  whatsappStatus: ReachStatus;
+  smsStatus: ReachStatus;
+  emailStatus: ReachStatus;
 }
 
 export const CONTACT_SELECT = {
@@ -49,7 +60,17 @@ export const CONTACT_SELECT = {
   whatsappConsent: true,
   smsConsent: true,
   emailConsent: true,
+  whatsappStatus: true,
+  smsStatus: true,
+  emailStatus: true,
 } as const;
+
+/** True when a provider has permanently refused this channel's address. */
+export function isUndeliverable(row: ContactRow, channel: Channel): boolean {
+  const status =
+    channel === 'EMAIL' ? row.emailStatus : channel === 'SMS' ? row.smsStatus : row.whatsappStatus;
+  return status === 'UNDELIVERABLE';
+}
 
 /** True when this person has something to be reached at on this channel. */
 export function hasAddress(row: ContactRow, channel: Channel): boolean {
@@ -67,14 +88,18 @@ export function reachOf(rows: ContactRow[], channel: Channel, category: Template
   let reachable = 0;
   let noAddress = 0;
   let noConsent = 0;
+  let undeliverable = 0;
 
   for (const row of rows) {
+    // Order matters: the first reason that applies is the one reported, and
+    // "no address at all" is a plainer answer than any that follow it.
     if (!hasAddress(row, channel)) noAddress += 1;
+    else if (isUndeliverable(row, channel)) undeliverable += 1;
     else if (!consentAllows(category, consentOn(row, channel))) noConsent += 1;
     else reachable += 1;
   }
 
-  return { reachable, noAddress, noConsent };
+  return { reachable, noAddress, noConsent, undeliverable };
 }
 
 /** Every channel at once, for a set of rows already in memory. */
@@ -108,16 +133,33 @@ export async function reachAllInDb(
       ? { [consentField(channel)]: 'OPTED_IN' }
       : { [consentField(channel)]: { not: 'OPTED_OUT' } };
 
+  const statusField = (channel: Channel) =>
+    channel === 'EMAIL' ? 'emailStatus' : channel === 'SMS' ? 'smsStatus' : 'whatsappStatus';
+
+  /** Not permanently refused by the provider. */
+  const usable = (channel: Channel): Prisma.CustomerWhereInput => ({
+    [statusField(channel)]: { not: 'UNDELIVERABLE' },
+  });
+
   const entries = await Promise.all(
     CHANNELS.map(async (channel) => {
-      const [total, withAddress, reachable] = await Promise.all([
+      // Counted in the same order the in-memory version reports them, so the
+      // two can never disagree about the same segment: has an address, the
+      // address still works, consent allows it.
+      const [total, withAddress, deliverable, reachable] = await Promise.all([
         client.customer.count({ where }),
         client.customer.count({ where: { AND: [where, addressed(channel)] } }),
-        client.customer.count({ where: { AND: [where, addressed(channel), consentOk(channel)] } }),
+        client.customer.count({ where: { AND: [where, addressed(channel), usable(channel)] } }),
+        client.customer.count({ where: { AND: [where, addressed(channel), usable(channel), consentOk(channel)] } }),
       ]);
       return [
         channel,
-        { reachable, noAddress: total - withAddress, noConsent: withAddress - reachable },
+        {
+          reachable,
+          noAddress: total - withAddress,
+          undeliverable: withAddress - deliverable,
+          noConsent: deliverable - reachable,
+        },
       ] as const;
     }),
   );

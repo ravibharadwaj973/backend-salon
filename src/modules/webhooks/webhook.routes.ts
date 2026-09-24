@@ -17,7 +17,7 @@ interface CloudApiStatus {
   id: string;
   status: 'sent' | 'delivered' | 'read' | 'failed';
   timestamp: string;
-  errors?: { title: string; message?: string }[];
+  errors?: { code?: number; title: string; message?: string }[];
 }
 
 interface CloudApiChangeValue {
@@ -134,6 +134,10 @@ router.post(
           providerMessageId: status.id,
           status: mapped,
           errorMessage: status.errors?.[0]?.title,
+          // Meta's code, which is the only thing that separates "this number is
+          // not on WhatsApp" from "the template was malformed". Both arrive as
+          // failed; only one is a reason to stop writing to this customer.
+          errorCode: status.errors?.[0]?.code != null ? String(status.errors[0]!.code) : undefined,
           at: status.timestamp ? new Date(Number(status.timestamp) * 1000) : new Date(),
           // null is the ordinary case now, not a failure: the status is applied
           // by provider message id and the tenant is only the extra check.
@@ -262,6 +266,9 @@ router.post(
       await applyStatusUpdate({
         providerMessageId,
         status: mapped,
+        // Permanent or Transient, straight from Resend. A full mailbox is a bad
+        // afternoon; a mailbox that does not exist is a bad address.
+        bounceType: body.data?.bounce?.type,
         tenantId: owner?.tenantId,
         errorMessage:
           type === 'email.bounced'
@@ -275,11 +282,21 @@ router.post(
       }).catch((err: unknown) => logger.warn({ err, providerMessageId }, 'email status update failed'));
     }
 
-    // Stop mailing an address that bounced hard or complained.
-    if (type === 'email.bounced' || type === 'email.complained') {
-      const hardBounce = type === 'email.complained' || body.data?.bounce?.type !== 'Transient';
-      if (!hardBounce) return;
-
+    /**
+     * A COMPLAINT IS CONSENT. A BOUNCE IS NOT.
+     *
+     * Both used to set emailConsent to OPTED_OUT, and for a bounce that is a
+     * lie about a person: somebody who mistyped their address at the counter
+     * is recorded as having refused marketing. It is also unfixable — correct
+     * the address and the consent it overwrote is still gone.
+     *
+     * A hard bounce now marks the ADDRESS undeliverable, which
+     * applyStatusUpdate has already done by the time we get here, and which
+     * clears itself the moment somebody edits the address. Only a complaint
+     * touches consent, because somebody pressing "spam" received the message
+     * perfectly well and is telling us something about what they want.
+     */
+    if (type === 'email.complained') {
       const address = owner?.toAddress ?? (Array.isArray(body.data?.to) ? body.data?.to[0] : body.data?.to);
       if (!address) return;
 
@@ -288,7 +305,7 @@ router.post(
       // have them on file — the same mistake the WhatsApp STOP handler made.
       // Without a tenant there is nothing safe to do, so nothing is done.
       if (!owner?.tenantId) {
-        logger.warn({ providerMessageId, type }, 'bounce for a message no salon owns — consent left alone');
+        logger.warn({ providerMessageId, type }, 'complaint for a message no salon owns — consent left alone');
         return;
       }
 
@@ -303,7 +320,7 @@ router.post(
 
       logger.info(
         { tenantId: owner.tenantId, address, type, updated: result.count },
-        'email consent switched off after bounce or complaint',
+        'email consent switched off after a spam complaint',
       );
     }
   }),

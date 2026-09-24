@@ -19,6 +19,9 @@ const row = (over: Partial<ContactRow> = {}): ContactRow => ({
   whatsappConsent: 'OPTED_IN',
   smsConsent: 'OPTED_IN',
   emailConsent: 'OPTED_IN',
+  whatsappStatus: 'UNKNOWN',
+  smsStatus: 'UNKNOWN',
+  emailStatus: 'UNKNOWN',
   ...over,
 });
 
@@ -39,7 +42,7 @@ describe('who a segment can reach', () => {
     // numbers shown before a send.
     for (const channel of ['WHATSAPP', 'SMS', 'EMAIL'] as const) {
       const r = reachOf(BOOK, channel, 'MARKETING');
-      expect(r.reachable + r.noAddress + r.noConsent).toBe(BOOK.length);
+      expect(r.reachable + r.noAddress + r.noConsent + r.undeliverable).toBe(BOOK.length);
     }
   });
 
@@ -89,6 +92,65 @@ describe('who a segment can reach', () => {
 
   it('says nobody rather than everybody for an empty segment', () => {
     const empty = reachAll([], 'MARKETING');
-    expect(empty.EMAIL).toEqual({ reachable: 0, noAddress: 0, noConsent: 0 });
+    expect(empty.EMAIL).toEqual({ reachable: 0, noAddress: 0, noConsent: 0, undeliverable: 0 });
+  });
+
+  /**
+   * A dead address is not a missing address and not a refusal. The salon has
+   * to do something different about each: collect one, correct one, respect
+   * one — so they are counted apart, and none of them is counted as reachable.
+   */
+  describe('addresses a provider has permanently refused', () => {
+    it('counts them apart from missing addresses and from refusals', () => {
+      const dead = [row({ emailStatus: 'UNDELIVERABLE' })];
+      const r = reachOf(dead, 'EMAIL', 'MARKETING');
+      expect(r).toEqual({ reachable: 0, noAddress: 0, noConsent: 0, undeliverable: 1 });
+    });
+
+    it('still accounts for everybody', () => {
+      const mixed = [
+        ...BOOK,
+        row({ emailStatus: 'UNDELIVERABLE' }),
+        row({ whatsappStatus: 'UNDELIVERABLE' }),
+        row({ smsStatus: 'UNDELIVERABLE' }),
+      ];
+      for (const channel of ['WHATSAPP', 'SMS', 'EMAIL'] as const) {
+        const r = reachOf(mixed, channel, 'MARKETING');
+        expect(r.reachable + r.noAddress + r.noConsent + r.undeliverable).toBe(mixed.length);
+      }
+    });
+
+    it('is read per channel, so a dead email does not mute the phone', () => {
+      const one = [row({ emailStatus: 'UNDELIVERABLE' })];
+      expect(reachOf(one, 'EMAIL', 'MARKETING').reachable).toBe(0);
+      expect(reachOf(one, 'WHATSAPP', 'MARKETING').reachable).toBe(1);
+      expect(reachOf(one, 'SMS', 'MARKETING').reachable).toBe(1);
+    });
+
+    it('is reported ahead of consent, because it is the fixable one', () => {
+      // Somebody who is both opted out and undeliverable is a dead address
+      // first: re-asking for consent on a number that does not exist is work
+      // that cannot pay off.
+      const both = [row({ emailConsent: 'OPTED_OUT', emailStatus: 'UNDELIVERABLE' })];
+      const r = reachOf(both, 'EMAIL', 'MARKETING');
+      expect(r.undeliverable).toBe(1);
+      expect(r.noConsent).toBe(0);
+    });
+
+    it('does not count as undeliverable when there is no address to begin with', () => {
+      // A blank field cannot have bounced; reporting it as a dead address
+      // would send the salon looking for a typo that is not there.
+      const none = [row({ email: null, emailStatus: 'UNDELIVERABLE' })];
+      const r = reachOf(none, 'EMAIL', 'MARKETING');
+      expect(r.noAddress).toBe(1);
+      expect(r.undeliverable).toBe(0);
+    });
+
+    it('holds a utility message back too — a dead address is dead either way', () => {
+      // Consent bends for a reminder. A number that does not exist does not.
+      const dead = [row({ whatsappStatus: 'UNDELIVERABLE' })];
+      expect(reachOf(dead, 'WHATSAPP', 'UTILITY').reachable).toBe(0);
+      expect(reachOf(dead, 'WHATSAPP', 'UTILITY').undeliverable).toBe(1);
+    });
   });
 });

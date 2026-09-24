@@ -205,6 +205,24 @@ enum LifecycleStage {
   DORMANT
 }
 
+/// Whether a channel's address for this customer actually works.
+///
+/// UNKNOWN is honest rather than optimistic: nothing has been delivered and
+/// nothing has failed, so sending is allowed and the first send is what finds
+/// out. OK means something reached them. UNDELIVERABLE means a provider
+/// reported a PERMANENT failure — a number not on WhatsApp, a mailbox that
+/// does not exist — and the app stops spending money on it until the address
+/// changes.
+///
+/// A temporary failure is deliberately not represented. A full mailbox or a
+/// switched-off phone is not a wrong address, and treating it as one loses a
+/// customer over a bad afternoon.
+enum ReachStatus {
+  UNKNOWN
+  OK
+  UNDELIVERABLE
+}
+
 enum ConsentStatus {
   UNKNOWN
   OPTED_IN
@@ -1268,6 +1286,33 @@ model Customer {
   whatsappConsent ConsentStatus @default(UNKNOWN)
   smsConsent      ConsentStatus @default(UNKNOWN)
   emailConsent    ConsentStatus @default(UNKNOWN)
+
+  /// WHETHER THE ADDRESS WORKS — WHICH IS NOT WHETHER THEY WANT TO HEAR FROM US.
+  ///
+  /// Consent is the customer's decision and only the customer can change it.
+  /// Reachability is a fact about a phone number or an email address, and the
+  /// provider tells us.
+  ///
+  /// They were the same field until now: a hard bounce set emailConsent to
+  /// OPTED_OUT. That is wrong in both directions. A customer who mistyped their
+  /// address at the counter is recorded as having refused marketing, which is a
+  /// lie about a person; and when the address is corrected, the correction does
+  /// not help, because the consent it overwrote is gone for good.
+  ///
+  /// Separating them also lets the app answer a question it could not before:
+  /// "how many of my customers can I actually reach?" — as against how many
+  /// agreed to be reached.
+  whatsappStatus    ReachStatus @default(UNKNOWN)
+  whatsappLastError String?
+  whatsappCheckedAt DateTime?
+
+  smsStatus    ReachStatus @default(UNKNOWN)
+  smsLastError String?
+  smsCheckedAt DateTime?
+
+  emailStatus    ReachStatus @default(UNKNOWN)
+  emailLastError String?
+  emailCheckedAt DateTime?
   consentUpdatedAt DateTime?
 
   // denormalised rollups, maintained by billing/appointment services

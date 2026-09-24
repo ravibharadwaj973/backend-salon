@@ -2,6 +2,7 @@ import type { Channel, ConsentStatus, MessageTemplate, Prisma } from '@prisma/cl
 import { prisma } from '../core/prisma';
 import { runUnscoped } from '../core/context';
 import { logger } from '../core/logger';
+import { classify, recordReachability, suppressionFor } from './reachability';
 import { toE164 } from '../core/ids';
 import { addDays, dateKey, dayjs } from '../core/dates';
 import { formatINR } from '../core/money';
@@ -367,6 +368,47 @@ export async function queueMessage(input: QueueMessageInput) {
     }
   }
 
+  /**
+   * AN ADDRESS A PROVIDER HAS ALREADY REFUSED PERMANENTLY.
+   *
+   * This is the point of the whole thing. A salon pays per message, and a
+   * number that is not on WhatsApp costs exactly as much as one that arrives.
+   * Without this the same dead address is paid for again on every campaign,
+   * for ever, because nothing remembered.
+   *
+   * Sits with the consent gate rather than further down, so a message that
+   * cannot arrive is never metered, never queued, and never counted in a
+   * campaign's reach. Recorded rather than dropped: a salon looking at why
+   * somebody stopped hearing from them gets an answer, and the reason names
+   * the fix, which is to correct the number.
+   */
+  const suppressed = suppressionFor(customer, input.channel);
+
+  if (suppressed) {
+    logger.info(
+      { tenantId: input.tenantId, customerId: input.customerId, channel: input.channel },
+      'not queued: this address was permanently refused by the provider',
+    );
+
+    return prisma.messageLog.create({
+      data: {
+        tenantId: input.tenantId,
+        branchId: input.branchId ?? null,
+        channel: input.channel,
+        customerId: input.customerId ?? null,
+        leadId: input.leadId ?? null,
+        campaignId: input.campaignId ?? null,
+        journeyRunId: input.journeyRunId ?? null,
+        templateId: template?.id ?? null,
+        toAddress,
+        status: 'SKIPPED',
+        errorCode: 'UNDELIVERABLE',
+        errorMessage: suppressed.reason,
+        payload: (input.variables ?? {}) as Prisma.InputJsonValue,
+      },
+    });
+  }
+
   const variables = {
     ...(await buildVariables({
       tenantId: input.tenantId,
@@ -706,6 +748,15 @@ export async function applyStatusUpdate(input: {
   messageLogId?: string;
   status: 'DELIVERED' | 'READ' | 'FAILED' | 'CLICKED' | 'DELAYED' | 'BOUNCED' | 'COMPLAINED';
   errorMessage?: string;
+  /**
+   * The provider's own code, and for email whether the bounce was permanent.
+   *
+   * Needed to tell "this number is not on WhatsApp" from "the template was
+   * malformed" — both arrive as FAILED, and only one of them is a reason to
+   * stop writing to that customer.
+   */
+  errorCode?: string;
+  bounceType?: string;
   at?: Date;
   /**
    * The salon the webhook was for, worked out from the phone number the event
@@ -759,6 +810,24 @@ export async function applyStatusUpdate(input: {
   }
 
   const updated = await runUnscoped(() => prisma.messageLog.update({ where: { id: log.id }, data }));
+
+  /**
+   * What this tells us about the ADDRESS, as against this one message.
+   *
+   * Done here rather than in each webhook because every provider's status --
+   * Meta's, Resend's, MSG91's -- already funnels through this function. Three
+   * handlers doing it separately is three places to get the permanent/temporary
+   * distinction wrong, and the first one to get it wrong loses a customer.
+   */
+  await recordReachability({
+    customerId: log.customerId,
+    channel: log.channel,
+    outcome: classify(log.channel, input.status, {
+      errorCode: input.errorCode,
+      errorMessage: input.errorMessage,
+      bounceType: input.bounceType,
+    }),
+  });
 
   if (log.campaignId) {
     /**

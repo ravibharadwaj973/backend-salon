@@ -380,11 +380,37 @@ export async function updateCustomer(id: string, input: Partial<CustomerInput>) 
   const consentChanged =
     input.whatsappConsent !== undefined || input.smsConsent !== undefined || input.emailConsent !== undefined;
 
+  /**
+   * A CORRECTED ADDRESS IS A NEW ADDRESS.
+   *
+   * A number marked undeliverable stops receiving messages, which is the point
+   * — but the usual reason it was wrong is a digit mistyped at the counter, and
+   * the usual fix is somebody correcting it here. If that correction did not
+   * clear the flag, the fix would appear to do nothing and the customer would
+   * be lost for good by a typo somebody had already put right.
+   *
+   * Cleared to UNKNOWN rather than OK, because nothing has been delivered to
+   * the new address yet. The next send finds out, which is what UNKNOWN means.
+   */
+  const phoneChanged = input.phone !== undefined && input.phone !== customer.phone;
+  const emailChanged = input.email !== undefined && (input.email || null) !== customer.email;
+
   return prisma.customer.update({
     where: { id },
     data: {
       ...(input as Prisma.CustomerUpdateInput),
       ...(consentChanged ? { consentUpdatedAt: new Date() } : {}),
+      ...(phoneChanged
+        ? {
+            whatsappStatus: 'UNKNOWN' as const,
+            whatsappLastError: null,
+            whatsappCheckedAt: null,
+            smsStatus: 'UNKNOWN' as const,
+            smsLastError: null,
+            smsCheckedAt: null,
+          }
+        : {}),
+      ...(emailChanged ? { emailStatus: 'UNKNOWN' as const, emailLastError: null, emailCheckedAt: null } : {}),
     },
   });
 }
