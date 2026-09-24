@@ -83,6 +83,8 @@ export interface SharePreview {
   quota: { meter: string | null; available: number | null };
   /** Opens WhatsApp with the message typed in. Null when there is no number. */
   whatsappLink: string | null;
+  /** Links that resolved for this customer, invoice or appointment. */
+  quickLinks: { label: string; url: string }[];
 }
 
 function consentFor(
@@ -175,5 +177,22 @@ export async function previewShare(tenantId: string, input: SharePreviewInput): 
     },
     quota: { meter, available },
     whatsappLink,
+    /**
+     * The links this particular message could carry, already resolved.
+     *
+     * Writing a message by hand is the common case -- "No template, write it
+     * myself" is the first option in the picker -- and the one thing that is
+     * hard to type by hand is the invoice address: it ends in a 24-character
+     * token nobody can read off a screen. So the ones that resolved for THIS
+     * customer, invoice or appointment are handed over for the sheet to offer
+     * as one-press inserts. A link that did not resolve is not offered, rather
+     * than offered and broken.
+     */
+    quickLinks: [
+      { label: 'Invoice', url: variables.invoice_link },
+      { label: 'Booking page', url: variables.booking_link },
+      { label: 'Feedback form', url: variables.feedback_link },
+      { label: 'Google review', url: variables.google_review_link },
+    ].filter((link): link is { label: string; url: string } => Boolean(link.url)),
   };
 }
