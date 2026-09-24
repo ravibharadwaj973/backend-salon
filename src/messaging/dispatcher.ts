@@ -526,6 +526,18 @@ export async function deliver(messageLogId: string) {
    * cancellation and a birthday wish arrived under the same heading and none
    * of them could be found again by searching.
    */
+  /**
+   * The salon's own name and mark, looked up rather than joined: MessageLog
+   * holds tenantId but has no tenant relation, and one extra read on the email
+   * path is a smaller change than a schema migration for a logo.
+   */
+  const brand =
+    log.channel === 'EMAIL'
+      ? await runUnscoped(() =>
+          prisma.tenant.findUnique({ where: { id: log.tenantId }, select: { name: true, logoUrl: true } }),
+        ).catch(() => null)
+      : null;
+
   const subject =
     log.channel === 'EMAIL' && log.template?.headerText
       ? renderTemplate(log.template.headerText, variables).trim() || undefined
@@ -542,6 +554,20 @@ export async function deliver(messageLogId: string) {
     buttonValues,
     links,
     subject,
+    /**
+     * The SALON's identity, never the platform's.
+     *
+     * The customer booked with the salon, paid the salon, and has never heard
+     * of Parlon. A Parlon logo on their invoice would be an unfamiliar company
+     * asking them for money, which is what a phishing email looks like -- and
+     * it would take the credit for a relationship the salon built.
+     *
+     * Parlon appears in one place and for one reason: the sender name reads
+     * "Glow Studio via Parlon" when a salon sends on the shared address, which
+     * is there to explain a domain the customer does not recognise. A salon on
+     * its own verified domain does not even get that.
+     */
+    brand: brand ?? undefined,
   });
 
   await runUnscoped(() =>

@@ -43,7 +43,11 @@ export class ResendEmailProvider implements MessageProvider {
    * characters the customer has to select and copy. Gmail guesses at this;
    * plenty of clients do not.
    */
-  private html(body: string, links: { text: string; url: string }[] = []): string {
+  private html(
+    body: string,
+    links: { text: string; url: string }[] = [],
+    brand?: { name: string; logoUrl?: string | null },
+  ): string {
     const escaped = body
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
@@ -74,9 +78,23 @@ export class ResendEmailProvider implements MessageProvider {
       )
       .join('');
 
+    // The salon's mark, above its own message.
+    //
+    // A remote image is blocked by default in Outlook and by many people in
+    // Gmail, so the alt text is the salon's name rather than empty -- a blocked
+    // logo then reads as the salon's name instead of as a broken picture. A
+    // salon with no logo gets the name as text, set the same size, which looks
+    // deliberate rather than missing.
+    const header = brand
+      ? brand.logoUrl
+        ? `<img src="${this.attr(brand.logoUrl)}" alt="${this.attr(brand.name)}"
+             height="40" style="max-height:40px;width:auto;border:0;display:block;margin:0 0 18px">`
+        : `<p style="margin:0 0 18px;font-size:17px;font-weight:600;color:#221a20">${this.text(brand.name)}</p>`
+      : '';
+
     return (
       `<div style="font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:15px;line-height:1.6;color:#221a20">` +
-      `${linked}${buttons}</div>`
+      `${header}${linked}${buttons}</div>`
     );
   }
 
@@ -117,7 +135,7 @@ export class ResendEmailProvider implements MessageProvider {
           to: [message.to],
           subject: message.subject ?? 'A message from your salon',
           text: this.plain(message.body, message.links),
-          html: this.html(message.body, message.links),
+          html: this.html(message.body, message.links, message.brand),
           ...(replyTo ? { reply_to: replyTo } : {}),
         }),
       });

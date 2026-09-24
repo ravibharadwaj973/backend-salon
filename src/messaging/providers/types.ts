@@ -26,6 +26,17 @@ export interface OutboundMessage {
    * draws the button.
    */
   links?: { text: string; url: string }[];
+  /**
+   * Whose message this is, for a channel that draws one.
+   *
+   * The SALON's, never Parlon's. The customer booked with the salon, paid the
+   * salon, and has never heard of the platform -- a Parlon logo at the top of
+   * their invoice would be a company they do not recognise asking them for
+   * money, which is what a phishing email looks like. Parlon's only appearance
+   * is in the sender name when a salon uses the shared address, where it is
+   * there to explain the unfamiliar domain rather than to advertise.
+   */
+  brand?: { name: string; logoUrl?: string | null };
   subject?: string;
   mediaUrl?: string;
 }
