@@ -66,6 +66,52 @@ export async function restoreDefaultTemplates() {
 }
 
 /**
+ * PUT THIS TEMPLATE BACK THE WAY IT SHIPS.
+ *
+ * restoreDefaultTemplates only ADDS what is absent, and that is right: a salon
+ * that rewrote its confirmation message must not lose those words to a button
+ * called Restore. But it also means an improved default can never reach a
+ * salon that already has the old one, and the salons who need it most are
+ * exactly the ones who have been running longest.
+ *
+ * That is how an invoice email kept going out with no link in it after the
+ * default had carried one for hours: the row in the database predated the
+ * change, and nothing in the app could replace it.
+ *
+ * So this is the deliberate, one-template, you-asked-for-it version. It takes
+ * the wording, subject, buttons and variables from the shipped default and
+ * leaves everything the salon's relationship with Meta depends on exactly
+ * alone — the provider id, the approval status, the rejection reason and the
+ * variable order Meta recorded at submission. Rewriting an approved WhatsApp
+ * template's body here would not change Meta's copy; it would only make ours
+ * disagree with theirs, and every send would go out with the old wording under
+ * a body nobody can see.
+ */
+export async function resetTemplateToDefault(id: string) {
+  const tenantId = requireTenantId();
+  const template = await getTemplate(id);
+
+  const shipped = DEFAULT_TEMPLATES.find((t) => t.name === template.name && t.channel === template.channel);
+  if (!shipped) {
+    throw NotFound(`a shipped default for "${template.name}" on ${template.channel.toLowerCase()}`);
+  }
+
+  const updated = await prisma.messageTemplate.update({
+    where: { id },
+    data: {
+      bodyText: shipped.bodyText,
+      headerText: shipped.headerText ?? null,
+      footerText: shipped.footerText ?? null,
+      buttons: (shipped.buttons ?? []) as Prisma.InputJsonValue,
+      variables: shipped.variables,
+      // Meta's side of the relationship is untouched on purpose. See above.
+    },
+  });
+
+  return { id: updated.id, name: updated.name, channel: updated.channel };
+}
+
+/**
  * Archived templates are hidden by default.
  *
  * deleteTemplate has always been a soft delete -- it sets isActive false so

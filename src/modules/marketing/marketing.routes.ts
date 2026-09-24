@@ -660,6 +660,24 @@ templateRouter.delete(
   ),
 );
 
+/**
+ * Put one template back to the wording it ships with.
+ *
+ * Deliberately per-template and never bulk: it discards whatever the salon
+ * wrote there, so it is an answer to "this one is out of date", not a
+ * housekeeping job that runs over everything they have edited.
+ */
+templateRouter.post(
+  '/:id/reset',
+  requirePermission(PERMISSIONS.TEMPLATE_MANAGE),
+  validate({ params: idParam }),
+  asyncHandler(async (req, res) => {
+    const result = await templates.resetTemplateToDefault(req.params.id!);
+    audit({ action: 'template.reset', entity: 'MessageTemplate', entityId: result.id });
+    return ok(res, result);
+  }),
+);
+
 templateRouter.post(
   '/:id/preview',
   requirePermission(PERMISSIONS.CAMPAIGN_VIEW),
