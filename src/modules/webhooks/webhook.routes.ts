@@ -135,7 +135,9 @@ router.post(
           status: mapped,
           errorMessage: status.errors?.[0]?.title,
           at: status.timestamp ? new Date(Number(status.timestamp) * 1000) : new Date(),
-          tenantId,
+          // null is the ordinary case now, not a failure: the status is applied
+          // by provider message id and the tenant is only the extra check.
+          tenantId: tenantId ?? undefined,
         }).catch((err: unknown) => logger.warn({ err, id: status.id }, 'webhook status update failed'));
       }
 

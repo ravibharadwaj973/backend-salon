@@ -279,8 +279,26 @@ export async function queueMessage(input: QueueMessageInput) {
    * Recorded rather than thrown. The caller is usually a background job
    * working through a list, and a salon that upgrades should be able to see
    * exactly what was held back and why.
+   *
+   * WHICH CATEGORY THIS GATE READS, AND WHY IT IS NOT THE SAME ONE AS CONSENT.
+   *
+   * `category` holds META's verdict, rewritten by every sync. `requestedCategory`
+   * holds ours. Three things read a category and they do not want the same
+   * answer:
+   *
+   *   consent  -> Meta's. If Meta calls it marketing, it needs an opt-in.
+   *   quota    -> Meta's. That is the conversation Meta bills.
+   *   the plan -> OURS. What a plan includes is our promise to the salon.
+   *
+   * Reading Meta's answer here would let Meta change what a plan includes.
+   * A Starter salon's review flow is service by our reckoning and marketing by
+   * theirs, and the day they re-filed it every one of those sends would have
+   * started failing with PLAN_NO_MARKETING — a feature withdrawn from a paying
+   * salon by a third party, with nothing in the app to say why.
    */
-  if (template?.category === 'MARKETING' && !(await tenantHasFeature(input.tenantId, FEATURES.MARKETING))) {
+  const sellsSomething = template && (template.requestedCategory ?? template.category) === 'MARKETING';
+
+  if (template && sellsSomething && !(await tenantHasFeature(input.tenantId, FEATURES.MARKETING))) {
     logger.info(
       { tenantId: input.tenantId, template: template.name, channel: input.channel },
       'marketing message blocked: plan does not include marketing',

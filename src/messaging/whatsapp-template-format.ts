@@ -205,7 +205,10 @@ export function templateProblems(input: {
   bodyText: string;
   headerText?: string | null;
   footerText?: string | null;
-  buttons?: TemplateButton[];
+  // Nullable because that is what a Prisma Json column hands over. Accepting
+  // only undefined made every caller launder the value first, and toMetaTemplate
+  // -- which passes its own input straight through -- could not.
+  buttons?: TemplateButton[] | null;
 }): string[] {
   const problems: string[] = [];
   const body = input.bodyText.trim();

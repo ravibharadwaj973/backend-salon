@@ -15,6 +15,7 @@ export {
   type Converted,
   type MetaComponent,
   type MetaTemplatePayload,
+  type TemplateButton,
 } from './whatsapp-template-format';
 
 /**

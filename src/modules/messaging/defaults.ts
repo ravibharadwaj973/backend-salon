@@ -328,9 +328,15 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     // carry the Google link. MARKETING because Meta decided so -- it was
     // submitted as utility and re-filed -- since asking a favour is
     // promotional in their taxonomy however politely it is worded.
+    // UTILITY is OUR classification, and it is what decides whether a plan
+    // includes this message. Meta will re-file it as marketing at review --
+    // asking a favour is promotional to them -- and that is fine: their answer
+    // lands in `category` and governs consent and billing, ours stays in
+    // `requestedCategory` and governs the plan. Submitting it as utility costs
+    // nothing, because Meta ignores the submitted category either way.
     name: 'google_review_request',
     channel: 'WHATSAPP',
-    category: 'MARKETING',
+    category: 'UTILITY',
     language: 'en',
     bodyText:
       'So glad you enjoyed it, {{customer_name}}! If you have a moment, a review on Google helps {{salon_name}} more than you know: {{google_review_link}} — thank you.',
@@ -338,16 +344,22 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     approvalStatus: 'DRAFT',
   },
 
-  // ------------------------------------------- whatsapp: referenced by journeys
+  // -------------------------------- whatsapp: referenced by journeys & alerts
   /**
-   * Not in the fifteen or the ten, and still seeded: the default journeys name
-   * these, and a journey pointing at a template that does not exist is a step
-   * that silently sends nothing.
+   * Not in the fifteen or the ten, and still seeded: the default journeys and
+   * the notification catalogue name these, and a reference to a template that
+   * does not exist is a step that silently sends nothing.
    */
   {
+    // UTILITY is OUR classification, and it is what decides whether a plan
+    // includes this message. Meta will re-file it as marketing at review --
+    // asking a favour is promotional to them -- and that is fine: their answer
+    // lands in `category` and governs consent and billing, ours stays in
+    // `requestedCategory` and governs the plan. Submitting it as utility costs
+    // nothing, because Meta ignores the submitted category either way.
     name: 'review_request',
     channel: 'WHATSAPP',
-    category: 'MARKETING',
+    category: 'UTILITY',
     language: 'en',
     bodyText:
       'Hi {{customer_name}}, how was your experience at {{salon_name}} today? Rate us in one tap: {{feedback_link}} — it takes a few seconds and it genuinely helps.',
@@ -362,6 +374,30 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     bodyText:
       'Hi {{lead_name}}, thanks for your interest in {{salon_name}}! Reply here or book directly: {{booking_link}} — happy to answer anything first.',
     variables: ['lead_name', 'salon_name', 'booking_link'],
+    approvalStatus: 'DRAFT',
+  },
+  {
+    /**
+     * MARKETING, and no wording makes it otherwise.
+     *
+     * Submitted as utility with every nudge removed — no "keep visiting", no
+     * link, just the numbers — and Meta still filed it as marketing. A points
+     * scheme IS an incentive to return, so the subject is promotional to them
+     * whatever the sentence says.
+     *
+     * Which is why invoice_sent carries the points as well: attached to a
+     * receipt they ride along as utility, because the message's purpose is the
+     * invoice. That is the copy to rely on. This one is here because the
+     * notification catalogue names it, and for salons that want a standalone
+     * points message and have the opt-in to send it.
+     */
+    name: 'loyalty_points_earned',
+    channel: 'WHATSAPP',
+    category: 'MARKETING',
+    language: 'en',
+    bodyText:
+      'You earned {{points_earned}} points at {{salon_name}}, {{customer_name}}. Your balance is now {{points_balance}} points — worth {{points_value}} on a future visit.',
+    variables: ['points_earned', 'salon_name', 'customer_name', 'points_balance', 'points_value'],
     approvalStatus: 'DRAFT',
   },
   {
