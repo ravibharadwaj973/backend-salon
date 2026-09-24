@@ -146,6 +146,29 @@ messagingRouter.get(
   asyncHandler(async (req, res) => ok(res, await setup.getMessagingSetup(req.auth!.tenantId))),
 );
 
+/**
+ * An email field the salon left blank.
+ *
+ * The form sends every field on every save, so an untouched box arrives as ""
+ * -- and z.string().email() refuses "". The result was that filling in the
+ * email settings and leaving Reply-to alone, which the form itself labels
+ * Optional, failed validation and saved NOTHING. Not the address, not the key.
+ * The screen then reported the SERVER's missing variables, because from the
+ * database's point of view the salon had configured nothing, which sent
+ * everybody looking in the wrong place entirely.
+ *
+ * So "" means "not provided" here, exactly as an absent field does.
+ */
+const optionalEmail = z.preprocess(
+  (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+  z
+    .string()
+    .trim()
+    .email('that does not look like an email address — it should read like name@yourdomain.com')
+    .max(160)
+    .optional(),
+);
+
 const setupSchema = z.object({
   whatsapp: z
     .object({
@@ -166,9 +189,9 @@ const setupSchema = z.object({
   email: z
     .object({
       fromName: z.string().trim().max(80).optional(),
-      fromAddress: z.string().trim().email().max(160).optional(),
+      fromAddress: optionalEmail,
       apiKey: z.string().trim().max(200).optional(),
-      replyTo: z.string().trim().email().max(160).optional(),
+      replyTo: optionalEmail,
     })
     .optional(),
 });
