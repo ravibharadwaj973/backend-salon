@@ -528,6 +528,171 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     approvalStatus: 'APPROVED',
   },
 
+  {
+    name: 'appointment_reminder_24h',
+    channel: 'EMAIL',
+    category: 'UTILITY',
+    language: 'en',
+    headerText: 'Tomorrow at {{appointment_time}} — {{salon_name}}',
+    bodyText:
+      'Dear {{customer_name}},\n\nA reminder that we are expecting you tomorrow.\n\nWhen: {{appointment_date}} at {{appointment_time}}\nWith: {{staff_name}}\nWhere: {{branch_address}}\n\nIf anything has changed, reply to this email or call {{salon_phone}}.\n\nWarm regards,\n{{salon_name}}',
+    variables: ['customer_name', 'appointment_date', 'appointment_time', 'staff_name', 'branch_address', 'salon_phone', 'salon_name'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    name: 'appointment_rescheduled',
+    channel: 'EMAIL',
+    category: 'UTILITY',
+    language: 'en',
+    headerText: 'Your appointment has moved — {{salon_name}}',
+    bodyText:
+      'Dear {{customer_name}},\n\nYour appointment at {{salon_name}} has been moved.\n\nNew time: {{appointment_date}} at {{appointment_time}}\nWith: {{staff_name}}\n\nIf that does not suit you, reply to this email and we will find another slot.\n\nWarm regards,\n{{salon_name}}\n{{salon_phone}}',
+    variables: ['customer_name', 'salon_name', 'appointment_date', 'appointment_time', 'staff_name', 'salon_phone'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    name: 'appointment_cancelled',
+    channel: 'EMAIL',
+    category: 'UTILITY',
+    language: 'en',
+    headerText: 'Your appointment on {{appointment_date}} is cancelled',
+    bodyText:
+      'Dear {{customer_name}},\n\nYour appointment at {{salon_name}} on {{appointment_date}} has been cancelled. Nothing further is needed from you.\n\nIf this was not what you expected, reply to this email or call {{salon_phone}} and we will look into it.\n\nWarm regards,\n{{salon_name}}',
+    variables: ['customer_name', 'salon_name', 'appointment_date', 'salon_phone'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    /**
+     * The one email that matters most to a corporate customer, because it is
+     * the one their accounts team will go looking for months later. Subject
+     * carries the invoice number for exactly that reason: it is what makes the
+     * mail findable in a full inbox.
+     */
+    name: 'payment_received',
+    channel: 'EMAIL',
+    category: 'UTILITY',
+    language: 'en',
+    headerText: 'Payment received — invoice {{invoice_number}}',
+    bodyText:
+      'Dear {{customer_name}},\n\nThank you — we have received {{amount}} against invoice {{invoice_number}}.\n\nOutstanding balance: {{due_amount}}\n\nThe full invoice is here if you need it again: {{invoice_link}}\n\nWarm regards,\n{{salon_name}}\n{{salon_phone}}',
+    variables: ['customer_name', 'amount', 'invoice_number', 'due_amount', 'invoice_link', 'salon_name', 'salon_phone'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    name: 'payment_reminder',
+    channel: 'EMAIL',
+    category: 'UTILITY',
+    language: 'en',
+    headerText: '{{due_amount}} outstanding on invoice {{invoice_number}}',
+    bodyText:
+      'Dear {{customer_name}},\n\nA gentle reminder that {{due_amount}} is still outstanding on invoice {{invoice_number}} at {{salon_name}}.\n\nThe invoice is here: {{invoice_link}}\n\nIf it has already been paid, or if something does not look right, reply to this email and we will check it at our end.\n\nWarm regards,\n{{salon_name}}\n{{salon_phone}}',
+    variables: ['customer_name', 'due_amount', 'invoice_number', 'salon_name', 'invoice_link', 'salon_phone'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    name: 'membership_activated',
+    channel: 'EMAIL',
+    category: 'UTILITY',
+    language: 'en',
+    headerText: 'Your {{plan_name}} membership is active',
+    bodyText:
+      'Dear {{customer_name}},\n\nYour {{plan_name}} membership at {{salon_name}} is active and runs until {{expiry_date}}.\n\nMember pricing applies from your next visit — there is nothing to show or mention, we will have it on your account.\n\nWarm regards,\n{{salon_name}}\n{{salon_phone}}',
+    variables: ['customer_name', 'plan_name', 'salon_name', 'expiry_date', 'salon_phone'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    name: 'package_purchased',
+    channel: 'EMAIL',
+    category: 'UTILITY',
+    language: 'en',
+    headerText: 'Your {{package_name}} is ready to use',
+    bodyText:
+      'Dear {{customer_name}},\n\nYour {{package_name}} at {{salon_name}} is ready.\n\nSessions credited: {{sessions_left}}\nValid until: {{expiry_date}}\n\nBook them whenever suits you — reply here or call {{salon_phone}} and we will put them in the diary.\n\nWarm regards,\n{{salon_name}}',
+    variables: ['customer_name', 'package_name', 'salon_name', 'sessions_left', 'expiry_date', 'salon_phone'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    /**
+     * No link, no offer, and a reply-to that reaches a person. An apology with
+     * a booking button in it is not an apology.
+     */
+    name: 'feedback_apology',
+    channel: 'EMAIL',
+    category: 'UTILITY',
+    language: 'en',
+    headerText: 'About your visit to {{salon_name}}',
+    bodyText:
+      'Dear {{customer_name}},\n\nThank you for telling us. We are sorry your visit to {{salon_name}} was not what it should have been.\n\nSomeone from the salon will call you today to put it right. If you would rather write than talk, reply to this email and it will reach us directly.\n\nWarm regards,\n{{salon_name}}\n{{salon_phone}}',
+    variables: ['customer_name', 'salon_name', 'salon_phone'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    name: 'festival_greeting',
+    channel: 'EMAIL',
+    category: 'MARKETING',
+    language: 'en',
+    headerText: 'Happy {{festival_name}} from {{salon_name}}',
+    bodyText:
+      'Dear {{customer_name}},\n\nHappy {{festival_name}} from everyone at {{salon_name}}.\n\nWishing you and your family a bright and joyful celebration.\n\nWarm regards,\n{{salon_name}}',
+    variables: ['customer_name', 'festival_name', 'salon_name'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    name: 'festival_offer',
+    channel: 'EMAIL',
+    category: 'MARKETING',
+    language: 'en',
+    headerText: 'Getting ready for {{festival_name}}?',
+    bodyText:
+      'Dear {{customer_name}},\n\n{{festival_name}} is close, and the diary fills early — it always does.\n\n{{salon_name}} has {{offer}} on until {{offer_expiry}}.\n\nBook whenever suits you: {{booking_link}}\n\nWarm regards,\n{{salon_name}}',
+    variables: ['customer_name', 'festival_name', 'salon_name', 'offer', 'offer_expiry', 'booking_link'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    name: 'wedding_season_invite',
+    channel: 'EMAIL',
+    category: 'MARKETING',
+    language: 'en',
+    headerText: 'Planning a wedding this season?',
+    bodyText:
+      'Dear {{customer_name}},\n\nWedding season is close and {{salon_name}} is taking bridal and family bookings now — trials, mehendi day, and the morning itself.\n\nThese dates go months ahead, so the earlier we know, the more we can plan around you. Tell us the date and we will work back from it: {{booking_link}}\n\nOr simply reply to this email and we will call you.\n\nWarm regards,\n{{salon_name}}\n{{salon_phone}}',
+    variables: ['customer_name', 'salon_name', 'booking_link', 'salon_phone'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    name: 'new_service_launch',
+    channel: 'EMAIL',
+    category: 'MARKETING',
+    language: 'en',
+    headerText: 'Something new at {{salon_name}}: {{service_name}}',
+    bodyText:
+      'Dear {{customer_name}},\n\nWe have added something new at {{salon_name}}: {{service_name}}.\n\n{{service_note}}\n\nHave a look whenever you are curious: {{booking_link}}\n\nWarm regards,\n{{salon_name}}',
+    variables: ['customer_name', 'salon_name', 'service_name', 'service_note', 'booking_link'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    name: 'first_visit_anniversary',
+    channel: 'EMAIL',
+    category: 'MARKETING',
+    language: 'en',
+    headerText: 'A year with {{salon_name}}',
+    bodyText:
+      'Dear {{customer_name}},\n\nIt has been a year since your first visit to {{salon_name}} — {{total_visits}} visits since then.\n\nThank you for staying with us. It is not something we take for granted.\n\nWhenever you are due, we are here: {{booking_link}}\n\nWarm regards,\n{{salon_name}}',
+    variables: ['customer_name', 'salon_name', 'total_visits', 'booking_link'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    name: 'rebooking_reminder',
+    channel: 'EMAIL',
+    category: 'MARKETING',
+    language: 'en',
+    headerText: 'Time for your next {{last_service}}?',
+    bodyText:
+      'Dear {{customer_name}},\n\nIt has been {{days_since_visit}} days since your last {{last_service}} at {{salon_name}} — around the point most people are ready for the next one.\n\nBook whenever suits you: {{booking_link}}\n\nWarm regards,\n{{salon_name}}',
+    variables: ['customer_name', 'days_since_visit', 'last_service', 'salon_name', 'booking_link'],
+    approvalStatus: 'APPROVED',
+  },
+
   // ------------------------------------------------------------------ SMS --
   /**
    * Deliberately few, and deliberately short.
@@ -559,6 +724,17 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     category: 'UTILITY',
     language: 'en',
     bodyText: '{{salon_name}}: Reminder, your appointment is tomorrow at {{appointment_time}}. See you then.',
+    variables: ['salon_name', 'appointment_time'],
+    approvalStatus: 'DRAFT',
+  },
+  {
+    // The one SMS that earns its cost most reliably: the hour before, when a
+    // WhatsApp sitting unread costs the salon an empty chair.
+    name: 'appointment_reminder_2h',
+    channel: 'SMS',
+    category: 'UTILITY',
+    language: 'en',
+    bodyText: '{{salon_name}}: Your appointment is at {{appointment_time}} today. See you shortly.',
     variables: ['salon_name', 'appointment_time'],
     approvalStatus: 'DRAFT',
   },
