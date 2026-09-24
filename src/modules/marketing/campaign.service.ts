@@ -151,6 +151,80 @@ export async function updateCampaign(id: string, input: Partial<CampaignInput> &
   });
 }
 
+/**
+ * SEND THIS CAMPAIGN AGAIN — AS A NEW CAMPAIGN.
+ *
+ * A finished campaign cannot be re-run in place, and that is not a missing
+ * feature. Its numbers belong to one send: sentCount, deliveredCount, the
+ * bookings attributed inside its window, the cost. Running the same row twice
+ * mixes two sends into one set of figures, and the figure is the entire point
+ * of the screen — a salon deciding whether an offer was worth sending cannot
+ * be handed the average of two attempts a month apart.
+ *
+ * So "send again" copies it. The first send keeps its history and its ROI; the
+ * copy starts at zero and earns its own. It is created as a DRAFT rather than
+ * sent, because the audience, the wording or the offer usually wants a look
+ * before it goes out a second time — and because a button that silently
+ * messages a few hundred people is the wrong button to build.
+ *
+ * The segment is REFERENCED, not copied: a rule segment is meant to move, and
+ * the second send should reach whoever matches now rather than whoever matched
+ * in September.
+ */
+export async function duplicateCampaign(id: string) {
+  const tenantId = requireTenantId();
+  const original = await prisma.campaign.findUnique({ where: { id } });
+  if (!original) throw NotFound('Campaign');
+
+  await assertCampaignAllowed(tenantId);
+
+  const segment = original.segmentId
+    ? await prisma.segment.findUnique({ where: { id: original.segmentId } })
+    : null;
+
+  return prisma.campaign.create({
+    data: {
+      tenantId,
+      branchId: original.branchId,
+      name: nextCopyName(original.name),
+      channel: original.channel,
+      templateId: original.templateId,
+      segmentId: original.segmentId,
+      costPerMessage: original.costPerMessage,
+      attributionWindowDays: original.attributionWindowDays,
+      variables: (original.variables ?? {}) as Prisma.InputJsonValue,
+      // Everything the first send earned stays with the first send.
+      status: 'DRAFT',
+      scheduledAt: null,
+      startedAt: null,
+      completedAt: null,
+      sentCount: 0,
+      deliveredCount: 0,
+      readCount: 0,
+      failedCount: 0,
+      bookingCount: 0,
+      revenue: 0,
+      cost: 0,
+      targetCount: segment?.lastCount ?? 0,
+      createdById: currentUserId(),
+    },
+  });
+}
+
+/**
+ * "Diwali offer" becomes "Diwali offer (2)", and its copy "(3)".
+ *
+ * Counting rather than appending "copy of copy of": the fourth send of a
+ * seasonal campaign is a normal thing for a salon to do, and by then the name
+ * should still be readable in a list.
+ */
+function nextCopyName(name: string): string {
+  const match = /^(.*?)\s*\((\d+)\)$/.exec(name);
+  const base = match ? match[1]! : name;
+  const next = match ? Number(match[2]) + 1 : 2;
+  return `${base} (${next})`.slice(0, 120);
+}
+
 /** Queues the campaign for the worker to fan out. */
 export async function launchCampaign(id: string, sendAt?: Date) {
   const campaign = await prisma.campaign.findUnique({ where: { id } });

@@ -283,6 +283,26 @@ campaignRouter.post(
   }),
 );
 
+/**
+ * Send it again — as a copy.
+ *
+ * A finished campaign's numbers belong to one send, so re-running the row
+ * would mix two attempts into one ROI figure, which is the only figure the
+ * campaigns screen exists to show. The copy is a DRAFT: the audience and the
+ * wording usually want a look before a second send, and a button that quietly
+ * messages a few hundred people is the wrong button to build.
+ */
+campaignRouter.post(
+  '/:id/duplicate',
+  requirePermission(PERMISSIONS.CAMPAIGN_MANAGE),
+  validate({ params: idParam }),
+  asyncHandler(async (req, res) => {
+    const campaign = await campaigns.duplicateCampaign(req.params.id!);
+    audit({ action: 'campaign.duplicated', entity: 'Campaign', entityId: campaign.id, after: { from: req.params.id } });
+    return created(res, campaign);
+  }),
+);
+
 campaignRouter.post(
   '/:id/pause',
   requirePermission(PERMISSIONS.CAMPAIGN_MANAGE),
