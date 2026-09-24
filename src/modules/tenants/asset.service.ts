@@ -1,7 +1,9 @@
 import { prisma } from '../../core/prisma';
 import { requireTenantId, runUnscoped } from '../../core/context';
 import { BadRequest, NotFound } from '../../core/errors';
-import { PUBLIC_API_BASE } from '../../config/env';
+import { PUBLIC_API_BASE, env } from '../../config/env';
+
+const PUBLIC_API_URL_SET = Boolean(env.PUBLIC_API_URL);
 
 /**
  * WHAT A SALON MAY UPLOAD AS ITS LOGO.
@@ -48,6 +50,22 @@ function sniff(bytes: Buffer): string | null {
  */
 export async function saveTenantLogo(dataUrl: string) {
   const tenantId = requireTenantId();
+
+  /**
+   * Refused here rather than at boot.
+   *
+   * The address is STORED when the logo is uploaded, so a relative one would
+   * sit in every email already sent and resolve against the customer's mail
+   * client — a broken image nobody can repair afterwards, because a sent
+   * message is never re-rendered. Better to refuse the upload with a sentence
+   * somebody can act on than to write a URL that can never be right.
+   */
+  if (!PUBLIC_API_URL_SET) {
+    throw BadRequest(
+      'This server does not know its own public address yet, so the logo would be saved with a link that cannot be ' +
+        'opened from an email. Set PUBLIC_API_URL on the server and try again.',
+    );
+  }
 
   const match = /^data:([a-z]+\/[a-z0-9.+-]+);base64,(.+)$/i.exec(dataUrl.trim());
   if (!match) {

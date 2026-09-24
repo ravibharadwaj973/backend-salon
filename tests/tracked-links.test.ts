@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { shortUrl } from '../src/messaging/tracked-links';
 
 /**
  * Link rewriting, checked on the parts that do not need a database.
@@ -83,5 +84,32 @@ describe('what the redirect must not do', () => {
     // salon's click rate is quietly wrong in a way nobody can see.
     const REDIRECT_STATUS = 302;
     expect(REDIRECT_STATUS).toBe(302);
+  });
+});
+
+/**
+ * THE INVOICE LINK THAT ASKED THE CUSTOMER TO SIGN IN.
+ *
+ * shortUrl built the tracked address on PUBLIC_APP_URL — the Next.js app —
+ * while the /r/:code handler that resolves it lives in app.ts on the API, a
+ * different host. So every link a customer tapped landed on the app, which has
+ * no such route, and its auth middleware turned an invoice into
+ *
+ *     https://parlon.jharavi.in/login?next=%2Fr%2FTbHnkMy
+ *
+ * A customer opening their own bill was asked to sign in to a salon system
+ * they will never have an account for. The redirect had been right all along;
+ * it was never reachable at the address printed in the message.
+ */
+describe('a tracked link points at the server that can answer it', () => {
+  it('is built on the API origin, where /r/:code is handled', () => {
+    // /r/ sits deliberately OUTSIDE the API prefix — it is opened by a customer
+    // who has never heard of an API, and every character costs money in an SMS.
+    expect(shortUrl('TbHnkMy')).toBe('https://api.example.test/r/TbHnkMy');
+    expect(shortUrl('TbHnkMy')).not.toContain('/api/v1');
+  });
+
+  it('never points at the app, which would answer with a login page', () => {
+    expect(shortUrl('TbHnkMy')).not.toContain('app.example.test');
   });
 });

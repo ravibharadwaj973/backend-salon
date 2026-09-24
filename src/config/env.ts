@@ -182,15 +182,33 @@ if (isProd && /localhost|127\.0\.0\.1/.test(env.PUBLIC_APP_URL)) {
  */
 export const PUBLIC_API_BASE = `${env.PUBLIC_API_URL}${env.API_PREFIX}`;
 
+/**
+ * A WARNING, NOT AN EXIT — AND THE DIFFERENCE MATTERS.
+ *
+ * This started as process.exit(1), copying the PUBLIC_APP_URL guard above, and
+ * that was the wrong judgement. PUBLIC_APP_URL earns an exit because without
+ * it EVERY booking and feedback link in every message points at localhost:
+ * the product does not work at all, and failing loudly at deploy is kinder
+ * than failing silently at 2am.
+ *
+ * PUBLIC_API_URL is not that. Without it two features degrade — a logo upload
+ * is refused with a sentence, and links go out untracked but correct — and
+ * everything else is untouched. Taking an entire salon platform offline over a
+ * logo is a worse outage than the one being prevented, and it is exactly what
+ * happened: the deploy built, pushed the schema, started the container, and
+ * the container exited before it could answer its health check.
+ *
+ * So it says so, loudly, once, and the server runs.
+ */
 if (isProd && !env.PUBLIC_API_URL) {
   // eslint-disable-next-line no-console
-  console.error(
-    'PUBLIC_API_URL is not set in production.\n' +
-      "An uploaded logo's address is stored when it is uploaded, so every email carrying it would hold a relative\n" +
-      'path that resolves against the customer\'s mail client and shows a broken image.\n' +
-      'Set PUBLIC_API_URL to this server\'s own public address, e.g. https://api.parlon.jharavi.in',
+  console.warn(
+    'PUBLIC_API_URL is not set.\n' +
+      "  · Logo uploads will be refused, because a logo's address is STORED at upload time and a relative one would\n" +
+      "    resolve against the customer's mail client, showing a broken image in every email already sent.\n" +
+      '  · Links in messages will not be click-tracked. They will still work.\n' +
+      "Set PUBLIC_API_URL to this server's own public address, e.g. https://api.parlon.jharavi.in",
   );
-  process.exit(1);
 }
 
 /**

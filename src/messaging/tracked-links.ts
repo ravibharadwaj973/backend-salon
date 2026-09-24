@@ -60,9 +60,22 @@ function tidy(url: string): string {
   return url.replace(TRAILING, '');
 }
 
-/** What a rewritten link looks like to the customer. */
+/**
+ * What a rewritten link looks like to the customer.
+ *
+ * THE API'S ORIGIN, NOT THE APP'S. This was PUBLIC_APP_URL, and the /r/:code
+ * handler lives in app.ts on the API — a different host. So every tracked link
+ * a customer tapped arrived at the Next.js app, which has no such route, and
+ * its auth middleware turned an invoice link into
+ *
+ *     /login?next=%2Fr%2FTbHnkMy
+ *
+ * A customer opening their bill was asked to sign in to a salon system they
+ * have no account for. The redirect had been correct all along; it was simply
+ * never reachable at the address we printed.
+ */
 export function shortUrl(code: string): string {
-  return `${env.PUBLIC_APP_URL}/r/${code}`;
+  return `${env.PUBLIC_API_URL}/r/${code}`;
 }
 
 /**
@@ -80,6 +93,23 @@ export async function rewriteLinks(input: {
 }): Promise<string> {
   const found = [...new Set((input.body.match(URL_PATTERN) ?? []).map(tidy))].filter(Boolean);
   if (found.length === 0) return input.body;
+
+  /**
+   * No API origin, no tracking.
+   *
+   * Tracking is a nice-to-have; the link working is not. Without
+   * PUBLIC_API_URL every rewritten link would point at `/r/xxx` with no host
+   * in front of it, which resolves against wherever the customer's mail client
+   * happens to be — that is, nowhere. Leaving the real link alone loses a click
+   * count. Rewriting it loses the customer.
+   */
+  if (!env.PUBLIC_API_URL) {
+    logger.warn(
+      { messageLogId: input.messageLogId },
+      'links not tracked: PUBLIC_API_URL is not set, so a tracked link would have no host to resolve against',
+    );
+    return input.body;
+  }
 
   try {
     let body = input.body;
