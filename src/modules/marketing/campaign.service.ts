@@ -204,14 +204,42 @@ export async function dispatchCampaign(campaignId: string) {
     prisma.campaign.findUnique({ where: { id: campaignId }, include: { template: true } }),
   );
   if (!campaign) return { sent: 0, skipped: 0, reason: 'not_found' };
-  if (campaign.status === 'PAUSED' || campaign.status === 'CANCELLED') {
-    return { sent: 0, skipped: 0, reason: 'not_active' };
-  }
   if (!campaign.segmentId || !campaign.template) return { sent: 0, skipped: 0, reason: 'incomplete' };
 
-  await runUnscoped(() =>
-    prisma.campaign.update({ where: { id: campaignId }, data: { status: 'RUNNING', startedAt: new Date() } }),
+  /**
+   * CLAIM THE CAMPAIGN, OR DO NOTHING.
+   *
+   * This read the status, checked two of the six values, and then set RUNNING
+   * unconditionally. Jobs retry five times. So a dispatch that failed partway
+   * -- one provider timeout, one database blip -- came back and messaged
+   * EVERYONE again from the beginning, including the people it had already
+   * reached, and did that up to five times. A five-person segment produced
+   * twenty-eight sends, and every one of them was a real message to a real
+   * customer.
+   *
+   * launchCampaign already refuses to re-send a completed campaign, so this
+   * was never somebody pressing the button twice. It was the retry, which
+   * nobody presses and nobody sees.
+   *
+   * updateMany with the status in the WHERE clause is the fix: the database
+   * decides who runs. Two workers racing, or a retry arriving late, find zero
+   * rows updated and stop. PAUSED and CANCELLED are excluded by not being on
+   * the list, which is the same check as before and one fewer place to forget.
+   */
+  const claimed = await runUnscoped(() =>
+    prisma.campaign.updateMany({
+      where: { id: campaignId, status: { in: ['DRAFT', 'SCHEDULED', 'RUNNING'] } },
+      data: { status: 'RUNNING', startedAt: campaign.startedAt ?? new Date() },
+    }),
   );
+
+  if (claimed.count === 0) {
+    logger.warn(
+      { campaignId, status: campaign.status },
+      'campaign dispatch refused: it is not in a state that can be sent',
+    );
+    return { sent: 0, skipped: 0, reason: 'not_active' };
+  }
 
   const members = await runUnscoped(() =>
     resolveMembers(campaign.segmentId!, {
@@ -223,10 +251,36 @@ export async function dispatchCampaign(campaignId: string) {
   );
 
   const variables = (campaign.variables as Record<string, string>) ?? {};
+
+  /**
+   * ANYBODY THIS CAMPAIGN HAS ALREADY MESSAGED.
+   *
+   * RUNNING stays on the claim list above so a genuinely interrupted campaign
+   * can finish -- refusing the retry outright would leave half a segment
+   * messaged and the other half not, which is the worse failure. What makes
+   * that safe is this: the retry RESUMES instead of restarting, because
+   * everybody already written to the message log is skipped.
+   *
+   * One query rather than one per member: a campaign's log is small, and this
+   * runs once at the top of a fan-out that is about to do real work per row.
+   */
+  const alreadySent = await runUnscoped(() =>
+    prisma.messageLog.findMany({
+      where: { campaignId: campaign.id, customerId: { not: null } },
+      select: { customerId: true },
+    }),
+  );
+  const messaged = new Set(alreadySent.map((log) => log.customerId));
+
   let queued = 0;
   let skipped = 0;
 
   for (const member of members) {
+    if (messaged.has(member.id)) {
+      skipped += 1;
+      continue;
+    }
+
     const log = await runUnscoped(() =>
       queueMessage({
         tenantId: campaign.tenantId,
