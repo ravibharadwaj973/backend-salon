@@ -16,6 +16,7 @@ import * as feedback from '../feedback/feedback.service';
 import * as enquiries from '../tenants/enquiry.service';
 import { bookingUrl, refererHost } from '../../core/public-links';
 import type { Gender } from '@prisma/client';
+import { readAsset } from '../tenants/asset.service';
 
 const router = Router();
 router.use(publicLimiter);
@@ -704,6 +705,33 @@ router.get(
         staff: review.staff?.displayName ?? null,
       })),
     );
+  }),
+);
+
+/**
+ * An uploaded file, served to whoever has the address.
+ *
+ * Unauthenticated on purpose: this URL sits in an email a customer opens three
+ * weeks later, and on a booking page that has no login. The id is a cuid, so
+ * it cannot be walked, and a logo is not a secret — it is on the salon's own
+ * shopfront.
+ *
+ * Cached hard and immutably, which is safe because a new upload is a NEW row
+ * with a new id: the address never changes meaning, so nothing ever has to be
+ * invalidated. X-Content-Type-Options stops a browser deciding for itself that
+ * the bytes are something more interesting than the image we say they are.
+ */
+router.get(
+  '/assets/:id',
+  asyncHandler(async (req, res) => {
+    const asset = await readAsset(req.params.id!);
+
+    res.setHeader('Content-Type', asset.mimeType);
+    res.setHeader('Content-Length', String(asset.sizeBytes));
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Disposition', 'inline');
+    return res.end(asset.data);
   }),
 );
 

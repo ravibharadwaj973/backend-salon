@@ -39,6 +39,23 @@ const envSchema = z.object({
     .default('http://localhost:3000')
     .transform((value) => value.replace(/\/+$/, '')),
 
+  /**
+   * Where THIS server can be reached from outside, origin only.
+   *
+   * Different from PUBLIC_APP_URL: the app is on Vercel, this API is not. It is
+   * needed because an uploaded logo's address is stored, not built at render
+   * time — the URL goes into an email that is opened weeks later, so it has to
+   * be absolute and it has to still be right.
+   *
+   * Left empty the URL is stored relative, which works inside the app through
+   * its proxy and shows a broken image in email. Production refuses to start
+   * without it for that reason.
+   */
+  PUBLIC_API_URL: z
+    .string()
+    .default('')
+    .transform((value) => value.replace(/\/+$/, '')),
+
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
 
   JWT_ACCESS_SECRET: z.string().min(16, 'JWT_ACCESS_SECRET must be at least 16 chars'),
@@ -152,6 +169,26 @@ if (isProd && /localhost|127\.0\.0\.1/.test(env.PUBLIC_APP_URL)) {
     `PUBLIC_APP_URL is ${env.PUBLIC_APP_URL} in production.\n` +
       'Every booking and review link sent to a customer would point at localhost and open nothing.\n' +
       'Set PUBLIC_APP_URL to the address customers can actually reach, e.g. https://parlon.jharavi.in',
+  );
+  process.exit(1);
+}
+
+/**
+ * The base every stored public URL is built from.
+ *
+ * Relative when PUBLIC_API_URL is unset, which is right for local work: the
+ * frontend proxies /api/v1 and the logo appears. It is wrong for email, which
+ * is why production insists on the real thing below.
+ */
+export const PUBLIC_API_BASE = `${env.PUBLIC_API_URL}${env.API_PREFIX}`;
+
+if (isProd && !env.PUBLIC_API_URL) {
+  // eslint-disable-next-line no-console
+  console.error(
+    'PUBLIC_API_URL is not set in production.\n' +
+      "An uploaded logo's address is stored when it is uploaded, so every email carrying it would hold a relative\n" +
+      'path that resolves against the customer\'s mail client and shows a broken image.\n' +
+      'Set PUBLIC_API_URL to this server\'s own public address, e.g. https://api.parlon.jharavi.in',
   );
   process.exit(1);
 }

@@ -2632,6 +2632,40 @@ model BusinessAlert {
   @@map("business_alerts")
 }
 
+/// A FILE A SALON UPLOADED, KEPT IN THE DATABASE RATHER THAN ON DISK.
+///
+/// Disk was the obvious answer and it is the wrong one HERE, because of how
+/// this app deploys: every release runs `docker rm -f salon-api` and starts a
+/// fresh container from a new image, with no volume mounted. Anything written
+/// inside that container is destroyed by the next push. A salon would upload
+/// its logo, see it working, and find it gone after a deploy nobody told them
+/// about — and the URL still in every email sent since would 404.
+///
+/// A logo is a few tens of kilobytes and there is one per salon, so the usual
+/// objection to blobs in Postgres — that they bloat a table people query — does
+/// not apply: nothing joins to this, it is read by id and cached hard at the
+/// edge. It also backs up with the rest of the data instead of being a second
+/// thing to remember.
+///
+/// When there is object storage, this becomes a row that holds a key instead of
+/// bytes, and nothing else has to change: everything downstream only ever sees
+/// the URL.
+///
+model TenantAsset {
+  id        String   @id @default(cuid())
+  tenantId  String
+  /// What it is for. Only LOGO today; kept so the next one does not need a table.
+  kind      String   @default("LOGO")
+  mimeType  String
+  sizeBytes Int
+  /// The file itself.
+  data      Bytes
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, kind])
+  @@map("tenant_assets")
+}
+
 model WebhookEvent {
   id          String   @id @default(cuid())
   provider    String

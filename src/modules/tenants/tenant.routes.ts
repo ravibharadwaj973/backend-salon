@@ -8,6 +8,7 @@ import { PERMISSIONS } from '../../core/permissions';
 import { audit } from '../../middleware/audit';
 import { idParam, paginationQuery } from '../../core/validators';
 import * as service from './tenant.service';
+import * as assets from './asset.service';
 import * as renewals from './renewal.service';
 import * as enquiries from './enquiry.service';
 import { provisionTenant } from './provisioning.service';
@@ -278,6 +279,35 @@ tenantRouter.put(
     const setting = await service.upsertSetting(req.auth!.tenantId, key, value, branchId);
     audit({ action: 'settings.updated', entity: 'Setting', entityId: setting.id, after: { key, value } });
     return ok(res, setting);
+  }),
+);
+
+/**
+ * The salon's own logo.
+ *
+ * Sent as a data URL rather than multipart: one small file does not justify a
+ * new dependency and a second body parser, and the JSON limit is already 5MB —
+ * comfortably above the 1MB cap plus base64's third.
+ */
+tenantRouter.put(
+  '/logo',
+  requirePermission(PERMISSIONS.TENANT_MANAGE),
+  validate({ body: z.object({ dataUrl: z.string().min(32).max(4_000_000) }) }),
+  asyncHandler(async (req, res) => {
+    const result = await assets.saveTenantLogo((req.body as { dataUrl: string }).dataUrl);
+    // The URL is audited, never the bytes.
+    audit({ action: 'tenant.logo.updated', entity: 'Tenant', entityId: req.auth!.tenantId, after: { url: result.url } });
+    return ok(res, result);
+  }),
+);
+
+tenantRouter.delete(
+  '/logo',
+  requirePermission(PERMISSIONS.TENANT_MANAGE),
+  asyncHandler(async (req, res) => {
+    const result = await assets.clearTenantLogo();
+    audit({ action: 'tenant.logo.removed', entity: 'Tenant', entityId: req.auth!.tenantId });
+    return ok(res, result);
   }),
 );
 
