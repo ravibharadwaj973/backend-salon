@@ -43,6 +43,42 @@ export function readableZodError(error: ZodError): string {
 }
 
 /**
+ * AN EMPTY QUERY PARAMETER MEANS "NOT SET".
+ *
+ * An HTML GET form submits every control it contains, so a filter bar with a
+ * status dropdown on "All statuses" and two blank date boxes navigates to
+ * `?q=&status=&from=&to=`. To zod those are three present values: `status: ''`
+ * fails an enum, `from: ''` coerces to an Invalid Date and fails too. The whole
+ * request is refused with 422 and the screen shows an empty list -- which is
+ * how the invoices page came to say "No invoices here. Bills you create will
+ * appear here" to a salon with hundreds of bills, whenever anybody pressed
+ * Apply without setting a filter.
+ *
+ * Dropped here rather than in each schema because every list screen in the app
+ * has the same filter bar and would otherwise need the same guard, one schema
+ * at a time, discovered one bug report at a time. No API here wants `?q=` to
+ * mean something different from an absent `q`.
+ */
+function stripBlanks(query: unknown): unknown {
+  if (!query || typeof query !== 'object') return query;
+
+  const kept: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(query as Record<string, unknown>)) {
+    if (value === '') continue;
+    // `?status=&status=PAID` arrives as an array; drop the blanks inside it and
+    // then the key itself if that emptied it.
+    if (Array.isArray(value)) {
+      const values = value.filter((entry) => entry !== '');
+      if (values.length === 0) continue;
+      kept[key] = values;
+      continue;
+    }
+    kept[key] = value;
+  }
+  return kept;
+}
+
+/**
  * Validates and REPLACES req.body / req.query / req.params with the parsed
  * values, so handlers work with coerced, typed data.
  */
@@ -51,7 +87,7 @@ export function validate(schemas: ValidationSchemas): RequestHandler {
     try {
       if (schemas.params) req.params = schemas.params.parse(req.params) as typeof req.params;
       if (schemas.query) {
-        const parsed = schemas.query.parse(req.query) as Record<string, unknown>;
+        const parsed = schemas.query.parse(stripBlanks(req.query)) as Record<string, unknown>;
         Object.defineProperty(req, 'query', { value: parsed, writable: true, configurable: true });
       }
       if (schemas.body) req.body = schemas.body.parse(req.body);

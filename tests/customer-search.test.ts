@@ -80,3 +80,38 @@ describe('customer search', () => {
     expect(searchClause(undefined)).toEqual({});
   });
 });
+
+/**
+ * THE SEARCH THAT SAID "NO CUSTOMER MATCHES THAT" ABOUT A CUSTOMER IT HAD.
+ *
+ * Typing "931" into the customer search returned nothing, in a book with
+ * 93118 91503 and 93153 41503 in it. Three digits fell under a four-digit
+ * threshold, so the query ran as a TEXT search instead, compared "931" against
+ * names, emails and codes, and matched none of them.
+ *
+ * Nobody types a whole phone number to find somebody. They type the first few
+ * digits off a phone screen and stop when the name appears.
+ */
+describe('a partial phone number finds the customer', () => {
+  it('searches phones from two digits up', () => {
+    for (const q of ['93', '931', '9311', '93118']) {
+      const clause = searchClause(q) as { OR?: unknown[] };
+      expect(clause.OR, `"${q}" should search phone numbers`).toBeDefined();
+      expect(patterns(clause), `"${q}"`).toContain(q);
+    }
+  });
+
+  it('still refuses to treat a customer code as a phone number', () => {
+    // Unchanged, and the reason the threshold is not the only guard: every
+    // character that is not a digit has to be phone punctuation.
+    const clause = searchClause('C-00046') as { AND?: unknown[]; OR?: unknown[] };
+    expect(clause.OR).toBeUndefined();
+    expect(clause.AND).toBeDefined();
+  });
+
+  it('never searches for an empty string, however short the query', () => {
+    for (const q of ['9', '93', '1', 'a']) {
+      expect(patterns(searchClause(q))).not.toContain('');
+    }
+  });
+});

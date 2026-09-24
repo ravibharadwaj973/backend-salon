@@ -182,7 +182,17 @@ export function lookupTerms(q: string): { text: string; phone: string } {
   const text = q.trim();
   const digits = text.replace(/\D/g, '');
   // "98765 43210", "+91 98765-43210", "(0) 9876" are phones; "priya98" is not.
-  const looksLikePhone = digits.length >= 4 && digits.length >= text.replace(/[\s+()-]/g, '').length;
+  //
+  // TWO digits, not four. Somebody looking up a customer at a counter types the
+  // first few digits off a phone screen and stops when they see the name --
+  // "931" is three, and at four the search silently ran as a TEXT search
+  // instead, compared "931" against names and codes, matched nothing, and said
+  // "No customer matches that" about a customer whose number begins 93118.
+  //
+  // The guard that matters is the second one, and it is unchanged: the query is
+  // a number only when everything left after removing spaces, +, brackets and
+  // dashes is digits. That is what keeps the code "C-00003" out of this branch.
+  const looksLikePhone = digits.length >= 2 && digits.length >= text.replace(/[\s+()-]/g, '').length;
   return { text, phone: looksLikePhone ? normalizePhone(text) : '' };
 }
 
