@@ -741,6 +741,18 @@ messageRouter.post(
       channel: channelSchema,
       customerId: idSchema.optional(),
       leadId: idSchema.optional(),
+      /**
+       * What the message is ABOUT, without which an invoice email is a set of
+       * colons with nothing after them.
+       *
+       * The share sheet has always known the invoice — the preview screen takes
+       * it and renders the real numbers — and then sent without it, so what the
+       * salon read on screen and what the customer received were two different
+       * messages. The preview was right and the send was empty.
+       */
+      invoiceId: idSchema.optional(),
+      appointmentId: idSchema.optional(),
+      membershipId: idSchema.optional(),
       templateId: idSchema.optional(),
       body: z.string().trim().max(2000).optional(),
       variables: z.record(z.string()).optional(),
@@ -753,6 +765,9 @@ messageRouter.post(
       channel: Channel;
       customerId?: string;
       leadId?: string;
+      invoiceId?: string;
+      appointmentId?: string;
+      membershipId?: string;
       templateId?: string;
       body?: string;
       variables?: Record<string, string>;

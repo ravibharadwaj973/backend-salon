@@ -22,6 +22,27 @@ export interface QueueMessageInput {
   channel: Channel;
   customerId?: string | null;
   leadId?: string | null;
+  /**
+   * WHAT THIS MESSAGE IS ABOUT.
+   *
+   * buildVariables has resolved invoices, appointments, memberships and
+   * packages from the beginning, and queueMessage passed it a customer and a
+   * lead and nothing else -- so {{invoice_number}}, {{amount}}, {{services}}
+   * and {{invoice_link}} could never resolve through this path. Not
+   * intermittently: by construction. The invoice email went out reading
+   *
+   *     Invoice:
+   *     Services:
+   *     Total:
+   *
+   * with the colons and nothing after them, and nothing anywhere reported a
+   * fault, because renderTemplate turns an unknown variable into the empty
+   * string and an empty string is a perfectly good message.
+   */
+  invoiceId?: string | null;
+  appointmentId?: string | null;
+  membershipId?: string | null;
+  packagePurchaseId?: string | null;
   templateId?: string | null;
   templateName?: string | null;
   campaignId?: string | null;
@@ -351,6 +372,10 @@ export async function queueMessage(input: QueueMessageInput) {
       tenantId: input.tenantId,
       customerId: input.customerId,
       leadId: input.leadId,
+      invoiceId: input.invoiceId,
+      appointmentId: input.appointmentId,
+      membershipId: input.membershipId,
+      packagePurchaseId: input.packagePurchaseId,
     })),
     ...(input.variables ?? {}),
   };
@@ -359,6 +384,51 @@ export async function queueMessage(input: QueueMessageInput) {
   if (!body) {
     logger.warn({ templateId: input.templateId }, 'message has no body');
     return null;
+  }
+
+  /**
+   * A MESSAGE WITH A HOLE IN IT IS NOT SENT.
+   *
+   * missingVariables has existed since the beginning and only the preview
+   * screen ever called it. Nothing on the send path did, so a template whose
+   * values did not resolve was rendered with empty strings and delivered: a
+   * customer received "Invoice:" followed by nothing, over a salon's name and
+   * phone number, and the salon had no way to know.
+   *
+   * WhatsApp has been protected from this all along, by Meta rather than by us
+   * -- error 131008 refuses a template with an empty parameter. Email has no
+   * such gatekeeper, so it needs this one. Recorded rather than thrown, and
+   * with the names in it, because the caller is usually a background job and
+   * the question afterwards is always "which field, on which message?".
+   */
+  const holes = template ? missingVariables(template.bodyText, variables) : [];
+  if (holes.length) {
+    logger.warn(
+      { templateId: template?.id, template: template?.name, channel: input.channel, missing: holes },
+      'message not sent: template variables did not resolve',
+    );
+    return prisma.messageLog.create({
+      data: {
+        tenantId: input.tenantId,
+        branchId: input.branchId ?? null,
+        channel: input.channel,
+        category: template?.category ?? 'UTILITY',
+        customerId: input.customerId ?? null,
+        leadId: input.leadId ?? null,
+        campaignId: input.campaignId ?? null,
+        journeyRunId: input.journeyRunId ?? null,
+        templateId: template?.id ?? null,
+        toAddress,
+        renderedBody: body,
+        payload: variables as Prisma.InputJsonValue,
+        status: 'SKIPPED',
+        errorCode: 'MISSING_VARIABLES',
+        errorMessage:
+          `Not sent: ${holes.join(', ')} had no value, so the customer would have read a blank where each should be. ` +
+          'Either the message was queued without the invoice, appointment or membership it is about, or the template ' +
+          'uses a field this salon does not fill in.',
+      },
+    });
   }
 
   // Metering sits beside the consent gate, in the one place every send passes
