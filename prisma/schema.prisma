@@ -275,6 +275,37 @@ enum CampaignStatus {
 ///               every salon on the sending domain lands in junk.
 ///   FAILED      we could not hand it over at all.
 ///   SKIPPED     never attempted — no address, no consent, no allowance.
+/// WHAT A MESSAGE WAS FOR.
+///
+/// Category answers a billing and consent question — may we send this, and
+/// what does Meta charge for it. It cannot answer the question a salon owner
+/// actually asks, because UTILITY covers an appointment reminder, an invoice
+/// and a "how was your visit?" all at once, and those three succeed or fail
+/// for completely different reasons.
+///
+/// Snapshotted onto the message at send time, for the same reason category is:
+/// a template can be renamed or repurposed later, and history must not move
+/// with it.
+enum MessagePurpose {
+  /// A campaign the salon sent deliberately, to a segment.
+  CAMPAIGN
+  /// Appointment booked, reminded, confirmed, cancelled.
+  REMINDER
+  /// Invoices, receipts, payment chasers.
+  BILLING
+  /// "How was it?" and what follows a poor answer.
+  FEEDBACK
+  /// The public ask — Google, listings. Only ever after a good private answer.
+  REVIEW
+  /// Bringing somebody back: rebooking, win-back, expiring package or
+  /// membership, birthdays, a new lead's first hello.
+  FOLLOW_UP
+  /// Points earned, points expiring, wallet.
+  LOYALTY
+  /// Sent by hand from the app, or from before purposes were recorded.
+  OTHER
+}
+
 enum MessageStatus {
   QUEUED
   SENT
@@ -2229,6 +2260,9 @@ model MessageLog {
   /// Snapshotted from the template at queue time. A template's category can be
   /// changed later; what it was billed as must not move with it.
   category     TemplateCategory @default(UTILITY)
+  /// What this message was FOR — see MessagePurpose. Snapshotted alongside
+  /// category, and for the same reason.
+  purpose      MessagePurpose @default(OTHER)
   meter        MeterKey?
   customerId   String?
   leadId       String?
@@ -2265,6 +2299,9 @@ model MessageLog {
   @@index([tenantId, campaignId])
   @@index([tenantId, customerId, queuedAt])
   @@index([providerMessageId])
+  /// The analytics read path: every funnel query filters a date range and
+  /// groups by purpose and channel.
+  @@index([tenantId, queuedAt, purpose, channel])
   @@map("message_logs")
 }
 

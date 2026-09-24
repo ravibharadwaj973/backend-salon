@@ -8,6 +8,7 @@ import { PERMISSIONS } from '../../core/permissions';
 import { idParam, idSchema, paginationQuery } from '../../core/validators';
 import * as analytics from './analytics.service';
 import * as alerts from './alerts.service';
+import * as messaging from './messaging-analytics.service';
 
 const router = Router();
 router.use(authenticate);
@@ -102,6 +103,64 @@ router.get(
     }),
   }),
   asyncHandler(async (req, res) => ok(res, await analytics.monthlyReport(req.query as never))),
+);
+
+// ------------------------------------------------------------- messaging ---
+
+/**
+ * DID THE MESSAGES ARRIVE, AND DID ANYONE READ THEM?
+ *
+ * Behind REPORT_VIEW rather than DASHBOARD_VIEW: this is spend and outcome,
+ * and it names individual customers further down.
+ */
+const messagingQuery = rangeQuery.extend({
+  channel: z.enum(['WHATSAPP', 'SMS', 'EMAIL']).optional(),
+  purpose: z
+    .enum(['CAMPAIGN', 'REMINDER', 'BILLING', 'FEEDBACK', 'REVIEW', 'FOLLOW_UP', 'LOYALTY', 'OTHER'])
+    .optional(),
+});
+
+router.get(
+  '/messaging',
+  requirePermission(PERMISSIONS.REPORT_VIEW),
+  validate({ query: messagingQuery }),
+  asyncHandler(async (req, res) => ok(res, await messaging.messagingOverview(req.query as never))),
+);
+
+router.get(
+  '/messaging/trend',
+  requirePermission(PERMISSIONS.REPORT_VIEW),
+  validate({ query: messagingQuery.extend({ interval: z.enum(['day', 'week', 'month']).default('day') }) }),
+  asyncHandler(async (req, res) => ok(res, await messaging.messagingTrend(req.query as never))),
+);
+
+router.get(
+  '/messaging/templates',
+  requirePermission(PERMISSIONS.REPORT_VIEW),
+  validate({
+    query: messagingQuery.extend({ minSent: z.coerce.number().int().min(0).max(10_000).default(20) }),
+  }),
+  asyncHandler(async (req, res) => ok(res, await messaging.messagingByTemplate(req.query as never))),
+);
+
+/**
+ * One customer's own record. Needs customer.view as well, because this is
+ * their history and not an aggregate.
+ */
+router.get(
+  '/messaging/customer/:id',
+  requirePermission(PERMISSIONS.CUSTOMER_VIEW),
+  validate({
+    params: idParam,
+    query: z.object({
+      from: z.coerce.date().optional(),
+      to: z.coerce.date().optional(),
+      limit: z.coerce.number().int().min(1).max(100).default(20),
+    }),
+  }),
+  asyncHandler(async (req, res) =>
+    ok(res, await messaging.customerMessaging(req.params.id!, req.query as never)),
+  ),
 );
 
 // ---------------------------------------------------------------- alerts ---

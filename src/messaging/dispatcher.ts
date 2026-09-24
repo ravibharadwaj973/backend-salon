@@ -1,4 +1,4 @@
-import type { Channel, ConsentStatus, MessageTemplate, Prisma } from '@prisma/client';
+import type { Channel, ConsentStatus, MessagePurpose, MessageTemplate, Prisma } from '@prisma/client';
 import { prisma } from '../core/prisma';
 import { runUnscoped } from '../core/context';
 import { logger } from '../core/logger';
@@ -46,6 +46,12 @@ export interface QueueMessageInput {
   packagePurchaseId?: string | null;
   templateId?: string | null;
   templateName?: string | null;
+  /**
+   * What this message is FOR, for reporting. Callers that know say so — the
+   * notification catalogue declares one per message. Left unset it is worked
+   * out below, and a campaign send is a CAMPAIGN whatever the caller thinks.
+   */
+  purpose?: MessagePurpose;
   campaignId?: string | null;
   journeyRunId?: string | null;
   /** Extra values merged over the auto-resolved ones. */
@@ -277,6 +283,15 @@ export async function queueMessage(input: QueueMessageInput) {
   const trimmed = raw.trim();
   const toAddress = !trimmed ? '' : input.channel === 'EMAIL' ? trimmed : toE164(trimmed);
 
+  /**
+   * A campaign send is a campaign send regardless of what the caller passed:
+   * campaigns reuse the same templates the automations do, and a rebooking
+   * template fired at a segment is a blast the owner chose to send, not the
+   * automation working. Getting this backwards would quietly move a campaign's
+   * results into the automation's column and flatter both.
+   */
+  const purpose: MessagePurpose = input.campaignId ? 'CAMPAIGN' : (input.purpose ?? 'OTHER');
+
   // No address, no message. Returning before the log row is created is what
   // keeps this free: nothing is recorded, nothing is metered, and the salon is
   // not charged for a customer who never had an email address in the first
@@ -330,6 +345,7 @@ export async function queueMessage(input: QueueMessageInput) {
         tenantId: input.tenantId,
         branchId: input.branchId ?? null,
         channel: input.channel,
+        purpose,
         customerId: input.customerId ?? null,
         leadId: input.leadId ?? null,
         campaignId: input.campaignId ?? null,
@@ -353,6 +369,7 @@ export async function queueMessage(input: QueueMessageInput) {
           tenantId: input.tenantId,
           branchId: input.branchId ?? null,
           channel: input.channel,
+          purpose,
           customerId: input.customerId ?? null,
           leadId: input.leadId ?? null,
           campaignId: input.campaignId ?? null,
@@ -395,6 +412,7 @@ export async function queueMessage(input: QueueMessageInput) {
         tenantId: input.tenantId,
         branchId: input.branchId ?? null,
         channel: input.channel,
+        purpose,
         customerId: input.customerId ?? null,
         leadId: input.leadId ?? null,
         campaignId: input.campaignId ?? null,
@@ -454,6 +472,7 @@ export async function queueMessage(input: QueueMessageInput) {
         tenantId: input.tenantId,
         branchId: input.branchId ?? null,
         channel: input.channel,
+        purpose,
         category: template?.category ?? 'UTILITY',
         customerId: input.customerId ?? null,
         leadId: input.leadId ?? null,
@@ -492,6 +511,7 @@ export async function queueMessage(input: QueueMessageInput) {
         tenantId: input.tenantId,
         branchId: input.branchId ?? null,
         channel: input.channel,
+        purpose,
         category,
         meter,
         customerId: input.customerId ?? null,
@@ -514,6 +534,7 @@ export async function queueMessage(input: QueueMessageInput) {
       tenantId: input.tenantId,
       branchId: input.branchId ?? null,
       channel: input.channel,
+      purpose,
       category,
       meter,
       customerId: input.customerId ?? null,

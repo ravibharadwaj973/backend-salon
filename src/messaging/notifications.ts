@@ -1,4 +1,4 @@
-import type { Channel, Customer, TemplateCategory } from '@prisma/client';
+import type { Channel, Customer, MessagePurpose, TemplateCategory } from '@prisma/client';
 import { prisma } from '../core/prisma';
 import { runUnscoped } from '../core/context';
 import { logger } from '../core/logger';
@@ -35,6 +35,13 @@ export interface NotificationDefinition {
   /** Template name seeded per tenant; see modules/messaging/defaults.ts. */
   template: string;
   category: TemplateCategory;
+  /**
+   * What this message is FOR, as the owner would group it when asking whether
+   * it is working. Declared here rather than inferred from the template name
+   * or the journey that sent it, because inference gets one wrong eventually
+   * and a report nobody can reconcile is a report nobody uses.
+   */
+  purpose: MessagePurpose;
   /** Tried in order; the first the customer consented to and that is connected wins. */
   channels: readonly Channel[];
 }
@@ -50,27 +57,27 @@ const PROMOTIONAL: readonly Channel[] = ['WHATSAPP', 'EMAIL'];
  * rather than a message that silently never goes out.
  */
 export const NOTIFICATIONS = {
-  appointmentConfirmation: { template: 'appointment_confirmation', category: 'UTILITY', channels: TRANSACTIONAL },
-  appointmentReminder24h: { template: 'appointment_reminder_24h', category: 'UTILITY', channels: TRANSACTIONAL },
-  appointmentReminder2h: { template: 'appointment_reminder_2h', category: 'UTILITY', channels: TRANSACTIONAL },
-  appointmentCancelled: { template: 'appointment_cancelled', category: 'UTILITY', channels: TRANSACTIONAL },
-  invoiceSent: { template: 'invoice_sent', category: 'UTILITY', channels: DOCUMENT },
-  paymentReminder: { template: 'payment_reminder', category: 'UTILITY', channels: DOCUMENT },
-  thankYou: { template: 'thank_you', category: 'UTILITY', channels: TRANSACTIONAL },
+  appointmentConfirmation: { template: 'appointment_confirmation', category: 'UTILITY', purpose: 'REMINDER', channels: TRANSACTIONAL },
+  appointmentReminder24h: { template: 'appointment_reminder_24h', category: 'UTILITY', purpose: 'REMINDER', channels: TRANSACTIONAL },
+  appointmentReminder2h: { template: 'appointment_reminder_2h', category: 'UTILITY', purpose: 'REMINDER', channels: TRANSACTIONAL },
+  appointmentCancelled: { template: 'appointment_cancelled', category: 'UTILITY', purpose: 'REMINDER', channels: TRANSACTIONAL },
+  invoiceSent: { template: 'invoice_sent', category: 'UTILITY', purpose: 'BILLING', channels: DOCUMENT },
+  paymentReminder: { template: 'payment_reminder', category: 'UTILITY', purpose: 'BILLING', channels: DOCUMENT },
+  thankYou: { template: 'thank_you', category: 'UTILITY', purpose: 'FEEDBACK', channels: TRANSACTIONAL },
   /** "How was it?" — the private ask that decides which branch follows. */
-  feedbackRequest: { template: 'review_request', category: 'UTILITY', channels: TRANSACTIONAL },
+  feedbackRequest: { template: 'review_request', category: 'UTILITY', purpose: 'FEEDBACK', channels: TRANSACTIONAL },
   /** Only ever after 4-5 stars. */
-  googleReviewRequest: { template: 'google_review_request', category: 'UTILITY', channels: TRANSACTIONAL },
+  googleReviewRequest: { template: 'google_review_request', category: 'UTILITY', purpose: 'REVIEW', channels: TRANSACTIONAL },
   /** Only ever after 1-3 stars. No link, no offer. */
-  feedbackApology: { template: 'feedback_apology', category: 'UTILITY', channels: TRANSACTIONAL },
-  reviewRequest: { template: 'review_request', category: 'MARKETING', channels: PROMOTIONAL },
-  rebookingReminder: { template: 'rebooking_reminder', category: 'MARKETING', channels: PROMOTIONAL },
-  winBack: { template: 'winback_offer', category: 'MARKETING', channels: PROMOTIONAL },
-  birthday: { template: 'birthday_wish', category: 'MARKETING', channels: PROMOTIONAL },
-  membershipExpiring: { template: 'membership_expiring', category: 'UTILITY', channels: DOCUMENT },
-  packageExpiring: { template: 'package_expiring', category: 'UTILITY', channels: DOCUMENT },
-  leadWelcome: { template: 'lead_welcome', category: 'UTILITY', channels: TRANSACTIONAL },
-  loyaltyPointsEarned: { template: 'loyalty_points_earned', category: 'UTILITY', channels: TRANSACTIONAL },
+  feedbackApology: { template: 'feedback_apology', category: 'UTILITY', purpose: 'FEEDBACK', channels: TRANSACTIONAL },
+  reviewRequest: { template: 'review_request', category: 'MARKETING', purpose: 'REVIEW', channels: PROMOTIONAL },
+  rebookingReminder: { template: 'rebooking_reminder', category: 'MARKETING', purpose: 'FOLLOW_UP', channels: PROMOTIONAL },
+  winBack: { template: 'winback_offer', category: 'MARKETING', purpose: 'FOLLOW_UP', channels: PROMOTIONAL },
+  birthday: { template: 'birthday_wish', category: 'MARKETING', purpose: 'FOLLOW_UP', channels: PROMOTIONAL },
+  membershipExpiring: { template: 'membership_expiring', category: 'UTILITY', purpose: 'FOLLOW_UP', channels: DOCUMENT },
+  packageExpiring: { template: 'package_expiring', category: 'UTILITY', purpose: 'FOLLOW_UP', channels: DOCUMENT },
+  leadWelcome: { template: 'lead_welcome', category: 'UTILITY', purpose: 'FOLLOW_UP', channels: TRANSACTIONAL },
+  loyaltyPointsEarned: { template: 'loyalty_points_earned', category: 'UTILITY', purpose: 'LOYALTY', channels: TRANSACTIONAL },
 } as const satisfies Record<string, NotificationDefinition>;
 
 export type NotificationKey = keyof typeof NOTIFICATIONS;
@@ -172,6 +179,7 @@ export async function notify(key: NotificationKey, input: NotifyInput) {
     customerId: input.customerId ?? null,
     leadId: input.leadId ?? null,
     templateName: definition.template,
+    purpose: definition.purpose,
     campaignId: input.campaignId ?? null,
     journeyRunId: input.journeyRunId ?? null,
     variables,

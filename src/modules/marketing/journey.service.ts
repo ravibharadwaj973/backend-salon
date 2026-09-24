@@ -6,6 +6,7 @@ import { pageParams } from '../../core/http';
 import { dayjs } from '../../core/dates';
 import { enqueue } from '../../jobs/queue';
 import { queueMessage, buildVariables } from '../../messaging/dispatcher';
+import { purposeOfTrigger } from '../../messaging/purpose';
 import { buildSegmentWhere, type SegmentRules } from './segment.service';
 import { logger } from '../../core/logger';
 
@@ -296,6 +297,9 @@ export async function advanceRun(runId: string) {
             leadId: run.leadId,
             templateId: step.templateId,
             journeyRunId: run.id,
+            // The journey's trigger, not the step's template: a run started by
+            // "no visit in 90 days" is a win-back on whichever template it uses.
+            purpose: purposeOfTrigger(run.journey.trigger),
             variables,
           });
           break;

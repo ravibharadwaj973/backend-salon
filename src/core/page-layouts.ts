@@ -70,6 +70,10 @@ export const CUSTOMER_PAGE: PageDefinition = {
     { key: 'photos', label: 'Photos', description: 'Before / after and reference photos.', permission: PERMISSIONS.CUSTOMER_VIEW, defaultRoles: ALL_ROLES },
     { key: 'feedback', label: 'Feedback', description: 'Recent ratings and comments.', permission: PERMISSIONS.CUSTOMER_VIEW, defaultRoles: ALL_ROLES },
     { key: 'contact', label: 'Reachable on', description: 'WhatsApp, SMS and email consent.', permission: PERMISSIONS.CUSTOMER_VIEW, defaultRoles: ALL_ROLES },
+    // Off for stylists by default: it is a record of how hard the salon has
+    // been marketing at somebody, which is a management question rather than
+    // something needed at the chair.
+    { key: 'messaging', label: 'Messages & engagement', description: 'What has been sent to this customer, how much of it arrived, and how much they open.', permission: PERMISSIONS.CUSTOMER_VIEW, defaultRoles: NOT_STYLIST },
   ],
 };
 
