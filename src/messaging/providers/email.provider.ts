@@ -33,14 +33,72 @@ export class ResendEmailProvider implements MessageProvider {
 
   constructor(private readonly credentials: EmailCredentials) {}
 
-  /** The body is plain text; wrap it so it is readable in a mail client. */
-  private html(body: string): string {
+  /**
+   * The body is plain text; wrap it so it is readable in a mail client.
+   *
+   * Everything is escaped first, because the body carries customer-supplied
+   * values -- a name with an angle bracket in it must not become markup. The
+   * links are put back AFTERWARDS, on the escaped text, so a bare
+   * https://... in the wording is clickable rather than a string of
+   * characters the customer has to select and copy. Gmail guesses at this;
+   * plenty of clients do not.
+   */
+  private html(body: string, links: { text: string; url: string }[] = []): string {
     const escaped = body
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
+      .replace(/>/g, '&gt;');
+
+    const linked = escaped
+      .replace(/(https?:\/\/[^\s<>"]+)/g, '<a href="$1" style="color:#0f766e">$1</a>')
       .replace(/\n/g, '<br>');
-    return `<div style="font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:15px;line-height:1.6;color:#221a20">${escaped}</div>`;
+
+    // A real button, built the way email has to build one: a table cell with a
+    // background and an anchor filling it. Outlook ignores padding on an <a>
+    // and rounded corners on anything, so the button degrades to a square
+    // block of colour there rather than to nothing.
+    const buttons = links
+      .filter((link) => /^https?:\/\//i.test(link.url))
+      .map(
+        (link) => `
+          <table role="presentation" cellpadding="0" cellspacing="0" style="margin:18px 0 6px">
+            <tr><td style="background:#0f766e;border-radius:6px">
+              <a href="${this.attr(link.url)}"
+                 style="display:inline-block;padding:11px 22px;font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none">${this.text(link.text)}</a>
+            </td></tr>
+          </table>
+          <p style="margin:0;font-size:12px;color:#6b625f">
+            If the button does not work, copy this into your browser:<br>
+            <a href="${this.attr(link.url)}" style="color:#6b625f">${this.text(link.url)}</a>
+          </p>`,
+      )
+      .join('');
+
+    return (
+      `<div style="font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:15px;line-height:1.6;color:#221a20">` +
+      `${linked}${buttons}</div>`
+    );
+  }
+
+  /** Escaping for an attribute, where a stray quote would end it early. */
+  private attr(value: string): string {
+    return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  private text(value: string): string {
+    return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  /**
+   * The plain-text half. A client that shows text only still has to be able to
+   * reach the invoice, so the button becomes a line with the address in it.
+   */
+  private plain(body: string, links: { text: string; url: string }[] = []): string {
+    const tail = links
+      .filter((link) => /^https?:\/\//i.test(link.url))
+      .map((link) => `\n\n${link.text}: ${link.url}`)
+      .join('');
+    return `${body}${tail}`;
   }
 
   async send(message: OutboundMessage): Promise<SendResult> {
@@ -58,8 +116,8 @@ export class ResendEmailProvider implements MessageProvider {
           from: fromName ? `${fromName} <${fromAddress}>` : fromAddress,
           to: [message.to],
           subject: message.subject ?? 'A message from your salon',
-          text: message.body,
-          html: this.html(message.body),
+          text: this.plain(message.body, message.links),
+          html: this.html(message.body, message.links),
           ...(replyTo ? { reply_to: replyTo } : {}),
         }),
       });

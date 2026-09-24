@@ -495,6 +495,42 @@ export async function deliver(messageLogId: string) {
     button?.type === 'URL' && button.variable ? (variables[button.variable] ?? null) : null,
   );
 
+  /**
+   * The same buttons, for a channel that carries the link itself.
+   *
+   * WhatsApp gets buttonValues, because Meta holds the approved button and we
+   * supply only the tail of its URL. Email has no approved anything: whatever
+   * we send IS the message, so each button's whole address is built here --
+   * the fixed base plus the variable, exactly as toMetaTemplate splits it --
+   * and the provider draws a real button around it.
+   *
+   * A button whose variable did not resolve is dropped rather than sent as a
+   * link ending in nothing. A "View invoice" button that opens the invoice
+   * index is worse than no button.
+   */
+  const links =
+    log.channel === 'EMAIL'
+      ? templateButtons.flatMap((button) => {
+          if (button?.type !== 'URL') return [];
+          const suffix = button.variable ? variables[button.variable] : '';
+          if (button.variable && !suffix) return [];
+          return [{ text: button.text, url: `${button.url}${suffix ?? ''}` }];
+        })
+      : undefined;
+
+  /**
+   * The subject line, which until now was never sent at all.
+   *
+   * Every seeded email template carries one in headerText and the provider
+   * defaulted to "A message from your salon" for all of them, so an invoice, a
+   * cancellation and a birthday wish arrived under the same heading and none
+   * of them could be found again by searching.
+   */
+  const subject =
+    log.channel === 'EMAIL' && log.template?.headerText
+      ? renderTemplate(log.template.headerText, variables).trim() || undefined
+      : undefined;
+
   const result = await provider.send({
     to: log.toAddress,
     channel: log.channel,
@@ -504,6 +540,8 @@ export async function deliver(messageLogId: string) {
     variables,
     variableOrder: orderedVariables,
     buttonValues,
+    links,
+    subject,
   });
 
   await runUnscoped(() =>

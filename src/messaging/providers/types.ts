@@ -16,6 +16,16 @@ export interface OutboundMessage {
    * parameter by its position among the buttons, not among the dynamic ones.
    */
   buttonValues?: (string | null)[];
+  /**
+   * Buttons with their URLs already resolved, for channels that carry the link
+   * itself rather than a reference to an approved template.
+   *
+   * WhatsApp uses `buttonValues` instead, because Meta holds the button and we
+   * only supply the tail of its URL. Email has no such arrangement: whatever we
+   * send IS the message, so the whole address travels here and the provider
+   * draws the button.
+   */
+  links?: { text: string; url: string }[];
   subject?: string;
   mediaUrl?: string;
 }

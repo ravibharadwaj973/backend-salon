@@ -11,6 +11,12 @@ export interface TemplateDefinition {
   footerText?: string;
   /** The subject line, for email. Ignored on WhatsApp and SMS. */
   headerText?: string;
+  /**
+   * Buttons. On email these are drawn as real buttons with the whole address
+   * in them; on WhatsApp the address is split into a fixed base plus the
+   * variable that fills its tail, which is the only shape Meta accepts.
+   */
+  buttons?: { type: 'URL'; text: string; url: string; variable?: string | null }[];
 }
 
 /**
@@ -459,6 +465,12 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     bodyText:
       'Dear {{customer_name}},\n\nThank you for visiting {{salon_name}}.\n\nInvoice: {{invoice_number}}\nServices: {{services}}\nTotal: {{amount}}\n\nWarm regards,\n{{salon_name}}\n{{salon_phone}}',
     variables: ['customer_name', 'salon_name', 'invoice_number', 'services', 'amount', 'salon_phone'],
+    // On email a button carries the WHOLE address, so an empty base with a
+    // link variable means "the variable is the address". On WhatsApp the same
+    // button would have to be a fixed base plus the token that fills its tail,
+    // which is the only shape Meta accepts -- and which cannot be seeded,
+    // because the base is this deployment's public URL.
+    buttons: [{ type: 'URL', text: 'View invoice', url: '', variable: 'invoice_link' }],
     approvalStatus: 'APPROVED',
   },
   {
@@ -576,6 +588,12 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     bodyText:
       'Dear {{customer_name}},\n\nThank you — we have received {{amount}} against invoice {{invoice_number}}.\n\nOutstanding balance: {{due_amount}}\n\nThe full invoice is here if you need it again: {{invoice_link}}\n\nWarm regards,\n{{salon_name}}\n{{salon_phone}}',
     variables: ['customer_name', 'amount', 'invoice_number', 'due_amount', 'invoice_link', 'salon_name', 'salon_phone'],
+    // On email a button carries the WHOLE address, so an empty base with a
+    // link variable means "the variable is the address". On WhatsApp the same
+    // button would have to be a fixed base plus the token that fills its tail,
+    // which is the only shape Meta accepts -- and which cannot be seeded,
+    // because the base is this deployment's public URL.
+    buttons: [{ type: 'URL', text: 'View invoice', url: '', variable: 'invoice_link' }],
     approvalStatus: 'APPROVED',
   },
   {
@@ -587,6 +605,12 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     bodyText:
       'Dear {{customer_name}},\n\nA gentle reminder that {{due_amount}} is still outstanding on invoice {{invoice_number}} at {{salon_name}}.\n\nThe invoice is here: {{invoice_link}}\n\nIf it has already been paid, or if something does not look right, reply to this email and we will check it at our end.\n\nWarm regards,\n{{salon_name}}\n{{salon_phone}}',
     variables: ['customer_name', 'due_amount', 'invoice_number', 'salon_name', 'invoice_link', 'salon_phone'],
+    // On email a button carries the WHOLE address, so an empty base with a
+    // link variable means "the variable is the address". On WhatsApp the same
+    // button would have to be a fixed base plus the token that fills its tail,
+    // which is the only shape Meta accepts -- and which cannot be seeded,
+    // because the base is this deployment's public URL.
+    buttons: [{ type: 'URL', text: 'View invoice', url: '', variable: 'invoice_link' }],
     approvalStatus: 'APPROVED',
   },
   {
