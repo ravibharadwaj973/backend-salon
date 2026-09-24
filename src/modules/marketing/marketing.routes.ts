@@ -7,6 +7,7 @@ import { requirePermission } from '../../middleware/rbac';
 import { PERMISSIONS } from '../../core/permissions';
 import { audit } from '../../middleware/audit';
 import { idParam, idSchema, moneySchema, paginationQuery } from '../../core/validators';
+import { BadRequest } from '../../core/errors';
 import * as segments from './segment.service';
 import { FIELD_GROUPS, SEGMENT_FIELDS, SEGMENT_PRESETS } from './segment-fields';
 import * as campaigns from './campaign.service';
@@ -97,6 +98,44 @@ segmentRouter.get(
   requirePermission(PERMISSIONS.CAMPAIGN_VIEW),
   validate({ params: idParam }),
   asyncHandler(async (req, res) => ok(res, await segments.getSegment(req.params.id!))),
+);
+
+/**
+ * Hand-picked membership.
+ *
+ * Rules answer "everyone who has not been in for 60 days". They cannot answer
+ * "these nine, because I know them", and that list is the one a salon owner
+ * most often has in their head. Only a segment created as hand-picked accepts
+ * these; on a rule the service refuses and says why, rather than accepting an
+ * edit the next run would silently undo.
+ */
+segmentRouter.post(
+  '/:id/members',
+  requirePermission(PERMISSIONS.CAMPAIGN_MANAGE),
+  validate({
+    params: idParam,
+    body: z.object({
+      customerId: idSchema.optional(),
+      customerIds: z.array(idSchema).min(1).max(500).optional(),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const body = req.body as { customerId?: string; customerIds?: string[] };
+    if (body.customerIds?.length) {
+      return ok(res, await segments.addSegmentMembers(req.params.id!, body.customerIds));
+    }
+    if (!body.customerId) throw BadRequest('Name a customer to add.');
+    return ok(res, await segments.addSegmentMember(req.params.id!, body.customerId));
+  }),
+);
+
+segmentRouter.delete(
+  '/:id/members/:customerId',
+  requirePermission(PERMISSIONS.CAMPAIGN_MANAGE),
+  validate({ params: idParam.extend({ customerId: idSchema }) }),
+  asyncHandler(async (req, res) =>
+    ok(res, await segments.removeSegmentMember(req.params.id!, req.params.customerId!)),
+  ),
 );
 
 /**

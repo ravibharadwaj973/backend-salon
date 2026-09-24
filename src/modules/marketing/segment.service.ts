@@ -563,8 +563,23 @@ export async function resolveMembers(
   const segment = await prisma.segment.findUnique({ where: { id: segmentId } });
   if (!segment) throw NotFound('Segment');
 
+  /**
+   * A HAND-PICKED LIST IS NOT A RULE, AND MUST NOT BE READ AS ONE.
+   *
+   * isDynamic has been on the model since the beginning and nothing honoured
+   * it. A segment the salon built by hand carries `rules: {}` -- which
+   * buildSegmentWhere turns into "every customer" -- so a list of eleven
+   * regulars would have sent to the entire book. Nothing would have reported a
+   * fault; the count would simply have been wrong and the messages gone.
+   *
+   * So a static segment IS its members, with the same consent and reachability
+   * conditions on top: picking somebody by hand is not consent, and it does not
+   * give them an email address they never had.
+   */
   const rules = segment.rules as unknown as SegmentRules;
-  const where = await buildSegmentWhere(segment.tenantId, rules);
+  const where: Prisma.CustomerWhereInput = segment.isDynamic
+    ? await buildSegmentWhere(segment.tenantId, rules)
+    : { tenantId: segment.tenantId, isActive: true, segmentMembers: { some: { segmentId } } };
 
   const consentField =
     options.requireConsent === 'WHATSAPP'
@@ -591,7 +606,8 @@ export async function resolveMembers(
     take: 50_000,
   });
 
-  const filtered = postFilter(customers, rules);
+  // Occasion rules belong to a rule set, so a hand-picked list skips them.
+  const filtered = segment.isDynamic ? postFilter(customers, rules) : customers;
 
   // Only refresh the stored size on an unfiltered resolve. A campaign asking
   // "who can I email?" must not overwrite the segment's real membership count
@@ -657,7 +673,9 @@ export async function segmentMembers(
   if (!segment) throw NotFound('Segment');
 
   const rules = segment.rules as unknown as SegmentRules;
-  const where = await buildSegmentWhere(segment.tenantId, rules);
+  const where: Prisma.CustomerWhereInput = segment.isDynamic
+    ? await buildSegmentWhere(segment.tenantId, rules)
+    : { tenantId: segment.tenantId, isActive: true, segmentMembers: { some: { segmentId } } };
   const { skip, take, page, pageSize } = pageParams(input);
 
   const select = {
@@ -680,7 +698,7 @@ export async function segmentMembers(
    * up to the cap and paged here instead — the same cap resolveMembers uses,
    * so the list and the send agree.
    */
-  if (hasPostFilter(rules)) {
+  if (segment.isDynamic && hasPostFilter(rules)) {
     const rows = await prisma.customer.findMany({
       where,
       select,
@@ -699,9 +717,21 @@ export async function segmentMembers(
   return { items, total, page, pageSize };
 }
 
-/** Materialise a static snapshot of the segment's members. */
+/**
+ * Materialise a static snapshot of the segment's members.
+ *
+ * Refused on a segment that IS the list: this deletes every member row and
+ * writes back what the rules resolve to, and on a hand-picked segment a
+ * failure between those two statements leaves nothing at all. Nobody presses
+ * a button called Snapshot expecting to lose the eleven people they spent ten
+ * minutes choosing.
+ */
 export async function snapshotSegment(segmentId: string) {
   const tenantId = requireTenantId();
+  const existing = await prisma.segment.findUnique({ where: { id: segmentId }, select: { isDynamic: true } });
+  if (existing && !existing.isDynamic) {
+    throw BadRequest('This list was built by hand, so there is no rule to snapshot. Add or remove people directly.');
+  }
   const members = await resolveMembers(segmentId);
 
   await prisma.segmentMember.deleteMany({ where: { segmentId } });
@@ -713,4 +743,96 @@ export async function snapshotSegment(segmentId: string) {
   }
 
   return { segmentId, members: members.length };
+}
+
+// ------------------------------------------------- hand-picked membership ---
+
+/**
+ * A LIST THE SALON BUILDS BY HAND.
+ *
+ * Rules answer "everyone who has not been in for 60 days". They cannot answer
+ * "these nine, because I know them" — the four brides whose trials are next
+ * month, the regulars who get told about a new stylist first, the six people
+ * owed an apology after a bad Saturday. Those groups exist in a salon owner's
+ * head and no field in the database describes them.
+ *
+ * Adding somebody twice is not an error. A salon owner working down a list
+ * loses their place, and being told off for it is worse than doing nothing.
+ */
+export async function addSegmentMember(segmentId: string, customerId: string) {
+  const tenantId = requireTenantId();
+  const segment = await prisma.segment.findUnique({ where: { id: segmentId } });
+  if (!segment) throw NotFound('Segment');
+
+  if (segment.isDynamic) {
+    throw BadRequest(
+      `"${segment.name}" is a rule, so its members are whoever matches — adding one person by hand would be undone ` +
+        'the next time it runs. Make a hand-picked list instead, or change the rule.',
+    );
+  }
+
+  const customer = await prisma.customer.findFirst({ where: { id: customerId, tenantId }, select: { id: true } });
+  if (!customer) throw NotFound('Customer');
+
+  await prisma.segmentMember.createMany({
+    data: [{ tenantId, segmentId, customerId }],
+    skipDuplicates: true,
+  });
+
+  return countSegmentMembers(segmentId);
+}
+
+export async function removeSegmentMember(segmentId: string, customerId: string) {
+  const tenantId = requireTenantId();
+  const segment = await prisma.segment.findUnique({ where: { id: segmentId }, select: { id: true, isDynamic: true } });
+  if (!segment) throw NotFound('Segment');
+  if (segment.isDynamic) {
+    throw BadRequest('This list is a rule, so people cannot be taken out of it one at a time. Change the rule.');
+  }
+
+  await prisma.segmentMember.deleteMany({ where: { tenantId, segmentId, customerId } });
+  return countSegmentMembers(segmentId);
+}
+
+/**
+ * Add several at once, for somebody working from a list rather than a search.
+ * Ids that are not this salon's are dropped rather than refused: one stale id
+ * pasted in should not throw away the other nineteen.
+ */
+export async function addSegmentMembers(segmentId: string, customerIds: string[]) {
+  const tenantId = requireTenantId();
+  const segment = await prisma.segment.findUnique({ where: { id: segmentId } });
+  if (!segment) throw NotFound('Segment');
+  if (segment.isDynamic) {
+    throw BadRequest(`"${segment.name}" is a rule, so its members are whoever matches. Make a hand-picked list instead.`);
+  }
+
+  const ours = await prisma.customer.findMany({
+    where: { id: { in: customerIds }, tenantId },
+    select: { id: true },
+  });
+
+  if (ours.length) {
+    await prisma.segmentMember.createMany({
+      data: ours.map((customer) => ({ tenantId, segmentId, customerId: customer.id })),
+      skipDuplicates: true,
+    });
+  }
+
+  const count = await countSegmentMembers(segmentId);
+  return { ...count, added: ours.length, skipped: customerIds.length - ours.length };
+}
+
+/**
+ * The count, kept on the segment so the list screen does not have to count
+ * every list it shows. lastComputedAt moves too, because for a hand-picked
+ * list the last edit IS the last time the number was true.
+ */
+async function countSegmentMembers(segmentId: string) {
+  const members = await prisma.segmentMember.count({ where: { segmentId } });
+  await prisma.segment.update({
+    where: { id: segmentId },
+    data: { lastCount: members, lastComputedAt: new Date() },
+  });
+  return { segmentId, members };
 }
