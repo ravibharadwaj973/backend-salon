@@ -401,6 +401,43 @@ function hasPostFilter(rules: SegmentRules): boolean {
   );
 }
 
+/**
+ * A SAVED SEGMENT, TURNED INTO A QUERY. THE ONLY PLACE THAT DOES THIS.
+ *
+ * It exists because the decision was being made in three places and one of them
+ * got it wrong — quietly, and in the most alarming possible way.
+ *
+ * A hand-picked segment carries `rules: {}`, and buildSegmentWhere turns empty
+ * rules into "every active customer". So `segmentReach` — the count shown on
+ * the review screen immediately above the send button — reported the whole book
+ * for a list of four people:
+ *
+ *     43 messages will be sent on WhatsApp
+ *     Estimated spend ₹34
+ *
+ * for a segment with four names in it. The send itself was correct, because
+ * resolveMembers did check, so nobody was over-messaged; but the screen whose
+ * entire job is to be trusted before an irreversible action was lying, and an
+ * owner who had believed it would have had no way to tell which of the two
+ * numbers was real.
+ *
+ * Three call sites each deciding this independently is why one was missed. Now
+ * there is one, and a test asserts nothing else builds a where from a saved
+ * segment.
+ */
+export async function segmentWhere(
+  segment: { id: string; tenantId: string; isDynamic: boolean; rules: unknown },
+): Promise<Prisma.CustomerWhereInput> {
+  const rules = segment.rules as unknown as SegmentRules;
+  return segment.isDynamic
+    ? buildSegmentWhere(segment.tenantId, rules)
+    : // A hand-picked segment IS its members — with the same consent and
+      // reachability conditions applied on top by the caller, because picking
+      // somebody by hand is not consent and does not give them an email
+      // address they never had.
+      { tenantId: segment.tenantId, isActive: true, segmentMembers: { some: { segmentId: segment.id } } };
+}
+
 export async function previewSegment(rules: SegmentRules, branchId?: string, sampleSize = 10) {
   const tenantId = requireTenantId();
   const where = await buildSegmentWhere(tenantId, rules, branchId);
@@ -577,9 +614,7 @@ export async function resolveMembers(
    * give them an email address they never had.
    */
   const rules = segment.rules as unknown as SegmentRules;
-  const where: Prisma.CustomerWhereInput = segment.isDynamic
-    ? await buildSegmentWhere(segment.tenantId, rules)
-    : { tenantId: segment.tenantId, isActive: true, segmentMembers: { some: { segmentId } } };
+  const where = await segmentWhere(segment);
 
   const consentField =
     options.requireConsent === 'WHATSAPP'
@@ -636,7 +671,7 @@ export async function segmentReach(segmentId: string, category: TemplateCategory
   if (!segment) throw NotFound('Segment');
 
   const rules = segment.rules as unknown as SegmentRules;
-  const where = await buildSegmentWhere(segment.tenantId, rules);
+  const where = await segmentWhere(segment);
 
   // An occasion rule ("birthday this week") is applied in memory, so counting
   // in the database would count people the send will skip.
@@ -673,9 +708,7 @@ export async function segmentMembers(
   if (!segment) throw NotFound('Segment');
 
   const rules = segment.rules as unknown as SegmentRules;
-  const where: Prisma.CustomerWhereInput = segment.isDynamic
-    ? await buildSegmentWhere(segment.tenantId, rules)
-    : { tenantId: segment.tenantId, isActive: true, segmentMembers: { some: { segmentId } } };
+  const where = await segmentWhere(segment);
   const { skip, take, page, pageSize } = pageParams(input);
 
   const select = {
