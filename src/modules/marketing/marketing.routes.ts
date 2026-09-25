@@ -12,6 +12,7 @@ import * as segments from './segment.service';
 import { FIELD_GROUPS, SEGMENT_FIELDS, SEGMENT_PRESETS } from './segment-fields';
 import * as campaigns from './campaign.service';
 import * as journeys from './journey.service';
+import * as journeyAnalytics from './journey-analytics.service';
 import * as templates from './template.service';
 import * as templateMeta from './template-meta.service';
 import { prisma } from '../../core/prisma';
@@ -448,11 +449,49 @@ journeyRouter.post(
   }),
 );
 
+/**
+ * Registered ABOVE '/:id' on purpose: Express matches in order, so a route
+ * added below it would be read as a journey whose id is the literal word
+ * "overview".
+ */
+journeyRouter.get(
+  '/overview',
+  requirePermission(PERMISSIONS.CAMPAIGN_VIEW),
+  validate({ query: z.object({ from: z.coerce.date().optional(), to: z.coerce.date().optional() }) }),
+  asyncHandler(async (req, res) => {
+    const q = req.query as unknown as { from?: Date; to?: Date };
+    return ok(res, await journeyAnalytics.journeyOverview(q));
+  }),
+);
+
 journeyRouter.get(
   '/:id',
   requirePermission(PERMISSIONS.CAMPAIGN_VIEW),
   validate({ params: idParam }),
   asyncHandler(async (req, res) => ok(res, await journeys.getJourney(req.params.id!))),
+);
+
+journeyRouter.get(
+  '/:id/performance',
+  requirePermission(PERMISSIONS.CAMPAIGN_VIEW),
+  validate({ params: idParam, query: z.object({ from: z.coerce.date().optional(), to: z.coerce.date().optional() }) }),
+  asyncHandler(async (req, res) => {
+    const q = req.query as unknown as { from?: Date; to?: Date };
+    const result = await journeyAnalytics.journeyPerformance(req.params.id!, q);
+    if (!result) throw NotFound('Automation');
+    return ok(res, result);
+  }),
+);
+
+journeyRouter.get(
+  '/:id/messages',
+  requirePermission(PERMISSIONS.CAMPAIGN_VIEW),
+  validate({ params: idParam, query: paginationQuery.extend({ status: z.string().optional() }) }),
+  asyncHandler(async (req, res) => {
+    const q = req.query as unknown as { page?: number; pageSize?: number; status?: string };
+    const result = await journeyAnalytics.journeyMessages(req.params.id!, q);
+    return paginated(res, result.items, result.total, result.page, result.pageSize);
+  }),
 );
 
 journeyRouter.patch(
@@ -803,6 +842,11 @@ messageRouter.get(
       /// Narrow the log to one campaign's sends — the link from a campaign's
       /// page lands here, so the reasons live in one table rather than two.
       campaignId: idSchema.optional(),
+      /// The same, for an automation. An automation's messages hang off its
+      /// runs rather than off the journey directly, so this filters through
+      /// the run — without it the link from an automation's page would have
+      /// nowhere to land.
+      journeyId: idSchema.optional(),
       channel: channelSchema.optional(),
       /// One status, or several separated by commas — "everything that went
       /// wrong" is BOUNCED,COMPLAINED,FAILED and is one filter to a human.
@@ -819,6 +863,7 @@ messageRouter.get(
       pageSize: number;
       customerId?: string;
       campaignId?: string;
+      journeyId?: string;
       channel?: Channel;
       status: MessageStatus[];
       from?: Date;
@@ -828,6 +873,7 @@ messageRouter.get(
     const where = {
       ...(q.customerId ? { customerId: q.customerId } : {}),
       ...(q.campaignId ? { campaignId: q.campaignId } : {}),
+      ...(q.journeyId ? { journeyRun: { journeyId: q.journeyId } } : {}),
       ...(q.channel ? { channel: q.channel } : {}),
       ...(q.status.length ? { status: { in: q.status } } : {}),
       ...(q.from || q.to ? { queuedAt: { ...(q.from ? { gte: q.from } : {}), ...(q.to ? { lte: q.to } : {}) } } : {}),
