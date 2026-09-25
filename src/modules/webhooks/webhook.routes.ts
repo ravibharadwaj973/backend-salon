@@ -142,7 +142,38 @@ router.post(
           // null is the ordinary case now, not a failure: the status is applied
           // by provider message id and the tenant is only the extra check.
           tenantId: tenantId ?? undefined,
-        }).catch((err: unknown) => logger.warn({ err, id: status.id }, 'webhook status update failed'));
+        })
+          /**
+           * A STATUS THAT MATCHED NOTHING IS NOT NOTHING.
+           *
+           * applyStatusUpdate returns null when no message has that provider
+           * id, and this used to discard it in silence. That silence was the
+           * expensive part: a salon looking at "Delivered 0" could not tell
+           *
+           *   (a) Meta never called us, from
+           *   (b) Meta called and we could not match a single id to a message
+           *
+           * and the two have completely different fixes — subscribe the
+           * webhook, versus work out why the ids we stored at send time do not
+           * match the ids coming back. The logs looked identical either way,
+           * because success logged nothing and this logged nothing.
+           *
+           * Now arrival is always recorded. A receipt that lands and matches
+           * says so at debug; one that lands and matches nothing is a warning,
+           * because it means the app is being told something it cannot use.
+           */
+          .then((updated) => {
+            if (updated) {
+              logger.debug({ id: status.id, status: mapped }, 'whatsapp receipt applied');
+            } else {
+              logger.warn(
+                { id: status.id, status: mapped, phoneNumberId },
+                'whatsapp receipt arrived for a message id we have no record of — ' +
+                  'Meta IS calling this webhook, but the id does not match anything we sent',
+              );
+            }
+          })
+          .catch((err: unknown) => logger.warn({ err, id: status.id }, 'webhook status update failed'));
       }
 
       // --------------------------------------------------------- inbound ---
