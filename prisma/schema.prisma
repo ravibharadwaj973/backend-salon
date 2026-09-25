@@ -295,9 +295,17 @@ enum ConversionEvent {
 /// the follow-up being scheduled and it going out simply is not in the group
 /// any more.
 enum CampaignAudience {
-  /// The message never arrived. A wrong number or a dead mailbox, not a
-  /// customer who ignored anything.
+  /// The provider REFUSED it — a wrong number, a dead mailbox. Something the
+  /// salon can and should fix on the customer's profile.
   NOT_DELIVERED
+  /// Handed over and nothing heard back.
+  ///
+  /// Split out from NOT_DELIVERED because collapsing the two told the salon to
+  /// go and correct four perfectly good phone numbers when the real fault was
+  /// a webhook that never called. "It failed" and "we have not been told" are
+  /// opposite findings with opposite fixes, and one of them is not the
+  /// customer's fault at all.
+  AWAITING_RECEIPT
   /// Arrived, and nothing since. On WhatsApp this means no blue ticks, which
   /// is weaker evidence than it looks.
   DELIVERED_NOT_READ

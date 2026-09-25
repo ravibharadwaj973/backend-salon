@@ -59,9 +59,18 @@ export interface AudienceInfo {
 export const AUDIENCES: AudienceInfo[] = [
   {
     audience: 'NOT_DELIVERED',
-    label: 'Never arrived',
-    meaning: 'The message did not reach them at all — usually a wrong number or an address that no longer exists.',
+    label: 'Refused by the network',
+    meaning: 'The provider rejected it outright — a wrong number, or an address that no longer exists.',
     suggestion: 'Fix the number or address on their profile. Sending the same message again on the same channel will fail the same way.',
+    followUpSensible: false,
+  },
+  {
+    audience: 'AWAITING_RECEIPT',
+    label: 'Sent, nothing heard back',
+    meaning:
+      'The provider accepted these and has not said what happened to them. That is not a failure — it is an absence of news, and it may simply mean delivery receipts are not reaching this app.',
+    suggestion:
+      'Do not change anybody’s number over this. Check the delivery figures at the top of this page first: if no receipt has ever arrived for any message, the webhook is the thing to fix, not your customers’ details.',
     followUpSensible: false,
   },
   {
@@ -111,6 +120,8 @@ export function audienceInfo(audience: CampaignAudience): AudienceInfo | null {
 /** One recipient, reduced to the facts the states are decided by. */
 interface Outcome {
   customerId: string;
+  /** The provider said it could not be delivered — as against saying nothing. */
+  refused: boolean;
   delivered: boolean;
   read: boolean;
   engaged: boolean;
@@ -132,7 +143,16 @@ export function stateOf(outcome: Outcome): CampaignAudience {
   if (outcome.engaged) return 'ENGAGED_NOT_BOOKED';
   if (outcome.read) return 'READ_NOT_ENGAGED';
   if (outcome.delivered) return 'DELIVERED_NOT_READ';
-  return 'NOT_DELIVERED';
+  /**
+   * Refused, or merely unacknowledged? These used to be one group, and the
+   * group carried the advice "usually a wrong number — fix it on their
+   * profile". When the delivery webhook was not wired up, that sentence sent
+   * the salon to correct four perfectly good phone numbers while the actual
+   * fault sat untouched.
+   *
+   * A refusal is something the provider TOLD us. Silence is not.
+   */
+  return outcome.refused ? 'NOT_DELIVERED' : 'AWAITING_RECEIPT';
 }
 
 /**
@@ -224,14 +244,15 @@ export async function campaignOutcomes(campaignId: string): Promise<Map<Campaign
     if (!customerId || seen.has(customerId)) continue;
     seen.add(customerId);
 
+    const refused =
+      message.status === 'SKIPPED' || message.status === 'FAILED' || message.status === 'BOUNCED';
+
     const state = stateOf({
       customerId,
-      // SKIPPED and FAILED never arrived, whatever else the row says.
-      delivered:
-        message.status !== 'SKIPPED' &&
-        message.status !== 'FAILED' &&
-        message.status !== 'BOUNCED' &&
-        Boolean(message.deliveredAt ?? message.readAt ?? message.clickedAt),
+      refused,
+      // A refusal is a fact the provider gave us. Anything else without a
+      // receipt is silence, and silence is not a failure.
+      delivered: !refused && Boolean(message.deliveredAt ?? message.readAt ?? message.clickedAt),
       read: Boolean(message.readAt ?? message.clickedAt ?? message.repliedAt),
       engaged: Boolean(message.clickedAt ?? message.repliedAt),
       booked: booked.has(customerId),

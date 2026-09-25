@@ -11,6 +11,7 @@ import { AUDIENCES, audienceInfo, stateOf } from '../src/modules/marketing/campa
 const who = (over: Partial<Parameters<typeof stateOf>[0]> = {}) =>
   stateOf({
     customerId: 'c1',
+    refused: false,
     delivered: true,
     read: false,
     engaged: false,
@@ -21,7 +22,7 @@ const who = (over: Partial<Parameters<typeof stateOf>[0]> = {}) =>
 
 describe('which group a recipient is in', () => {
   it('sorts each recipient by the furthest they got', () => {
-    expect(who({ delivered: false })).toBe('NOT_DELIVERED');
+    expect(who({ refused: true, delivered: false })).toBe('NOT_DELIVERED');
     expect(who()).toBe('DELIVERED_NOT_READ');
     expect(who({ read: true })).toBe('READ_NOT_ENGAGED');
     expect(who({ read: true, engaged: true })).toBe('ENGAGED_NOT_BOOKED');
@@ -55,13 +56,33 @@ describe('which group a recipient is in', () => {
 
   it('never calls an undelivered message read', () => {
     // Nothing arrived, so nothing downstream of arriving can be claimed.
-    expect(who({ delivered: false, read: false, engaged: false })).toBe('NOT_DELIVERED');
+    expect(who({ refused: true, delivered: false, read: false, engaged: false })).toBe('NOT_DELIVERED');
+  });
+
+  /**
+   * "It was refused" and "we have not been told" are opposite findings with
+   * opposite fixes, and they were one group. That group's advice read "usually
+   * a wrong number — fix it on their profile", so when the delivery webhook was
+   * not wired up the salon was sent to correct four perfectly good phone
+   * numbers while the real fault sat untouched.
+   */
+  it('separates a refusal from silence', () => {
+    expect(who({ refused: true, delivered: false })).toBe('NOT_DELIVERED');
+    expect(who({ refused: false, delivered: false })).toBe('AWAITING_RECEIPT');
+  });
+
+  it('does not blame the customer’s number for an absence of news', () => {
+    const silent = audienceInfo(who({ refused: false, delivered: false }));
+    expect(silent?.meaning).toMatch(/not a failure|absence of news/);
+    expect(silent?.suggestion).toMatch(/Do not change/);
+    // And points at the thing that is actually likely to be broken.
+    expect(silent?.suggestion).toMatch(/webhook/);
   });
 });
 
 describe('what each group is told to do about it', () => {
-  it('describes all six', () => {
-    expect(AUDIENCES).toHaveLength(6);
+  it('describes all seven', () => {
+    expect(AUDIENCES).toHaveLength(7);
     for (const info of AUDIENCES) {
       expect(info.label, info.audience).toBeTruthy();
       expect(info.meaning, info.audience).toBeTruthy();
@@ -75,6 +96,9 @@ describe('what each group is told to do about it', () => {
     expect(audienceInfo('BOOKED_NOT_VISITED')?.followUpSensible).toBe(false);
     expect(audienceInfo('VISITED')?.followUpSensible).toBe(false);
     expect(audienceInfo('NOT_DELIVERED')?.followUpSensible).toBe(false);
+    // Nor to people we simply have not heard about: nothing is known to be
+    // wrong, so there is nothing to follow up on yet.
+    expect(audienceInfo('AWAITING_RECEIPT')?.followUpSensible).toBe(false);
   });
 
   it('offers a follow-up to the three groups worth chasing', () => {
