@@ -74,9 +74,42 @@ export async function getCampaign(id: string) {
   });
   if (!campaign) throw NotFound('Campaign');
 
-  const [statusCounts, revenue] = await Promise.all([
+  const [statusCounts, revenue, awaitingReceipt, lastReceipt, tenantLastReceipt] = await Promise.all([
     prisma.messageLog.groupBy({ by: ['status'], where: { campaignId: id }, _count: { _all: true } }),
     prisma.messageLog.aggregate({ where: { campaignId: id }, _sum: { attributedRevenue: true, cost: true } }),
+    /**
+     * HANDED TO THE PROVIDER, NOTHING HEARD BACK.
+     *
+     * The difference between "it did not arrive" and "we do not know whether it
+     * arrived", which the screen had no way to express. A campaign showing
+     *
+     *     Sent 4 · Delivered 0 · 4 did not get this far
+     *
+     * was asserting that four messages failed. What had actually happened is
+     * that WhatsApp accepted all four and no status callback ever came back, so
+     * the app knows nothing about them either way. Those are opposite
+     * conclusions: one says the phone numbers are wrong, the other says the
+     * webhook is not wired up, and the salon acts very differently on each.
+     *
+     * A message sitting at SENT with no delivery timestamp and no error is
+     * precisely that unknown.
+     */
+    prisma.messageLog.count({
+      where: { campaignId: id, status: 'SENT', deliveredAt: null, errorCode: null },
+    }),
+    prisma.messageLog.findFirst({
+      where: { campaignId: id, OR: [{ deliveredAt: { not: null } }, { readAt: { not: null } }] },
+      orderBy: { deliveredAt: 'desc' },
+      select: { deliveredAt: true, readAt: true },
+    }),
+    // Tenant-wide, because "no receipt has arrived for ANY message in weeks" is
+    // a far stronger signal than one quiet campaign — that is a broken webhook
+    // rather than four bad numbers.
+    prisma.messageLog.findFirst({
+      where: { tenantId: campaign.tenantId, deliveredAt: { not: null } },
+      orderBy: { deliveredAt: 'desc' },
+      select: { deliveredAt: true },
+    }),
   ]);
 
   const byStatus = Object.fromEntries(statusCounts.map((s) => [s.status, s._count._all]));
@@ -139,6 +172,24 @@ export async function getCampaign(id: string) {
      * window is still open, rather than a zero that reads as failure.
      */
     attributionPending: campaign.attributedAt === null && campaign.status === 'COMPLETED',
+    /**
+     * What the app actually KNOWS about delivery, as opposed to what it can
+     * show. Lets the screen say "no receipt yet" where it used to say nobody
+     * received it.
+     */
+    receipts: {
+      /** Sent, accepted by the provider, and nothing heard since. */
+      awaiting: awaitingReceipt,
+      /** Whether any receipt at all has arrived for this campaign. */
+      anyForCampaign: Boolean(lastReceipt),
+      /** The most recent receipt for ANY message this salon has sent. */
+      lastAnywhereAt: tenantLastReceipt?.deliveredAt ?? null,
+      /**
+       * Nothing back on a single message. With no receipt anywhere either, the
+       * webhook is the thing to check rather than the customers' numbers.
+       */
+      looksUnwired: awaitingReceipt > 0 && !lastReceipt && !tenantLastReceipt,
+    },
   };
 }
 
