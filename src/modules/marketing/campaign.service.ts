@@ -1,4 +1,4 @@
-import type { Channel, Prisma } from '@prisma/client';
+import type { CampaignObjective, Channel, ConversionEvent, Prisma } from '@prisma/client';
 import { prisma } from '../../core/prisma';
 import { currentUserId, requireTenantId, runUnscoped } from '../../core/context';
 import { optionalBranchFilter } from '../../core/scope';
@@ -8,6 +8,7 @@ import { add, d, mul, pctOf, round2 } from '../../core/money';
 import { enqueue } from '../../jobs/queue';
 import { queueMessage } from '../../messaging/dispatcher';
 import { campaignReadiness, readinessProblem } from '../../messaging/template-variables';
+import { computeLift, objectiveInfo, windowEnd, windowStart } from './attribution';
 import { resolveMembers } from './segment.service';
 import { logger } from '../../core/logger';
 import { assertCampaignAllowed } from '../quotas/limits.service';
@@ -17,12 +18,17 @@ import { sendabilityProblem } from '../../messaging/whatsapp-templates';
 export interface CampaignInput {
   name: string;
   channel: Channel;
+  /** What this campaign is for — decides the suggested attribution window. */
+  objective?: CampaignObjective;
+  /** How long after each recipient's delivery a booking or visit still counts. */
+  attributionWindowDays?: number;
+  /** Which of booking, visit and revenue this campaign is judged on. */
+  conversionEvents?: ConversionEvent[];
   templateId?: string;
   segmentId?: string;
   branchId?: string;
   scheduledAt?: Date;
   costPerMessage?: number;
-  attributionWindowDays?: number;
   variables?: Record<string, string>;
 }
 
@@ -73,23 +79,62 @@ export async function getCampaign(id: string) {
   const spend = revenue._sum.cost ?? 0;
   const earned = revenue._sum.attributedRevenue ?? 0;
 
+  /**
+   * THE FUNNEL, ALL THE WAY TO THE MONEY.
+   *
+   * It used to stop at "delivered to 930 people", which answers a question
+   * about messaging rather than about the business. Each stage is measured
+   * against the one above it, so a campaign that arrived everywhere and
+   * converted nobody is tellable apart from one that barely arrived.
+   */
+  const info = objectiveInfo(campaign.objective);
+
   return {
     ...campaign,
     messageStatus: byStatus,
+    objectiveLabel: info.label,
+    windowRationale: info.rationale,
+    funnel: {
+      targeted: campaign.targetCount,
+      sent: campaign.sentCount,
+      delivered: campaign.deliveredCount,
+      engaged: campaign.engagedCount,
+      booked: campaign.bookingCount,
+      visited: campaign.visitCount,
+      revenue: earned,
+      cost: spend,
+    },
     performance: {
       sent: campaign.sentCount,
       delivered: campaign.deliveredCount,
       read: campaign.readCount,
       clicked: campaign.clickedCount,
       failed: campaign.failedCount,
+      engaged: campaign.engagedCount,
       bookings: campaign.bookingCount,
+      visits: campaign.visitCount,
       revenue: earned,
       cost: spend,
       roi: Number(spend) > 0 ? Number(round2(d(earned).minus(spend).dividedBy(spend)).times(100)) : null,
       deliveryRatePct: pctOf(campaign.deliveredCount, campaign.sentCount || 1),
       readRatePct: pctOf(campaign.readCount, campaign.deliveredCount || 1),
-      conversionRatePct: pctOf(campaign.bookingCount, campaign.sentCount || 1),
+      engagementRatePct: pctOf(campaign.engagedCount, campaign.deliveredCount || 1),
+      /**
+       * Against DELIVERED, not against sent. A message that never arrived
+       * cannot have failed to convert, and dividing by the wrong denominator
+       * punishes a campaign twice for a bad phone list.
+       */
+      bookingRatePct: pctOf(campaign.bookingCount, campaign.deliveredCount || 1),
+      visitRatePct: pctOf(campaign.visitCount, campaign.deliveredCount || 1),
+      /** What each visit cost to buy — the number that decides the next campaign. */
+      costPerVisit: campaign.visitCount > 0 ? round2(d(spend).dividedBy(campaign.visitCount)) : null,
+      revenuePerMessageSent: campaign.sentCount > 0 ? round2(d(earned).dividedBy(campaign.sentCount)) : null,
     },
+    /**
+     * Null figures until attribution has run — the honest answer while the
+     * window is still open, rather than a zero that reads as failure.
+     */
+    attributionPending: campaign.attributedAt === null && campaign.status === 'COMPLETED',
   };
 }
 
@@ -127,7 +172,14 @@ export async function createCampaign(input: CampaignInput) {
       scheduledAt: input.scheduledAt ?? null,
       status: input.scheduledAt ? 'SCHEDULED' : 'DRAFT',
       costPerMessage: input.costPerMessage ?? 0,
-      attributionWindowDays: input.attributionWindowDays ?? 14,
+      objective: input.objective ?? 'OTHER',
+      // The objective's suggestion, not a fixed fortnight: the right window is
+      // a property of what the campaign is trying to do. An explicit value
+      // always wins — the preset fills the box, it does not overrule the owner.
+      attributionWindowDays:
+        input.attributionWindowDays ?? objectiveInfo(input.objective ?? 'OTHER').suggestedWindowDays,
+      conversionEvents:
+        input.conversionEvents ?? objectiveInfo(input.objective ?? 'OTHER').suggestedEvents,
       variables: (input.variables ?? {}) as Prisma.InputJsonValue,
       targetCount,
       createdById: currentUserId(),
@@ -193,6 +245,11 @@ export async function duplicateCampaign(id: string) {
       segmentId: original.segmentId,
       costPerMessage: original.costPerMessage,
       attributionWindowDays: original.attributionWindowDays,
+      // A copy is being sent again for the same reason, so it is measured the
+      // same way. Carrying one across without the other would make the two
+      // runs incomparable, which is the point of duplicating.
+      objective: original.objective,
+      conversionEvents: original.conversionEvents,
       variables: (original.variables ?? {}) as Prisma.InputJsonValue,
       // Everything the first send earned stays with the first send.
       status: 'DRAFT',
@@ -428,8 +485,28 @@ export async function dispatchCampaign(campaignId: string) {
 }
 
 /**
- * Credits bookings and revenue back to the campaign: any invoice a recipient
- * generated inside the attribution window counts.
+ * CREDITS BOOKINGS, VISITS AND REVENUE BACK TO A CAMPAIGN.
+ *
+ * Rewritten, because the previous version counted the wrong thing and said so
+ * in the wrong words. It looked for the first INVOICE in each recipient's
+ * window and called it a booking:
+ *
+ *     if (!invoice) continue;
+ *     bookings += 1;          // this is a visit
+ *
+ * So a campaign's "74 bookings" meant 74 people who had been billed. Somebody
+ * who booked and then did not turn up counted as nothing, and the gap between
+ * deciding to come and coming — which is a no-show problem rather than a
+ * campaign problem — was invisible. They are separate stages now.
+ *
+ * It also took only the FIRST invoice. On a 30-day win-back window a customer
+ * who came three times contributed one visit and one bill, which understates
+ * exactly the campaigns that worked best.
+ *
+ * Each recipient is measured against their OWN window, anchored on their own
+ * delivery. A campaign that goes out over five days must not give the person
+ * reached on the fifth day a shorter window than the first, or the people
+ * reached last look like the people who did not respond.
  */
 export async function attributeCampaign(campaignId: string) {
   const campaign = await runUnscoped(() => prisma.campaign.findUnique({ where: { id: campaignId } }));
@@ -437,47 +514,128 @@ export async function attributeCampaign(campaignId: string) {
 
   const messages = await runUnscoped(() =>
     prisma.messageLog.findMany({
-      where: { campaignId, status: { in: ['SENT', 'DELIVERED', 'READ', 'CLICKED'] }, customerId: { not: null } },
-      select: { id: true, customerId: true, sentAt: true, attributionUntil: true },
+      where: { campaignId, customerId: { not: null } },
+      select: {
+        id: true,
+        customerId: true,
+        status: true,
+        queuedAt: true,
+        sentAt: true,
+        deliveredAt: true,
+        readAt: true,
+        clickedAt: true,
+        repliedAt: true,
+      },
     }),
   );
 
-  let bookings = 0;
+  let engaged = 0;
+  let booked = 0;
+  let visited = 0;
   let revenue = d(0);
 
+  // Split for the lift comparison: recipients who never opened it are the
+  // closest thing to a control group this data can offer — same segment, same
+  // day, same rule.
+  let engagedRecipients = 0;
+  let engagedConverted = 0;
+  let quietRecipients = 0;
+  let quietConverted = 0;
+
   for (const message of messages) {
-    if (!message.customerId || !message.sentAt) continue;
+    const start = windowStart(message);
+    // Nothing left the building for this recipient, so there is nothing their
+    // behaviour could be evidence of either way.
+    if (!message.customerId || !start) continue;
+    if (message.status === 'SKIPPED' || message.status === 'FAILED') continue;
 
-    const invoice = await runUnscoped(() =>
-      prisma.invoice.findFirst({
-        where: {
-          customerId: message.customerId!,
-          status: { not: 'VOID' },
-          invoiceDate: { gte: message.sentAt!, lte: message.attributionUntil ?? new Date() },
-        },
-        orderBy: { invoiceDate: 'asc' },
-        select: { id: true, grandTotal: true },
-      }),
-    );
+    const until = windowEnd(start, campaign.attributionWindowDays);
+    const didEngage = Boolean(message.readAt ?? message.clickedAt ?? message.repliedAt);
+    if (didEngage) engaged += 1;
 
-    if (!invoice) continue;
+    const [appointment, invoices] = await Promise.all([
+      runUnscoped(() =>
+        prisma.appointment.findFirst({
+          where: {
+            customerId: message.customerId!,
+            // When they DECIDED to come, which is what the message could have
+            // caused — not when the appointment happens to fall.
+            createdAt: { gte: start, lte: until },
+            status: { not: 'CANCELLED' },
+          },
+          orderBy: { createdAt: 'asc' },
+          select: { id: true },
+        }),
+      ),
+      runUnscoped(() =>
+        prisma.invoice.findMany({
+          where: {
+            customerId: message.customerId!,
+            status: { not: 'VOID' },
+            invoiceDate: { gte: start, lte: until },
+          },
+          orderBy: { invoiceDate: 'asc' },
+          select: { id: true, grandTotal: true },
+        }),
+      ),
+    ]);
 
-    bookings += 1;
-    revenue = add(revenue, invoice.grandTotal);
+    const theirRevenue = invoices.reduce<Prisma.Decimal>((acc, i) => add(acc, i.grandTotal), d(0));
+    const converted = invoices.length > 0 || Boolean(appointment);
 
+    if (appointment) booked += 1;
+    if (invoices.length) {
+      visited += 1;
+      revenue = add(revenue, theirRevenue);
+    }
+
+    if (didEngage) {
+      engagedRecipients += 1;
+      if (converted) engagedConverted += 1;
+    } else {
+      quietRecipients += 1;
+      if (converted) quietConverted += 1;
+    }
+
+    // Written back even when nothing converted, so the window itself is on the
+    // record: "counted because they visited on 2 October, inside 25 September
+    // to 16 October" is answerable months later, and a recomputed window is not.
     await runUnscoped(() =>
       prisma.messageLog.update({
         where: { id: message.id },
-        data: { attributedInvoiceId: invoice.id, attributedRevenue: invoice.grandTotal },
+        data: {
+          attributionFrom: start,
+          attributionUntil: until,
+          attributedAppointmentId: appointment?.id ?? null,
+          attributedInvoiceId: invoices[0]?.id ?? null,
+          attributedVisits: invoices.length,
+          attributedRevenue: theirRevenue,
+        },
       }),
     );
   }
 
   await runUnscoped(() =>
-    prisma.campaign.update({ where: { id: campaignId }, data: { bookingCount: bookings, revenue } }),
+    prisma.campaign.update({
+      where: { id: campaignId },
+      data: {
+        engagedCount: engaged,
+        bookingCount: booked,
+        visitCount: visited,
+        revenue,
+        attributedAt: new Date(),
+      },
+    }),
   );
 
-  return { attributed: bookings, revenue };
+  return {
+    attributed: visited,
+    booked,
+    visited,
+    engaged,
+    revenue,
+    lift: computeLift({ engagedRecipients, engagedConverted, quietRecipients, quietConverted }),
+  };
 }
 
 /** Marketing ROI across campaigns for a period. */

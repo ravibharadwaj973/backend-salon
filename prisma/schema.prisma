@@ -249,6 +249,37 @@ enum TemplateApprovalStatus {
   DISABLED
 }
 
+/// WHAT A CAMPAIGN IS TRYING TO DO.
+///
+/// Its only real job is to suggest an attribution window, because the right
+/// window is a property of the objective and nothing else: somebody nudged
+/// about tomorrow's appointment either comes tomorrow or does not, while
+/// somebody being won back after eight months may take a month to act. One
+/// fixed fortnight for both flatters the reminder and writes off the win-back.
+enum CampaignObjective {
+  REMINDER
+  REBOOKING
+  AWARENESS
+  WINBACK
+  BIRTHDAY
+  RENEWAL
+  FESTIVAL
+  REACTIVATION
+  OTHER
+}
+
+/// What counts as this campaign having worked.
+///
+/// Separate values because they are separate things, and the code conflated
+/// them: a booking is somebody deciding to come, a visit is somebody actually
+/// coming, and the gap between the two is a no-show problem rather than a
+/// campaign problem.
+enum ConversionEvent {
+  BOOKING
+  VISIT
+  REVENUE
+}
+
 enum CampaignStatus {
   DRAFT
   SCHEDULED
@@ -2235,7 +2266,16 @@ model Campaign {
   startedAt    DateTime?
   completedAt  DateTime?
   costPerMessage Decimal      @default(0) @db.Decimal(8, 4)
+  objective    CampaignObjective @default(OTHER)
+  /// How long after EACH RECIPIENT'S delivery a booking or visit still counts.
+  ///
+  /// Per recipient, not per campaign: a campaign that goes out over five days
+  /// gives the person reached on the fifth day the same window as the first.
+  /// Anchoring everyone to the campaign's start would quietly shorten the
+  /// window for everybody it reached late.
   attributionWindowDays Int   @default(14)
+  /// Which of booking, visit and revenue this campaign is being judged on.
+  conversionEvents ConversionEvent[] @default([BOOKING, VISIT, REVENUE])
   variables    Json           @default("{}")
 
   targetCount    Int     @default(0)
@@ -2246,8 +2286,20 @@ model Campaign {
   /// Customers who wrote back. The strongest signal short of a booking.
   repliedCount   Int     @default(0)
   failedCount    Int     @default(0)
+  /// Recipients who did something with it — read, clicked or wrote back.
+  ///
+  /// The stage the funnel was missing. Between "it arrived" and "they came" is
+  /// "they looked", and without it a campaign that nobody opened is
+  /// indistinguishable from one that everybody opened and ignored.
+  engagedCount   Int     @default(0)
+  /// Recipients who BOOKED inside their window. Appointments, not invoices.
   bookingCount   Int     @default(0)
+  /// Recipients who actually CAME. A booking that turns into a no-show is
+  /// counted above and not here, which is how the two stay tellable apart.
+  visitCount     Int     @default(0)
   revenue        Decimal @default(0) @db.Decimal(14, 2)
+  /// Set when attribution last ran, so a half-finished run is visible.
+  attributedAt   DateTime?
   cost           Decimal @default(0) @db.Decimal(12, 2)
 
   createdById String?
@@ -2329,7 +2381,19 @@ model MessageLog {
   repliedAt    DateTime?
   attributedInvoiceId String?
   attributedRevenue   Decimal @default(0) @db.Decimal(12, 2)
+  /// The start of this recipient's own window — their delivery, or their send
+  /// when the channel never confirmed delivery.
+  ///
+  /// Stored rather than recomputed so an attribution can be explained months
+  /// later: "counted because they visited on 2 October, inside 25 September to
+  /// 16 October" is answerable, and a recomputed window is not.
+  attributionFrom     DateTime?
   attributionUntil    DateTime?
+  /// The appointment this recipient booked inside the window, if any.
+  attributedAppointmentId String?
+  /// How many times they came inside the window. More than one is common on a
+  /// long window, and counting only the first understates the campaign.
+  attributedVisits    Int     @default(0)
 
   customer   Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
   lead       Lead?            @relation(fields: [leadId], references: [id], onDelete: SetNull)

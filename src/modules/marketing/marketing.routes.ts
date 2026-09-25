@@ -22,6 +22,7 @@ import type { TemplateInput } from './template.service';
 import type { Channel, MessageStatus, TemplateCategory } from '@prisma/client';
 import { parseStatusFilter } from './message-filter';
 import { campaignReadiness } from '../../messaging/template-variables';
+import { OBJECTIVES, WINDOW_CHOICES } from './attribution';
 
 const channelSchema = z.enum(['WHATSAPP', 'SMS', 'EMAIL', 'IN_APP']);
 
@@ -228,6 +229,19 @@ campaignRouter.get(
   }),
 );
 
+
+/**
+ * The campaign objectives, with the window each one starts from.
+ *
+ * Served rather than hard-coded in the browser so the suggestion, the reason
+ * shown beside it and the value actually saved all come from one place.
+ */
+campaignRouter.get(
+  '/objectives',
+  requirePermission(PERMISSIONS.CAMPAIGN_VIEW),
+  asyncHandler(async (_req, res) => ok(res, { objectives: OBJECTIVES, windowChoices: WINDOW_CHOICES })),
+);
+
 campaignRouter.post(
   '/',
   requirePermission(PERMISSIONS.CAMPAIGN_MANAGE),
@@ -240,8 +254,14 @@ campaignRouter.post(
       branchId: idSchema.optional(),
       scheduledAt: z.coerce.date().optional(),
       costPerMessage: moneySchema.default(0),
-      attributionWindowDays: z.coerce.number().int().min(1).max(90).default(14),
       variables: z.record(z.string()).optional(),
+      objective: z
+        .enum(['REMINDER', 'REBOOKING', 'AWARENESS', 'WINBACK', 'BIRTHDAY', 'RENEWAL', 'FESTIVAL', 'REACTIVATION', 'OTHER'])
+        .optional(),
+      // Capped at half a year. Past that the window stops measuring a campaign
+      // and starts collecting every visit a customer was going to make anyway.
+      attributionWindowDays: z.coerce.number().int().min(1).max(180).optional(),
+      conversionEvents: z.array(z.enum(['BOOKING', 'VISIT', 'REVENUE'])).min(1).optional(),
     }),
   }),
   asyncHandler(async (req, res) => {
@@ -832,6 +852,13 @@ messageRouter.post(
       templateId: idSchema.optional(),
       body: z.string().trim().max(2000).optional(),
       variables: z.record(z.string()).optional(),
+      objective: z
+        .enum(['REMINDER', 'REBOOKING', 'AWARENESS', 'WINBACK', 'BIRTHDAY', 'RENEWAL', 'FESTIVAL', 'REACTIVATION', 'OTHER'])
+        .optional(),
+      // Capped at half a year. Past that the window stops measuring a campaign
+      // and starts collecting every visit a customer was going to make anyway.
+      attributionWindowDays: z.coerce.number().int().min(1).max(180).optional(),
+      conversionEvents: z.array(z.enum(['BOOKING', 'VISIT', 'REVENUE'])).min(1).optional(),
       toAddress: z.string().trim().max(120).optional(),
     }),
   }),
