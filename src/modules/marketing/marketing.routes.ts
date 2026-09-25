@@ -23,6 +23,7 @@ import type { Channel, MessageStatus, TemplateCategory } from '@prisma/client';
 import { parseStatusFilter } from './message-filter';
 import { campaignReadiness } from '../../messaging/template-variables';
 import { OBJECTIVES, WINDOW_CHOICES } from './attribution';
+import { campaignAudienceCounts } from './campaign-audiences';
 
 const channelSchema = z.enum(['WHATSAPP', 'SMS', 'EMAIL', 'IN_APP']);
 
@@ -262,6 +263,9 @@ campaignRouter.post(
       // and starts collecting every visit a customer was going to make anyway.
       attributionWindowDays: z.coerce.number().int().min(1).max(180).optional(),
       conversionEvents: z.array(z.enum(['BOOKING', 'VISIT', 'REVENUE'])).min(1).optional(),
+      /** Follow up on an earlier campaign's recipients instead of a segment. */
+      followUpOfId: idSchema.optional(),
+      followUpAudience: z.enum(['NOT_DELIVERED', 'DELIVERED_NOT_READ', 'READ_NOT_ENGAGED', 'ENGAGED_NOT_BOOKED', 'BOOKED_NOT_VISITED', 'VISITED']).optional(),
     }),
   }),
   asyncHandler(async (req, res) => {
@@ -329,6 +333,22 @@ campaignRouter.post(
   requirePermission(PERMISSIONS.CAMPAIGN_MANAGE),
   validate({ params: idParam }),
   asyncHandler(async (req, res) => ok(res, await campaigns.pauseCampaign(req.params.id!))),
+);
+
+
+/**
+ * WHAT EACH RECIPIENT DID, GROUPED.
+ *
+ * Computed live rather than read from the campaign's stored attribution, which
+ * only runs once the window closes — a day-3 follow-up would otherwise see
+ * zeros everywhere and treat the people who converted fastest as the ones most
+ * in need of chasing.
+ */
+campaignRouter.get(
+  '/:id/audiences',
+  requirePermission(PERMISSIONS.CAMPAIGN_VIEW),
+  validate({ params: idParam }),
+  asyncHandler(async (req, res) => ok(res, await campaignAudienceCounts(req.params.id!))),
 );
 
 campaignRouter.get(
@@ -859,6 +879,9 @@ messageRouter.post(
       // and starts collecting every visit a customer was going to make anyway.
       attributionWindowDays: z.coerce.number().int().min(1).max(180).optional(),
       conversionEvents: z.array(z.enum(['BOOKING', 'VISIT', 'REVENUE'])).min(1).optional(),
+      /** Follow up on an earlier campaign's recipients instead of a segment. */
+      followUpOfId: idSchema.optional(),
+      followUpAudience: z.enum(['NOT_DELIVERED', 'DELIVERED_NOT_READ', 'READ_NOT_ENGAGED', 'ENGAGED_NOT_BOOKED', 'BOOKED_NOT_VISITED', 'VISITED']).optional(),
       toAddress: z.string().trim().max(120).optional(),
     }),
   }),

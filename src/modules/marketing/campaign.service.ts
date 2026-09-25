@@ -1,4 +1,4 @@
-import type { CampaignObjective, Channel, ConversionEvent, Prisma } from '@prisma/client';
+import type { CampaignAudience, CampaignObjective, Channel, ConversionEvent, Prisma } from '@prisma/client';
 import { prisma } from '../../core/prisma';
 import { currentUserId, requireTenantId, runUnscoped } from '../../core/context';
 import { optionalBranchFilter } from '../../core/scope';
@@ -9,6 +9,7 @@ import { enqueue } from '../../jobs/queue';
 import { queueMessage } from '../../messaging/dispatcher';
 import { campaignReadiness, readinessProblem } from '../../messaging/template-variables';
 import { computeLift, objectiveInfo, windowEnd, windowStart } from './attribution';
+import { resolveFollowUpMembers } from './campaign-audiences';
 import { resolveMembers } from './segment.service';
 import { logger } from '../../core/logger';
 import { assertCampaignAllowed } from '../quotas/limits.service';
@@ -20,6 +21,9 @@ export interface CampaignInput {
   channel: Channel;
   /** What this campaign is for — decides the suggested attribution window. */
   objective?: CampaignObjective;
+  /** The campaign whose recipients this one follows up, instead of a segment. */
+  followUpOfId?: string;
+  followUpAudience?: CampaignAudience;
   /** How long after each recipient's delivery a booking or visit still counts. */
   attributionWindowDays?: number;
   /** Which of booking, visit and revenue this campaign is judged on. */
@@ -159,6 +163,12 @@ export async function createCampaign(input: CampaignInput) {
     const segment = await prisma.segment.findUnique({ where: { id: input.segmentId } });
     if (!segment) throw NotFound('Segment');
     targetCount = segment.lastCount;
+  } else if (input.followUpOfId && input.followUpAudience) {
+    const source = await prisma.campaign.findUnique({ where: { id: input.followUpOfId } });
+    if (!source) throw NotFound('The campaign being followed up');
+    // A count for the screen only. The real audience is resolved again at send
+    // time, and will differ if anybody books in between — which is the point.
+    targetCount = (await resolveFollowUpMembers(input.followUpOfId, input.followUpAudience)).length;
   }
 
   return prisma.campaign.create({
@@ -173,6 +183,8 @@ export async function createCampaign(input: CampaignInput) {
       status: input.scheduledAt ? 'SCHEDULED' : 'DRAFT',
       costPerMessage: input.costPerMessage ?? 0,
       objective: input.objective ?? 'OTHER',
+      followUpOfId: input.followUpOfId ?? null,
+      followUpAudience: input.followUpAudience ?? null,
       // The objective's suggestion, not a fixed fortnight: the right window is
       // a property of what the campaign is trying to do. An explicit value
       // always wins — the preset fills the box, it does not overrule the owner.
@@ -289,7 +301,9 @@ export async function launchCampaign(id: string, sendAt?: Date) {
   if (!campaign) throw NotFound('Campaign');
   if (campaign.status === 'RUNNING') throw Conflict('This campaign is already running');
   if (campaign.status === 'COMPLETED') throw Conflict('This campaign has already been sent');
-  if (!campaign.segmentId) throw BadRequest('The campaign has no audience segment');
+  if (!campaign.segmentId && !(campaign.followUpOfId && campaign.followUpAudience)) {
+    throw BadRequest('The campaign has no audience — pick a segment, or follow up on an earlier campaign.');
+  }
   if (!campaign.templateId) throw BadRequest('The campaign has no message template');
 
   // Afford it before starting it. A campaign that runs out of allowance halfway
@@ -297,8 +311,21 @@ export async function launchCampaign(id: string, sendAt?: Date) {
   // salon than not sending at all — and the overdraft is there to finish a run,
   // not to fund one.
   const template = await prisma.messageTemplate.findUnique({ where: { id: campaign.templateId } });
-  const segment = await prisma.segment.findUnique({ where: { id: campaign.segmentId } });
+  const segment = campaign.segmentId
+    ? await prisma.segment.findUnique({ where: { id: campaign.segmentId } })
+    : null;
   const meter = meterFor(campaign.channel, template?.category ?? 'MARKETING');
+
+  /**
+   * How many this will reach, for the affordability check. A follow-up has no
+   * segment to ask, so the group is counted — and counted again at send time,
+   * because anybody who books in between drops out of it.
+   */
+  const expectedRecipients = segment
+    ? segment.lastCount
+    : campaign.followUpOfId && campaign.followUpAudience
+      ? (await resolveFollowUpMembers(campaign.followUpOfId, campaign.followUpAudience)).length
+      : 0;
 
   /**
    * CAN THIS TEMPLATE EVEN BE SENT TO A LIST?
@@ -327,8 +354,8 @@ export async function launchCampaign(id: string, sendAt?: Date) {
     }
   }
 
-  if (meter && segment) {
-    const affordability = await canAfford(campaign.tenantId, meter, segment.lastCount);
+  if (meter && expectedRecipients > 0) {
+    const affordability = await canAfford(campaign.tenantId, meter, expectedRecipients);
     if (!affordability.affordable) {
       throw PaymentRequired(affordability.reason ?? 'Not enough message allowance to send this campaign', {
         meter: affordability.meter,
@@ -363,7 +390,12 @@ export async function dispatchCampaign(campaignId: string) {
     prisma.campaign.findUnique({ where: { id: campaignId }, include: { template: true } }),
   );
   if (!campaign) return { sent: 0, skipped: 0, reason: 'not_found' };
-  if (!campaign.segmentId || !campaign.template) return { sent: 0, skipped: 0, reason: 'incomplete' };
+  const isFollowUp = Boolean(campaign.followUpOfId && campaign.followUpAudience);
+  // A follow-up draws its audience from another campaign's recipients rather
+  // than from a segment, so requiring a segment would refuse it outright.
+  if ((!campaign.segmentId && !isFollowUp) || !campaign.template) {
+    return { sent: 0, skipped: 0, reason: 'incomplete' };
+  }
 
   /**
    * CLAIM THE CAMPAIGN, OR DO NOTHING.
@@ -400,14 +432,54 @@ export async function dispatchCampaign(campaignId: string) {
     return { sent: 0, skipped: 0, reason: 'not_active' };
   }
 
-  const members = await runUnscoped(() =>
-    resolveMembers(campaign.segmentId!, {
-      requireConsent: campaign.template!.category === 'MARKETING' ? (campaign.channel as 'WHATSAPP' | 'SMS' | 'EMAIL') : undefined,
-      // Nobody without an address on this channel. They cannot be sent to and
-      // must not be billed for.
-      reachableOn: campaign.channel as 'WHATSAPP' | 'SMS' | 'EMAIL',
-    }),
-  );
+  /**
+   * WHO THIS GOES TO, DECIDED NOW RATHER THAN WHEN IT WAS CREATED.
+   *
+   * For a follow-up this is the whole design. The audience is a rule — "read
+   * it and has not booked" — evaluated at this moment, so anybody who booked
+   * between the follow-up being scheduled and it going out has already left
+   * the group. There is no stop-the-follow-up step anywhere because none is
+   * needed: they are simply not in it.
+   *
+   * A copied list would have messaged them, asking people who have already
+   * said yes whether they are still thinking about it.
+   */
+  const members = isFollowUp
+    ? await (async () => {
+        const ids = await resolveFollowUpMembers(campaign.followUpOfId!, campaign.followUpAudience!);
+        if (!ids.length) return [];
+        return runUnscoped(() =>
+          prisma.customer.findMany({
+            where: {
+              id: { in: ids },
+              isActive: true,
+              // The same two gates a segment send passes: consent for
+              // marketing, and an address on this channel.
+              ...(campaign.template!.category === 'MARKETING'
+                ? {
+                    [campaign.channel === 'EMAIL'
+                      ? 'emailConsent'
+                      : campaign.channel === 'SMS'
+                        ? 'smsConsent'
+                        : 'whatsappConsent']: 'OPTED_IN',
+                  }
+                : {}),
+              ...(campaign.channel === 'EMAIL'
+                ? { email: { not: null }, NOT: { email: '' } }
+                : { NOT: { phone: '' } }),
+            },
+            select: { id: true, dob: true, anniversary: true, phone: true, email: true },
+          }),
+        );
+      })()
+    : await runUnscoped(() =>
+        resolveMembers(campaign.segmentId!, {
+          requireConsent: campaign.template!.category === 'MARKETING' ? (campaign.channel as 'WHATSAPP' | 'SMS' | 'EMAIL') : undefined,
+          // Nobody without an address on this channel. They cannot be sent to
+          // and must not be billed for.
+          reachableOn: campaign.channel as 'WHATSAPP' | 'SMS' | 'EMAIL',
+        }),
+      );
 
   const variables = (campaign.variables as Record<string, string>) ?? {};
 

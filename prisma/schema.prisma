@@ -280,6 +280,38 @@ enum ConversionEvent {
   REVENUE
 }
 
+/// A GROUP OF PEOPLE DEFINED BY WHAT THEY DID WITH A CAMPAIGN.
+///
+/// The point of naming these is that a campaign's recipients are not one
+/// audience, they are six, and the six want completely different things next.
+/// Somebody who clicked and did not book is interested and hesitating;
+/// somebody the message never reached has a wrong number. Sending both the
+/// same "still thinking about it?" is how a salon annoys one and wastes a
+/// message on the other.
+///
+/// Every one of these is a LIVE rule, evaluated when it is used rather than
+/// frozen when it is defined — which is what makes "stop following up once
+/// they book" work without any stop logic at all: someone who books between
+/// the follow-up being scheduled and it going out simply is not in the group
+/// any more.
+enum CampaignAudience {
+  /// The message never arrived. A wrong number or a dead mailbox, not a
+  /// customer who ignored anything.
+  NOT_DELIVERED
+  /// Arrived, and nothing since. On WhatsApp this means no blue ticks, which
+  /// is weaker evidence than it looks.
+  DELIVERED_NOT_READ
+  /// Read, but nothing tapped and nothing booked.
+  READ_NOT_ENGAGED
+  /// Tapped a button or a link, and still did not book. The warmest group
+  /// that has not converted.
+  ENGAGED_NOT_BOOKED
+  /// Booked and has not come in yet.
+  BOOKED_NOT_VISITED
+  /// Came in.
+  VISITED
+}
+
 enum CampaignStatus {
   DRAFT
   SCHEDULED
@@ -2267,6 +2299,16 @@ model Campaign {
   completedAt  DateTime?
   costPerMessage Decimal      @default(0) @db.Decimal(8, 4)
   objective    CampaignObjective @default(OTHER)
+  /// The campaign this one follows up, when it targets a group defined by
+  /// what people did with an earlier send rather than by a segment rule.
+  followUpOfId String?
+  /// Which of that campaign's outcome groups this one goes to.
+  ///
+  /// Resolved at SEND time, never at creation: a follow-up scheduled for
+  /// Thursday and aimed at "read but has not booked" must not reach somebody
+  /// who booked on Wednesday. Keeping it as a rule rather than a copied list
+  /// is what makes that true without any stop-the-follow-up machinery.
+  followUpAudience CampaignAudience?
   /// How long after EACH RECIPIENT'S delivery a booking or visit still counts.
   ///
   /// Per recipient, not per campaign: a campaign that goes out over five days
@@ -2311,8 +2353,13 @@ model Campaign {
 
   messages MessageLog[]
   leads    Lead[]
+  /// Self-relation: a follow-up points at the campaign whose recipients it is
+  /// drawn from, so the chain is walkable in both directions.
+  followUpOf Campaign?  @relation("CampaignFollowUps", fields: [followUpOfId], references: [id], onDelete: SetNull)
+  followUps  Campaign[] @relation("CampaignFollowUps")
 
   @@index([tenantId, status])
+  @@index([followUpOfId])
   @@map("campaigns")
 }
 
