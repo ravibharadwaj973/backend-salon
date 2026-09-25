@@ -813,6 +813,28 @@ export async function applyStatusUpdate(input: {
   if (input.status === 'READ') data.readAt = at;
   if (input.status === 'CLICKED') data.clickedAt = at;
 
+  /**
+   * A READ IMPLIES A DELIVERY, AND META OFTEN SENDS ONLY THE READ.
+   *
+   * From their own webhook reference: "when a user receives a message while in
+   * the chat screen, the message is both delivered and read at the same time.
+   * In these cases, the 'delivered' webhook is not sent because it's implied."
+   *
+   * Taken literally, that produced a funnel that WIDENS:
+   *
+   *     Sent 4 · Delivered 0 · Read 4
+   *
+   * which is impossible, reads as a broken app, and makes every rate computed
+   * against delivered meaningless. Anybody who had the chat open when the
+   * message landed fell through the delivered stage entirely.
+   *
+   * So the implication is made explicit. Same for a click: you cannot click a
+   * link in a message that never arrived.
+   */
+  if ((input.status === 'READ' || input.status === 'CLICKED') && !log.deliveredAt) {
+    data.deliveredAt = at;
+  }
+
   if (TERMINAL.has(input.status)) {
     data.status = input.status;
     data.errorMessage =
@@ -889,8 +911,23 @@ export async function applyStatusUpdate(input: {
               ? null
               : 'failedCount';
     if (!field) return updated;
+
+    /**
+     * The implied delivery has to move the counter too, or the timestamp says
+     * one thing and the number on the campaign page says another. This is the
+     * only place both are written, so they cannot drift.
+     */
+    const impliedDelivery =
+      (input.status === 'READ' || input.status === 'CLICKED') && !log.deliveredAt;
+
     await runUnscoped(() =>
-      prisma.campaign.update({ where: { id: log.campaignId! }, data: { [field]: { increment: 1 } } }),
+      prisma.campaign.update({
+        where: { id: log.campaignId! },
+        data: {
+          [field]: { increment: 1 },
+          ...(impliedDelivery ? { deliveredCount: { increment: 1 } } : {}),
+        },
+      }),
     );
   }
 

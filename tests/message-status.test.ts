@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /**
@@ -84,5 +86,30 @@ describe('message status progression', () => {
     for (const status of inSchema) {
       expect(status in PROGRESS || TERMINAL.has(status)).toBe(true);
     }
+  });
+});
+
+/**
+ * A READ IMPLIES A DELIVERY.
+ *
+ * Meta's webhook reference: "when a user receives a message while in the chat
+ * screen, the message is both delivered and read at the same time. In these
+ * cases, the 'delivered' webhook is not sent because it's implied."
+ *
+ * Taken literally that produced a funnel which widens — Sent 4, Delivered 0,
+ * Read 4 — which is impossible, reads as a broken app, and makes every rate
+ * computed against delivered meaningless.
+ */
+describe('a read that arrives without a delivered', () => {
+  it('is documented behaviour, not an anomaly to ignore', () => {
+    // Pinned as a statement of intent: the dispatcher backfills deliveredAt
+    // and the campaign's deliveredCount when a READ or CLICKED lands first.
+    // Both are written in one place so the timestamp and the on-screen number
+    // cannot disagree.
+    const source = readFileSync(join(__dirname, '..', 'src/messaging/dispatcher.ts'), 'utf8');
+    expect(source).toContain('impliedDelivery');
+    expect(source).toContain("(input.status === 'READ' || input.status === 'CLICKED') && !log.deliveredAt");
+    // The counter must move too, or the page still shows Delivered 0.
+    expect(source).toContain('deliveredCount: { increment: 1 }');
   });
 });
