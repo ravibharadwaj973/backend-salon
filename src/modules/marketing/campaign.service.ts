@@ -7,6 +7,7 @@ import { pageParams } from '../../core/http';
 import { add, d, mul, pctOf, round2 } from '../../core/money';
 import { enqueue } from '../../jobs/queue';
 import { queueMessage } from '../../messaging/dispatcher';
+import { campaignReadiness, readinessProblem } from '../../messaging/template-variables';
 import { resolveMembers } from './segment.service';
 import { logger } from '../../core/logger';
 import { assertCampaignAllowed } from '../quotas/limits.service';
@@ -241,6 +242,33 @@ export async function launchCampaign(id: string, sendAt?: Date) {
   const template = await prisma.messageTemplate.findUnique({ where: { id: campaign.templateId } });
   const segment = await prisma.segment.findUnique({ where: { id: campaign.segmentId } });
   const meter = meterFor(campaign.channel, template?.category ?? 'MARKETING');
+
+  /**
+   * CAN THIS TEMPLATE EVEN BE SENT TO A LIST?
+   *
+   * Checked here, once, before anything is scheduled. A campaign called
+   * "test-utilty" using the appointment_cancelled template reported success,
+   * charged nothing and sent nothing: every message was skipped because
+   * {{appointment_date}} had no value and never could have — a campaign has a
+   * segment, and a segment contains people, not appointments.
+   *
+   * The failure was discovered once per recipient, after the owner had been
+   * told the campaign was away. One check up front, naming the field and what
+   * to do about it, replaces four hundred identical skip rows.
+   */
+  if (template) {
+    const readiness = campaignReadiness(
+      [template.bodyText, template.headerText, JSON.stringify(template.buttons ?? [])],
+      (campaign.variables as Record<string, string>) ?? {},
+    );
+    const problem = readinessProblem(readiness);
+    if (problem) {
+      throw BadRequest(problem, {
+        blocked: readiness.blocked.map((v) => v.name),
+        missing: readiness.missing.map((v) => v.name),
+      });
+    }
+  }
 
   if (meter && segment) {
     const affordability = await canAfford(campaign.tenantId, meter, segment.lastCount);

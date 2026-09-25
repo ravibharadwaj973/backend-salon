@@ -7,7 +7,7 @@ import { requirePermission } from '../../middleware/rbac';
 import { PERMISSIONS } from '../../core/permissions';
 import { audit } from '../../middleware/audit';
 import { idParam, idSchema, moneySchema, paginationQuery } from '../../core/validators';
-import { BadRequest } from '../../core/errors';
+import { BadRequest, NotFound } from '../../core/errors';
 import * as segments from './segment.service';
 import { FIELD_GROUPS, SEGMENT_FIELDS, SEGMENT_PRESETS } from './segment-fields';
 import * as campaigns from './campaign.service';
@@ -21,6 +21,7 @@ import type { JourneyInput } from './journey.service';
 import type { TemplateInput } from './template.service';
 import type { Channel, MessageStatus, TemplateCategory } from '@prisma/client';
 import { parseStatusFilter } from './message-filter';
+import { campaignReadiness } from '../../messaging/template-variables';
 
 const channelSchema = z.enum(['WHATSAPP', 'SMS', 'EMAIL', 'IN_APP']);
 
@@ -709,6 +710,43 @@ templateRouter.post(
 );
 
 // -------------------------------------------------------------- messages ---
+
+
+/**
+ * WHAT THIS TEMPLATE WILL NEED BEFORE IT CAN BE SENT TO A LIST.
+ *
+ * Asked by the campaign composer the moment a template is chosen, so the sender
+ * is shown the boxes to fill before picking an audience — rather than finding
+ * out afterwards, once per recipient, that nothing went out.
+ *
+ * Values already entered are posted along, so the answer says what is STILL
+ * missing rather than what was ever missing.
+ */
+templateRouter.post(
+  '/:id/campaign-readiness',
+  requirePermission(PERMISSIONS.CAMPAIGN_VIEW),
+  validate({
+    params: idParam,
+    body: z.object({ variables: z.record(z.string().max(60), z.string().max(1000)).default({}) }),
+  }),
+  asyncHandler(async (req, res) => {
+    const template = await prisma.messageTemplate.findUnique({ where: { id: req.params.id! } });
+    if (!template) throw NotFound('Template');
+
+    const readiness = campaignReadiness(
+      [template.bodyText, template.headerText, JSON.stringify(template.buttons ?? [])],
+      (req.body as { variables: Record<string, string> }).variables,
+    );
+
+    return ok(res, {
+      templateId: template.id,
+      templateName: template.name,
+      channel: template.channel,
+      category: template.category,
+      ...readiness,
+    });
+  }),
+);
 
 export const messageRouter = Router();
 messageRouter.use(authenticate);

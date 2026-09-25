@@ -3,6 +3,7 @@ import { prisma } from '../core/prisma';
 import { runUnscoped } from '../core/context';
 import { logger } from '../core/logger';
 import { classify, recordReachability, suppressionFor } from './reachability';
+import { VARIABLE_PATTERN } from './template-variables';
 import { toE164 } from '../core/ids';
 import { addDays, dateKey, dayjs } from '../core/dates';
 import { formatINR } from '../core/money';
@@ -65,7 +66,6 @@ export interface QueueMessageInput {
   sendNow?: boolean;
 }
 
-const VARIABLE_PATTERN = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g;
 
 export function renderTemplate(body: string, variables: Record<string, string>): string {
   return body.replace(VARIABLE_PATTERN, (_match, key: string) => variables[key] ?? '');
