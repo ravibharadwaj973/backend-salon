@@ -100,7 +100,12 @@ router.get(
 router.get(
   '/today',
   canView,
-  asyncHandler(async (req, res) => ok(res, await service.todaySummary(req.branchId))),
+  // A date may be given, so the dashboard's appointment panel follows whichever
+  // day is being looked at rather than always showing today's.
+  validate({ query: z.object({ date: z.coerce.date().optional() }) }),
+  asyncHandler(async (req, res) =>
+    ok(res, await service.todaySummary(req.branchId, (req.query as { date?: Date }).date)),
+  ),
 );
 
 router.post(

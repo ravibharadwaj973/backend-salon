@@ -5,7 +5,7 @@ import { branchFilter, requireBranchId } from '../../core/scope';
 import { BadRequest, Conflict, NotFound } from '../../core/errors';
 import { pageParams } from '../../core/http';
 import { add, d, round2, sub } from '../../core/money';
-import { addDays, addMinutes, dayjs, endOfDay, startOfDay } from '../../core/dates';
+import { addDays, addMinutes, dateKey, dayjs, endOfDay, startOfDay } from '../../core/dates';
 import { normalizePhone, sequenceNumber } from '../../core/ids';
 import { enqueue, enqueueSafe, cancelJobs } from '../../jobs/queue';
 import { findConflicts, type ConflictCheckItem } from './availability.service';
@@ -703,11 +703,22 @@ export async function updateWaitlistStatus(id: string, status: 'WAITING' | 'NOTI
 }
 
 /** Today at a glance, for the front desk. */
-export async function todaySummary(branchId?: string) {
+/**
+ * A day's appointments. Today unless asked otherwise.
+ *
+ * "Upcoming" only means anything on today: on a past day nothing is upcoming,
+ * and a list filtered to `startAt >= now` would come back empty and read as
+ * "no appointments that day" rather than "that day is over". So on any other
+ * day it shows what the day actually held, which is the question somebody
+ * looking back is asking.
+ */
+export async function todaySummary(branchId?: string, forDate?: Date) {
   const tenantId = requireTenantId();
   const branch = branchFilter(branchId);
-  const from = startOfDay(new Date());
-  const to = endOfDay(new Date());
+  const day = forDate ?? new Date();
+  const isToday = dateKey(day) === dateKey(new Date());
+  const from = startOfDay(day);
+  const to = endOfDay(day);
 
   const [byStatus, upcoming, unconfirmedTomorrow] = await Promise.all([
     prisma.appointment.groupBy({
@@ -716,19 +727,25 @@ export async function todaySummary(branchId?: string) {
       _count: { _all: true },
     }),
     prisma.appointment.findMany({
-      where: { tenantId, ...branch, startAt: { gte: new Date(), lte: to }, status: { in: ['BOOKED', 'CONFIRMED'] } },
+      where: isToday
+        ? { tenantId, ...branch, startAt: { gte: new Date(), lte: to }, status: { in: ['BOOKED', 'CONFIRMED'] } }
+        : { tenantId, ...branch, startAt: { gte: from, lte: to } },
       orderBy: { startAt: 'asc' },
       take: 10,
       include: APPOINTMENT_INCLUDE,
     }),
-    prisma.appointment.count({
-      where: {
-        tenantId,
-        ...branch,
-        startAt: { gte: startOfDay(addDays(new Date(), 1)), lte: endOfDay(addDays(new Date(), 1)) },
-        status: 'BOOKED',
-      },
-    }),
+    // Only meaningful while looking at today. On a past day "unconfirmed
+    // tomorrow" is a number about a day that has already been and gone.
+    isToday
+      ? prisma.appointment.count({
+          where: {
+            tenantId,
+            ...branch,
+            startAt: { gte: startOfDay(addDays(new Date(), 1)), lte: endOfDay(addDays(new Date(), 1)) },
+            status: 'BOOKED',
+          },
+        })
+      : Promise.resolve(0),
   ]);
 
   const counts = Object.fromEntries(byStatus.map((s) => [s.status, s._count._all]));
@@ -740,6 +757,7 @@ export async function todaySummary(branchId?: string) {
     completed: counts.COMPLETED ?? 0,
     noShows: counts.NO_SHOW ?? 0,
     cancelled: counts.CANCELLED ?? 0,
+    isToday,
     upcoming,
     unconfirmedTomorrow,
   };

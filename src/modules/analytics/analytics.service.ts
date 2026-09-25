@@ -20,24 +20,88 @@ import {
  * The owner's command centre. One call returns the numbers that matter today,
  * each with the change against the equivalent previous period.
  */
+/**
+ * WHICH DAY THE DASHBOARD CAN ACTUALLY ANSWER FOR.
+ *
+ * A day before the salon existed has no takings, no appointments and no
+ * customers — but asked for it, the dashboard renders zeros, and zeros are
+ * indistinguishable from a terrible Tuesday. Somebody scrolling back through
+ * the calendar would meet a wall of empty days with no way to tell "we took
+ * nothing" from "we did not exist yet".
+ *
+ * Clamped rather than refused: a stale bookmark or a hand-typed URL is not
+ * worth an error page. The caller is told it happened, so the screen can say
+ * which day it answered for instead of quietly answering a different question.
+ */
+export function dayInRange(
+  asked: Date,
+  accountCreated: Date,
+  now: Date = new Date(),
+): { date: Date; clamped: boolean } {
+  const floor = startOfDay(accountCreated);
+  const day = startOfDay(asked);
+
+  if (day < floor) return { date: floor, clamped: true };
+  // A day that has not happened cannot have takings. "Today" rather than the
+  // start of today, so the rest of the call keeps its time-of-day precision.
+  if (day > startOfDay(now)) return { date: now, clamped: true };
+  return { date: asked, clamped: false };
+}
+
 export async function dashboard(input: { date?: Date; branchId?: string }) {
   const tenantId = requireTenantId();
-  const date = input.date ?? new Date();
+
+  /**
+   * WHICH DAYS THERE CAN BE AN ANSWER FOR.
+   *
+   * A day before the salon existed has no takings, no appointments and no
+   * customers — but a dashboard asked for it would render zeros, and zeros are
+   * indistinguishable from "a terrible Tuesday". Somebody looking back through
+   * the calendar would find a wall of empty days and have no way to tell the
+   * two apart.
+   *
+   * So the floor is the day the account was created and the ceiling is today,
+   * and both are sent to the client so the calendar can grey out the rest
+   * rather than letting a date be picked and then explained away.
+   */
+  const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { createdAt: true } });
+  const earliest = startOfDay(tenant?.createdAt ?? new Date());
+
+  const asked = input.date ?? new Date();
+  const { date, clamped } = dayInRange(asked, earliest);
+
   const range: DateRange = { from: startOfDay(date), to: endOfDay(date) };
   const previous = previousRange(range);
   const branch = branchFilter(input.branchId);
 
   const [current, prior] = await Promise.all([periodSnapshot(tenantId, range, branch), periodSnapshot(tenantId, previous, branch)]);
 
+  /**
+   * The previous day can fall before the salon existed, and a -100% against a
+   * day that never happened is worse than no comparison: it reads as a
+   * collapse. Withheld instead.
+   */
+  const comparable = startOfDay(previous.from) >= earliest;
+
   return {
     date: dateKey(date),
+    /** The first day this salon can be asked about — the calendar's floor. */
+    earliestDate: dateKey(earliest),
+    /** Today, in the salon's own reckoning — the calendar's ceiling. */
+    latestDate: dateKey(new Date()),
+    /** True when the caller asked for a day outside those bounds. */
+    clamped,
+    isToday: dateKey(date) === dateKey(new Date()),
+    comparable,
     today: current,
-    comparison: {
-      revenueChangePct: pctChange(current.revenue, prior.revenue),
-      appointmentsChangePct: pctChange(current.appointments, prior.appointments),
-      newCustomersChangePct: pctChange(current.newCustomers, prior.newCustomers),
-      averageBillChangePct: pctChange(current.averageBill, prior.averageBill),
-    },
+    comparison: comparable
+      ? {
+          revenueChangePct: pctChange(current.revenue, prior.revenue),
+          appointmentsChangePct: pctChange(current.appointments, prior.appointments),
+          newCustomersChangePct: pctChange(current.newCustomers, prior.newCustomers),
+          averageBillChangePct: pctChange(current.averageBill, prior.averageBill),
+        }
+      : null,
     previous: prior,
   };
 }
