@@ -3,12 +3,15 @@ import { z } from 'zod';
 import { asyncHandler, created, ok, paginated } from '../../core/http';
 import { validate } from '../../middleware/validate';
 import { authenticate } from '../../middleware/auth';
-import { requirePermission } from '../../middleware/rbac';
+import { requirePermission, requireRole } from '../../middleware/rbac';
 import { PERMISSIONS } from '../../core/permissions';
 import { audit } from '../../middleware/audit';
 import { dateRangeQuery, idParam, idSchema, paginationQuery } from '../../core/validators';
 import * as billing from './billing.service';
 import * as coupons from './coupon.service';
+import * as taxSettings from './tax-settings.service';
+import * as invoiceExport from './invoice-export.service';
+import { parseFormat } from './invoice-series';
 import type { CreateInvoiceInput, PaymentInput } from './billing.service';
 import type { CouponInput } from './coupon.service';
 import {
@@ -115,6 +118,50 @@ invoiceRouter.post(
     audit({ action: 'payment.advance', entity: 'Payment', entityId: result.payment.id });
     return created(res, result);
   }),
+);
+
+// ---------------------------------------------------------------- export ----
+//
+// Above '/:id' deliberately: Express matches in order, and below it these
+// would be read as requests for an invoice whose id is "export".
+
+const exportQuery = z.object({
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+  branchId: idSchema.optional(),
+  financialYear: z.string().trim().regex(/^\d{2}-\d{2}$/, 'Use the form 25-26').optional(),
+});
+
+/**
+ * Every bill in issue order, as a file for the accountant.
+ *
+ * Owner only, and by ROLE rather than by permission. This is the whole book of
+ * account in one download — every sale, who billed it, and every voided number.
+ * A manager who can legitimately void a single bill has no business taking the
+ * lot off the premises.
+ */
+invoiceRouter.get(
+  '/export',
+  requireRole('OWNER'),
+  validate({ query: exportQuery }),
+  asyncHandler(async (req, res) => {
+    const { csv, count } = await invoiceExport.exportInvoices(req.query as never);
+    const q = req.query as { financialYear?: string };
+    const label = q.financialYear ? `fy-${q.financialYear}` : new Date().toISOString().slice(0, 10);
+    // Audited: somebody taking the full sales book deserves a line in the log.
+    audit({ action: 'invoice.exported', entity: 'Invoice', entityId: 'bulk', after: { count, filter: req.query } });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="invoices-${label}.csv"`);
+    return res.send(csv);
+  }),
+);
+
+/** Gaps in the numbering, before somebody else finds them. */
+invoiceRouter.get(
+  '/series-audit',
+  requireRole('OWNER'),
+  validate({ query: exportQuery }),
+  asyncHandler(async (req, res) => ok(res, await invoiceExport.seriesAudit(req.query as never))),
 );
 
 invoiceRouter.get(
@@ -238,6 +285,88 @@ couponRouter.get(
   requirePermission(PERMISSIONS.REPORT_VIEW),
   validate({ params: idParam }),
   asyncHandler(async (req, res) => ok(res, await coupons.couponPerformance(req.params.id!))),
+);
+
+
+// ------------------------------------------------- tax & invoice settings ---
+
+/**
+ * WHO THE BUSINESS IS, AND WHAT ITS BILLS LOOK LIKE.
+ *
+ * Owner only, by role rather than by permission, and deliberately so. These are
+ * not day-to-day settings: the registration status decides whether the salon may
+ * charge GST at all, and the numbering format decides whether its invoices are
+ * valid documents. A manager who can void a bill still should not be able to
+ * change what every future bill is called.
+ */
+export const taxSettingsRouter = Router();
+taxSettingsRouter.use(authenticate);
+
+const seriesBody = z.object({
+  prefix: z.string().trim().min(1).max(10),
+  separator: z.enum(['/', '-', '']),
+  includeFinancialYear: z.boolean(),
+  padding: z.coerce.number().int().min(1).max(10),
+  startFrom: z.coerce.number().int().min(1).max(9_999_999),
+  reset: z.enum(['FINANCIAL_YEAR', 'NEVER']),
+});
+
+taxSettingsRouter.get(
+  '/',
+  requireRole('OWNER'),
+  asyncHandler(async (_req, res) => ok(res, await taxSettings.getTaxSettings())),
+);
+
+taxSettingsRouter.put(
+  '/identity',
+  requireRole('OWNER'),
+  validate({
+    body: z.object({
+      status: z.enum(['REGULAR', 'COMPOSITION', 'UNREGISTERED']),
+      gstin: z.string().trim().max(20).optional(),
+      legalName: z.string().trim().max(160).optional(),
+      pan: z.string().trim().max(10).optional(),
+      stateCode: z.string().trim().max(2).optional(),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const before = await taxSettings.getTaxSettings();
+    const after = await taxSettings.updateTaxIdentity(req.body as never);
+    audit({
+      action: 'settings.updated',
+      entity: 'Tenant',
+      entityId: req.auth!.tenantId,
+      before: { tax: before.identity },
+      after: { tax: after.identity },
+    });
+    return ok(res, after);
+  }),
+);
+
+taxSettingsRouter.put(
+  '/series',
+  requireRole('OWNER'),
+  validate({ body: seriesBody }),
+  asyncHandler(async (req, res) => {
+    const before = await taxSettings.getTaxSettings();
+    const after = await taxSettings.updateSeriesFormat(parseFormat(req.body));
+    audit({
+      action: 'settings.updated',
+      entity: 'Tenant',
+      entityId: req.auth!.tenantId,
+      before: { series: before.series },
+      after: { series: after.series },
+    });
+    return ok(res, after);
+  }),
+);
+
+/** Try a format without saving it, so the owner reads the finished number first. */
+taxSettingsRouter.post(
+  '/series/preview',
+  requireRole('OWNER'),
+  validate({ body: seriesBody }),
+  asyncHandler(async (req, res) => ok(res, taxSettings.previewFormat(parseFormat(req.body)))),
 );
 
 export default invoiceRouter;

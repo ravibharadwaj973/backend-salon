@@ -21,6 +21,7 @@ import { endOfDay, startOfDay } from '../../core/dates';
 import { sequenceNumber } from '../../core/ids';
 import { enqueueSafe } from '../../jobs/queue';
 import { apportionDiscount, computeLineTax, financialYear, isInterStateSupply, taxSummary } from './gst';
+import { billingIdentity, ensureSeries, issueInvoiceNumber } from './tax-settings.service';
 import * as loyalty from '../loyalty/loyalty.service';
 import * as packages from '../packages/package.service';
 import * as memberships from '../memberships/membership.service';
@@ -300,15 +301,6 @@ async function resolveLines(
   });
 }
 
-async function nextInvoiceNumber(tx: TxClient, branchId: string, invoiceDate: Date): Promise<string> {
-  const branch = await tx.branch.update({
-    where: { id: branchId },
-    data: { invoiceCounter: { increment: 1 } },
-    select: { invoicePrefix: true, invoiceCounter: true },
-  });
-  return `${branch.invoicePrefix}/${financialYear(invoiceDate)}/${String(branch.invoiceCounter).padStart(5, '0')}`;
-}
-
 async function validateCoupon(tenantId: string, code: string, customerId: string | undefined, billAmount: Prisma.Decimal) {
   const coupon = await prisma.coupon.findFirst({ where: { tenantId, code: code.toUpperCase() } });
   if (!coupon || !coupon.isActive) throw BadRequest('Invalid coupon code');
@@ -343,6 +335,7 @@ export async function createInvoice(input: CreateInvoiceInput) {
   const branchId = requireBranchId(input.branchId);
   const userId = currentUserId();
   const settings = await billingSettings(tenantId);
+  const identity = await billingIdentity(tenantId);
 
   const branch = await prisma.branch.findUnique({ where: { id: branchId } });
   if (!branch) throw NotFound('Branch');
@@ -409,9 +402,21 @@ export async function createInvoice(input: CreateInvoiceInput) {
   billDiscount = round2(decMin(billDiscount, subTotal));
 
   // 4. Taxes -------------------------------------------------------------
-  const isGst = input.isGst ?? settings.gstEnabled;
+  /**
+   * A composition dealer and an unregistered business may not collect GST, and
+   * that is not a preference the till can override — asking for a tax invoice
+   * from either is asking to charge tax they are not entitled to charge.
+   */
+  const isGst = identity.mayChargeTax ? (input.isGst ?? settings.gstEnabled) : false;
+  if (input.isGst === true && !identity.mayChargeTax) {
+    throw BadRequest(
+      identity.status === 'COMPOSITION'
+        ? 'A composition-scheme business cannot collect GST from customers, so this has to be a Bill of Supply. Change the registration under Settings → Tax & invoices if that is wrong.'
+        : 'This business is not GST-registered, so it cannot issue a tax invoice. Add your GSTIN under Settings → Tax & invoices first.',
+    );
+  }
   if (isGst && !settings.hasGstin) {
-    throw BadRequest('A tax invoice needs your GSTIN — add it under Settings → Salon, or make this a bill without GST');
+    throw BadRequest('A tax invoice needs your GSTIN — add it under Settings → Tax & invoices, or make this a bill without GST');
   }
   const placeOfSupply = input.placeOfSupply ?? branch.stateCode ?? settings.stateCode ?? null;
   const interState = isInterStateSupply(branch.stateCode ?? settings.stateCode, placeOfSupply);
@@ -445,10 +450,29 @@ export async function createInvoice(input: CreateInvoiceInput) {
   const grossAmount = resolved.reduce<Prisma.Decimal>((acc, l) => acc.plus(round2(mul(l.unitPrice, l.quantity))), d(0));
 
   // 5. Everything else happens atomically --------------------------------
+  //
+  // The bill-number counter is created first, outside the transaction: inside
+  // it there must be only an atomic increment, or two tills can take the same
+  // number. ensureSeries explains why the split is load-bearing.
+  const issueDate = new Date();
+  // Two series, and which one this bill belongs to is decided by what is
+  // actually on the bill, not by the business's registration: a salon that is
+  // GST-registered still issues non-GST bills, and those must not consume tax
+  // invoice numbers.
+  const seriesKind = isGst ? ('GST' as const) : ('NON_GST' as const);
+  await ensureSeries({ tenantId, branchId, invoiceDate: issueDate, format: identity.format, kind: seriesKind });
+
   const invoiceId = await prisma.$transaction(
     async (tx) => {
-      const invoiceDate = new Date();
-      const invoiceNumber = await nextInvoiceNumber(tx, branchId, invoiceDate);
+      const invoiceDate = issueDate;
+      const { invoiceNumber, documentTitle } = await issueInvoiceNumber(tx, {
+        branchId,
+        invoiceDate,
+        branchPrefix: branch.invoicePrefix,
+        format: identity.format,
+        status: identity.status,
+        kind: seriesKind,
+      });
 
       const invoice = await tx.invoice.create({
         data: {
@@ -459,6 +483,9 @@ export async function createInvoice(input: CreateInvoiceInput) {
           appointmentId,
           invoiceDate,
           isGst,
+          // Snapshotted: a bill reprinted after the salon registers for GST
+          // must still say what it said when it was issued.
+          documentTitle,
           placeOfSupply,
           isInterState: interState,
           grossAmount,

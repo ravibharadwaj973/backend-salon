@@ -67,10 +67,36 @@ describe('GST', () => {
     expect(line.lineTotal.toString()).toBe('1180');
   });
 
-  it('charges nothing when GST is switched off for the tenant', () => {
+  /**
+   * NO GST MEANS THE CUSTOMER PAYS LESS, NOT THE SAME WITH THE TAX HIDDEN.
+   *
+   * This asserted the opposite until now, and the old behaviour was the one
+   * outcome nobody wanted. On tax-inclusive pricing ₹1,000 is ₹847.46 of
+   * service and ₹152.54 of tax. Dropping GST from the bill and still charging
+   * ₹1,000 does not remove the tax — it keeps it and stops declaring it, so the
+   * customer pays a tax-inclusive price for a document that cannot support a
+   * claim, and the salon holds ₹152.54 it has not accounted for.
+   */
+  it('takes the tax out of the price when GST is off and the price included it', () => {
     const line = computeLineTax({ net: d(1000), taxRatePct: d(18) }, { inclusive: true, interState: false, gstEnabled: false });
     expect(line.totalTax.toString()).toBe('0');
+    expect(line.lineTotal.toString()).toBe('847.46');
+    expect(line.taxableValue.toString()).toBe('847.46');
+  });
+
+  it('leaves an exclusive price alone when GST is off', () => {
+    // Nothing was ever added, so there is nothing to take off. Subtracting here
+    // would be a discount the salon never offered.
+    const line = computeLineTax({ net: d(1000), taxRatePct: d(18) }, { inclusive: false, interState: false, gstEnabled: false });
     expect(line.lineTotal.toString()).toBe('1000');
+  });
+
+  it('round-trips: taking the tax off an inclusive price returns the taxable value', () => {
+    // The two paths must agree, or a bill with GST and the same bill without it
+    // disagree about what the service actually costs.
+    const withGst = computeLineTax({ net: d(1000), taxRatePct: d(18) }, { inclusive: true, interState: false, gstEnabled: true });
+    const without = computeLineTax({ net: d(1000), taxRatePct: d(18) }, { inclusive: true, interState: false, gstEnabled: false });
+    expect(without.lineTotal.toString()).toBe(withGst.taxableValue.toString());
   });
 
   /**

@@ -23,13 +23,30 @@ export interface LineTax {
  */
 export function computeLineTax(line: TaxableLine, options: { inclusive: boolean; interState: boolean; gstEnabled: boolean }): LineTax {
   if (!options.gstEnabled) {
+    /**
+     * NO GST MEANS THE CUSTOMER PAYS LESS, NOT THE SAME WITH THE TAX HIDDEN.
+     *
+     * This is the case that was wrong. When the menu price is tax-inclusive, a
+     * ₹800 haircut is ₹677.97 of service and ₹122.03 of tax. Taking GST off the
+     * bill and still charging ₹800 does not remove the tax — it keeps it and
+     * stops declaring it, which is the one outcome nobody wanted: the customer
+     * pays a tax-inclusive price and gets a document that cannot support a
+     * claim, and the salon is holding ₹122.03 it has not accounted for.
+     *
+     * So the tax comes out of the price and the total drops to ₹677.97.
+     *
+     * Only where the price CONTAINED tax. On tax-exclusive pricing the menu
+     * price is already the base — ₹800 is ₹800 — and subtracting a tax that
+     * was never added would be a discount nobody asked for.
+     */
+    const net = options.inclusive ? taxableFromInclusive(line.net, line.taxRatePct) : round2(line.net);
     return {
-      taxableValue: round2(line.net),
+      taxableValue: net,
       cgstAmount: round2(0),
       sgstAmount: round2(0),
       igstAmount: round2(0),
       totalTax: round2(0),
-      lineTotal: round2(line.net),
+      lineTotal: net,
     };
   }
 

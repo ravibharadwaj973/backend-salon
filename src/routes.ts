@@ -11,7 +11,7 @@ import layoutRoutes from './modules/layouts/layout.routes';
 import catalogRoutes from './modules/catalog/catalog.routes';
 import staffRoutes from './modules/staff/staff.routes';
 import appointmentRoutes from './modules/appointments/appointment.routes';
-import { invoiceRouter, couponRouter } from './modules/billing/billing.routes';
+import { invoiceRouter, couponRouter, taxSettingsRouter } from './modules/billing/billing.routes';
 import packageRoutes from './modules/packages/package.routes';
 import membershipRoutes from './modules/memberships/membership.routes';
 import loyaltyRoutes from './modules/loyalty/loyalty.routes';
@@ -70,6 +70,7 @@ export function buildRouter(): Router {
   router.use('/appointments', appointmentRoutes);
   router.use('/invoices', invoiceRouter);
   router.use('/coupons', couponRouter);
+  router.use('/tax-settings', taxSettingsRouter);
   router.use('/packages', authenticate, requireFeature(FEATURES.PACKAGES), packageRoutes);
   router.use('/memberships', authenticate, requireFeature(FEATURES.MEMBERSHIPS), membershipRoutes);
   router.use('/loyalty', authenticate, requireFeature(FEATURES.LOYALTY), loyaltyRoutes);

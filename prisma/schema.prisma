@@ -852,6 +852,9 @@ model Branch {
   /// Per branch: each shop has its own listing, and a review on the wrong one is wasted.
   googleReviewUrl String?
   invoicePrefix String  @default("INV")
+  /// Superseded by InvoiceSeries, which can restart and can hold more than one
+  /// series. Kept so the numbers already issued can be migrated across, and so
+  /// a rollback cannot lose a branch's position in its own series.
   invoiceCounter Int    @default(0)
   isActive     Boolean  @default(true)
   createdAt    DateTime @default(now())
@@ -872,6 +875,7 @@ model Branch {
   leads          Lead[]
   purchaseOrders PurchaseOrder[]
   holidays       Holiday[]
+  invoiceSeries  InvoiceSeries[]
 
   @@unique([tenantId, code])
   @@index([tenantId, isActive])
@@ -1599,6 +1603,14 @@ model Invoice {
   appointmentId  String?       @unique
   invoiceDate    DateTime      @default(now())
   isGst          Boolean       @default(true)
+  /// What this bill was CALLED when it was issued: "Tax Invoice", "Bill of
+  /// Supply" or "Invoice".
+  ///
+  /// Snapshotted rather than derived at print time. A salon that registers for
+  /// GST in November must not have last June's bills silently reprint as tax
+  /// invoices showing a GSTIN it did not hold then — that is a rewritten
+  /// record, and reprinting an old bill is exactly when it would happen.
+  documentTitle  String?
   placeOfSupply  String?
   isInterState   Boolean       @default(false)
 
@@ -1654,6 +1666,37 @@ model Invoice {
   @@index([tenantId, customerId])
   @@index([tenantId, status])
   @@map("invoices")
+}
+
+/// A BILL NUMBER COUNTER, ONE ROW PER SERIES.
+///
+/// `Branch.invoiceCounter` was a single running integer, which could only ever
+/// produce one shape of number and could never restart. This replaces it, and
+/// the `key` is what makes the difference: it holds the financial year when the
+/// salon wants numbering to restart each April, and the empty string when they
+/// want one continuous series.
+///
+/// Putting the year in the KEY rather than in a flag beside the counter means
+/// the database's own unique constraint is what prevents two tills issuing the
+/// same bill number on 1 April, rather than application code remembering to.
+/// A duplicate bill number is not a glitch — it is a defective invoice on both
+/// bills and an unanswerable question at audit.
+model InvoiceSeries {
+  id       String @id @default(cuid())
+  tenantId String
+  branchId String
+  /// "25-26" when numbering resets yearly; "" when it runs continuously.
+  key      String
+  /// The highest number ISSUED. The next bill is this plus one.
+  lastNumber Int  @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([branchId, key])
+  @@index([tenantId])
+  @@map("invoice_series")
 }
 
 model InvoiceItem {
