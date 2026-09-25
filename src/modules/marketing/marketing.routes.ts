@@ -6,7 +6,7 @@ import { authenticate } from '../../middleware/auth';
 import { requirePermission } from '../../middleware/rbac';
 import { PERMISSIONS } from '../../core/permissions';
 import { audit } from '../../middleware/audit';
-import { idParam, idSchema, moneySchema, paginationQuery } from '../../core/validators';
+import { idParam, idSchema, localDateTime, moneySchema, paginationQuery } from '../../core/validators';
 import { BadRequest, NotFound } from '../../core/errors';
 import * as segments from './segment.service';
 import { FIELD_GROUPS, SEGMENT_FIELDS, SEGMENT_PRESETS } from './segment-fields';
@@ -253,7 +253,10 @@ campaignRouter.post(
       templateId: idSchema.optional(),
       segmentId: idSchema.optional(),
       branchId: idSchema.optional(),
-      scheduledAt: z.coerce.date().optional(),
+      // Read in the salon's timezone, not the server's: a datetime-local
+      // field carries no timezone, and reading it as UTC sent every scheduled
+      // campaign five and a half hours late.
+      scheduledAt: localDateTime.optional(),
       costPerMessage: moneySchema.default(0),
       variables: z.record(z.string()).optional(),
       objective: z
@@ -299,7 +302,7 @@ campaignRouter.patch(
 campaignRouter.post(
   '/:id/launch',
   requirePermission(PERMISSIONS.CAMPAIGN_MANAGE, PERMISSIONS.MESSAGE_SEND),
-  validate({ params: idParam, body: z.object({ sendAt: z.coerce.date().optional() }) }),
+  validate({ params: idParam, body: z.object({ sendAt: localDateTime.optional() }) }),
   asyncHandler(async (req, res) => {
     const { sendAt } = req.body as { sendAt?: Date };
     const campaign = await campaigns.launchCampaign(req.params.id!, sendAt);

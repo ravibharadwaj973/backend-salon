@@ -32,6 +32,33 @@ export function inTz(value: DateInput, tz: string = DEFAULT_TZ) {
   return dayjs(value).tz(tz);
 }
 
+/**
+ * A DATE AND TIME SOMEBODY TYPED, READ IN THE SALON'S OWN CLOCK.
+ *
+ * `<input type="datetime-local">` sends "2026-09-25T11:50" with no timezone on
+ * it at all, and `new Date(...)` then reads it in the SERVER's timezone. The
+ * server is a container running UTC, so a salon in Kolkata scheduling a
+ * campaign for 11:50 got one that went out at 17:20 — five and a half hours
+ * late, with nothing anywhere reporting a fault, because 11:50 UTC is a
+ * perfectly valid instant.
+ *
+ * The string is the one piece of data in the system that carries no timezone
+ * and cannot be read without knowing whose clock it came from. That clock is
+ * the salon's, never the server's — a server moved between regions must not
+ * change when anybody's campaigns go out.
+ *
+ * A value that DOES carry an offset or a Z is already unambiguous and is
+ * respected as sent, so an API client doing the right thing is not second-
+ * guessed.
+ */
+const HAS_TIMEZONE = /(?:Z|[+-]\d{2}:?\d{2})$/i;
+
+export function parseLocalDateTime(value: string, tz: string = DEFAULT_TZ): Date {
+  const trimmed = value.trim();
+  if (HAS_TIMEZONE.test(trimmed)) return new Date(trimmed);
+  return dayjs.tz(trimmed, tz).toDate();
+}
+
 export function startOfDay(value: DateInput, tz: string = DEFAULT_TZ): Date {
   return dayjs(value).tz(tz).startOf('day').toDate();
 }

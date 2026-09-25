@@ -1,3 +1,4 @@
+import { parseLocalDateTime } from './dates';
 import { z } from 'zod';
 
 export const idSchema = z.string().min(1).max(64);
@@ -85,3 +86,21 @@ export const linkSchema = z
     },
     { message: 'Enter a web address, for example https://g.page/r/CxxxxxxxxxxxxEBM/review' },
   );
+
+/**
+ * A datetime from a form field, read in the salon's timezone rather than the
+ * server's.
+ *
+ * `z.coerce.date()` hands the string to `new Date()`, which reads a value with
+ * no timezone on it — exactly what `<input type="datetime-local">` sends — in
+ * the SERVER's timezone. On a UTC container that put every scheduled campaign
+ * five and a half hours late, silently, because the resulting instant is
+ * perfectly valid and nothing can tell it was not the one intended.
+ *
+ * Use this anywhere a human picks a time. Keep `z.coerce.date()` for ranges
+ * built from date-only values and for timestamps the app generated itself.
+ */
+export const localDateTime = z
+  .union([z.string(), z.date()])
+  .transform((value) => (value instanceof Date ? value : parseLocalDateTime(value)))
+  .refine((date) => !Number.isNaN(date.getTime()), 'Not a valid date and time');
