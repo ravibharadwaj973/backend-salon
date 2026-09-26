@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { prisma } from '../core/prisma';
 import { env } from '../config/env';
 import { logger } from '../core/logger';
+import { destinationOf, identifiesUntil, stillIdentifies } from '../modules/engagement/engagement';
 
 /**
  * COUNTING THE TAP.
@@ -119,6 +120,16 @@ export async function rewriteLinks(input: {
       // through two redirects and count the tap twice.
       if (target.startsWith(shortUrl(''))) continue;
 
+      /**
+       * The destination is worked out here, not asked for.
+       *
+       * Every send path in the app already builds its own links and none of
+       * them would be changed to pass a label, so a message with three buttons
+       * — gallery, offer, book — gets three correctly-typed links for free. See
+       * destinationOf in the engagement module.
+       */
+      const destination = destinationOf(target);
+
       const link = await prisma.trackedLink.create({
         data: {
           tenantId: input.tenantId,
@@ -127,6 +138,8 @@ export async function rewriteLinks(input: {
           messageLogId: input.messageLogId,
           campaignId: input.campaignId ?? null,
           customerId: input.customerId ?? null,
+          destination,
+          identifiesUntil: identifiesUntil(destination),
         },
       });
 
@@ -151,7 +164,18 @@ export async function rewriteLinks(input: {
  */
 export async function resolveClick(
   code: string,
-): Promise<{ targetUrl: string; messageLogId: string | null; trackedLinkId: string } | null> {
+): Promise<{
+  targetUrl: string;
+  messageLogId: string | null;
+  trackedLinkId: string;
+  /**
+   * Whether this tap may still be credited to the customer.
+   *
+   * False for a link past its window — usually one forwarded to somebody else
+   * months later. The redirect happens either way; only the bookkeeping stops.
+   */
+  identifies: boolean;
+} | null> {
   const link = await prisma.trackedLink.findUnique({ where: { code } });
   if (!link) return null;
 
@@ -180,10 +204,20 @@ export async function resolveClick(
     })
     .catch((err: unknown) => logger.warn({ err, code }, 'click count not recorded'));
 
+  const identifies = stillIdentifies(link, now);
+
   return {
-    targetUrl: withVisitToken(link.targetUrl, link.code, [tenant?.websiteUrl, env.PUBLIC_APP_URL]),
+    /**
+     * The arrival token goes on only while the link still identifies anybody.
+     * Past the window there is nobody to credit, so handing the site a token it
+     * would report against is pointless at best and wrong at worst.
+     */
+    targetUrl: identifies
+      ? withVisitToken(link.targetUrl, link.code, [tenant?.websiteUrl, env.PUBLIC_APP_URL])
+      : link.targetUrl,
     messageLogId: link.messageLogId,
     trackedLinkId: link.id,
+    identifies,
   };
 }
 

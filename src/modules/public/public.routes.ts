@@ -549,10 +549,18 @@ router.post(
       event: z.string().trim().min(1).max(40),
       path: z.string().trim().max(300).default('/'),
       label: z.string().trim().max(120).optional(),
+      /** One tab's worth of events, tied together. */
+      sessionId: z.string().trim().max(64).optional(),
+      /**
+       * Accepted loosely and cut down hard. recordSiteVisit keeps an
+       * allow-list of keys; a size cap alone would still let anything through,
+       * and this is a public endpoint writing to a Json column.
+       */
+      metadata: z.record(z.unknown()).optional(),
     }),
   }),
   asyncHandler(async (req, res) => {
-    const body = req.body as { code: string; event: string; path: string; label?: string };
+    const body = req.body as siteVisits.VisitReport;
     await siteVisits
       .recordSiteVisit(req.publicTenantId!, body)
       .catch(() => undefined);

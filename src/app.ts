@@ -155,7 +155,14 @@ export function createApp(): Express {
           return;
         }
 
-        if (hit.messageLogId) {
+        /**
+         * The message moves to CLICKED only while the link still identifies
+         * the person who was sent it. A link forwarded to a friend in June
+         * would otherwise mark the original customer's message as clicked, and
+         * every rate built on that column would quietly include other people's
+         * taps.
+         */
+        if (hit.messageLogId && hit.identifies) {
           void applyStatusUpdate({ providerMessageId: '', messageLogId: hit.messageLogId, status: 'CLICKED' }).catch(
             () => undefined,
           );

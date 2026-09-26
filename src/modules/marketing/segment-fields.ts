@@ -245,6 +245,88 @@ export const SEGMENT_FIELDS: readonly FieldDefinition[] = [
   },
   { key: 'anniversaryInNextDays', label: 'Anniversary within the next (days)', group: 'Occasions', input: 'days', ops: ['lte'], placeholder: '7', postFilter: true },
 
+  // -------------------------------------------- what they looked at ------
+  /**
+   * WHAT THE CUSTOMER SHOWED INTEREST IN, ONLINE.
+   *
+   * Fed by the tracked links in the salon's own messages: a customer opens the
+   * gallery from a WhatsApp message, looks at hair spa, and that is recorded
+   * against her. Only ever for somebody the salon messaged — nobody anonymous
+   * is identified, and a link past its window stops counting.
+   *
+   * These are SIGNALS, not triggers. The obvious use is the wrong one: she
+   * looked at hair spa, so message her about hair spa. That is what teaches
+   * customers a salon is watching them. Combined with her own cycle and the
+   * quiet period below, the same signal decides WHICH message she gets when she
+   * is genuinely due — which is the difference between relevant and creepy.
+   */
+  {
+    key: 'viewedService',
+    label: 'Looked at a service online',
+    group: 'What they looked at',
+    input: 'service',
+    ops: ['eq'],
+    help: 'Opened that service\u2019s page after tapping a link in one of your messages.',
+  },
+  {
+    key: 'viewedCategory',
+    label: 'Looked at anything in category',
+    group: 'What they looked at',
+    input: 'category',
+    ops: ['eq'],
+    help: 'Somebody who read three colour pages is interested in colour, whichever page they happened to open.',
+  },
+  {
+    key: 'viewedWithinDays',
+    label: 'Looked at something in the last (days)',
+    group: 'What they looked at',
+    input: 'days',
+    ops: ['lte'],
+    placeholder: '30',
+    help: 'Any service page, recently. Use with a service filter to mean \u201clooked at THIS, recently\u201d.',
+  },
+  {
+    key: 'clickedAnyMessage',
+    label: 'Has ever tapped a link you sent',
+    group: 'What they looked at',
+    input: 'boolean',
+    ops: ['eq'],
+    help: 'The cheapest proxy for \u201cthey read your messages\u201d. A list of these is worth more than a bigger one.',
+  },
+
+  // ------------------------------------------ how much you message them ---
+  /**
+   * THE QUIET PERIOD.
+   *
+   * The condition that makes restraint something you can put in a segment
+   * rather than something you have to remember. A customer who is due, and
+   * looked at hair spa, and had a marketing message on Tuesday, does not want
+   * another one today — and the app had no way to express that until now.
+   *
+   * Counted over MARKETING messages only. A booking confirmation and an invoice
+   * are not marketing, and excluding somebody because their appointment was
+   * confirmed yesterday would make the quiet period unusable for exactly the
+   * customers who come most often.
+   */
+  {
+    key: 'noMarketingInDays',
+    label: 'No marketing message in the last (days)',
+    group: 'How much you message them',
+    input: 'days',
+    ops: ['gte'],
+    placeholder: '7',
+    help: 'Counts marketing only \u2014 confirmations, reminders and bills do not make somebody ineligible.',
+  },
+  {
+    key: 'marketingInDays',
+    label: 'Had a marketing message in the last (days)',
+    group: 'How much you message them',
+    input: 'days',
+    ops: ['lte'],
+    placeholder: '30',
+    help: 'The other way round, for finding people a campaign already reached.',
+  },
+
   // ------------------------------------------------------ reachable ------
   {
     key: 'reachableOn',

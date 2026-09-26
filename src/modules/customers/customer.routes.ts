@@ -8,6 +8,7 @@ import { PERMISSIONS } from '../../core/permissions';
 import { audit } from '../../middleware/audit';
 import { idParam, idSchema, paginationQuery } from '../../core/validators';
 import * as service from './customer.service';
+import * as interest from '../engagement/interest.service';
 import type { CustomerInput, ImportRow, ListCustomersInput } from './customer.service';
 import {
   birthdaysQuery,
@@ -203,6 +204,29 @@ router.get(
   asyncHandler(async (req, res) => {
     const result = await service.listCustomerInvoices(req.params.id!, req.query as never);
     return paginated(res, result.items, result.total, result.page, result.pageSize);
+  }),
+);
+
+/**
+ * WHAT THIS CUSTOMER HAS BEEN LOOKING AT ONLINE.
+ *
+ * CUSTOMER_VIEW, the same as their visit history — this is part of knowing a
+ * customer, not a separate marketing capability, and the person on the desk who
+ * can see that Priya had balayage in March is the person who should be able to
+ * see that she opened the hair spa page on Tuesday.
+ *
+ * Only ever populated for somebody who arrived from a link the salon sent them.
+ */
+router.get(
+  '/:id/engagement',
+  requirePermission(PERMISSIONS.CUSTOMER_VIEW),
+  validate({ params: idParam }),
+  asyncHandler(async (req, res) => {
+    const [interests, activity] = await Promise.all([
+      interest.customerInterests(req.params.id!),
+      interest.customerActivity(req.params.id!),
+    ]);
+    return ok(res, { interests, activity });
   }),
 );
 

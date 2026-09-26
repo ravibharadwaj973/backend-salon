@@ -146,6 +146,73 @@ function conditionToWhere(
     case 'visitedWithinDays':
       return { lastVisitAt: { gte: billedSince(value) } };
 
+    // ------------------------------------------- what they looked at ------
+    /**
+     * Read off the CustomerInterest rollup rather than the event log.
+     *
+     * The events are the record; the rollup is what a segment can be built on
+     * without a scan of a table that grows forever. `some` on the relation, so
+     * a customer with fifty interests costs the same as one with one.
+     */
+    case 'viewedService':
+      return { interests: { some: { kind: 'SERVICE', refId: String(value) } } };
+
+    case 'viewedCategory':
+      return { interests: { some: { kind: 'CATEGORY', refId: String(value) } } };
+
+    case 'viewedWithinDays':
+      return { interests: { some: { lastViewedAt: { gte: billedSince(value) } } } };
+
+    /**
+     * Has ever tapped a link in one of the salon's messages.
+     *
+     * On clickedAt rather than on status: a message that was clicked and later
+     * replied to has moved on from CLICKED, and a salon asking "who reads my
+     * messages" means ever, not currently.
+     */
+    case 'clickedAnyMessage':
+      return isTrue
+        ? { messages: { some: { clickedAt: { not: null } } } }
+        : { messages: { none: { clickedAt: { not: null } } } };
+
+    // ----------------------------------- how much you message them --------
+    /**
+     * THE QUIET PERIOD, as a where clause.
+     *
+     * `none` across their messages rather than a stored "last marketing at"
+     * column, so it cannot drift out of date and needs no backfill.
+     *
+     * MARKETING category only. A booking confirmation is not marketing, and
+     * counting it would make the quiet period useless for precisely the
+     * customers who come most often — the ones a salon can least afford to
+     * exclude from a rebooking campaign.
+     *
+     * SKIPPED and FAILED are excluded too: a message that never left the
+     * building cannot have annoyed anybody, and treating it as contact would
+     * hold somebody out of a campaign because of the app's own fault.
+     */
+    case 'noMarketingInDays':
+      return {
+        messages: {
+          none: {
+            category: 'MARKETING',
+            status: { notIn: ['SKIPPED', 'FAILED', 'QUEUED'] },
+            queuedAt: { gte: billedSince(value) },
+          },
+        },
+      };
+
+    case 'marketingInDays':
+      return {
+        messages: {
+          some: {
+            category: 'MARKETING',
+            status: { notIn: ['SKIPPED', 'FAILED', 'QUEUED'] },
+            queuedAt: { gte: billedSince(value) },
+          },
+        },
+      };
+
     /** Harder than "last visit": they may have booked and never turned up. */
     case 'notBilledInLastDays':
       return { invoices: { none: { invoiceDate: { gte: billedSince(value) }, status: { not: 'VOID' } } } };

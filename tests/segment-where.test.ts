@@ -88,7 +88,7 @@ describe('the structure that caused it', () => {
     'utf8',
   );
 
-  it('builds a where from a saved segment in exactly one place', () => {
+  it('builds a where from a saved segment in exactly one place', async () => {
     // Every other caller must go through segmentWhere. A direct
     // buildSegmentWhere(segment.tenantId, ...) is the mistake itself: it skips
     // the isDynamic question entirely, which is how a list became the book.
@@ -108,10 +108,97 @@ describe('the structure that caused it', () => {
     expect(helper).toContain('isDynamic');
   });
 
-  it('would catch a new caller that skipped the check', () => {
+  it('would catch a new caller that skipped the check', async () => {
     // Proves the guard is not vacuous: this is what a fourth call site looks
     // like, and the pattern above finds it.
     const offending = 'const where = await buildSegmentWhere(segment.tenantId, rules);';
     expect(offending.match(/buildSegmentWhere\(\s*segment\./g) ?? []).toHaveLength(1);
+  });
+});
+
+/**
+ * THE CONDITIONS THAT DECIDE WHETHER SOMEBODY IS LEFT ALONE.
+ *
+ * These four are different from the rest of the segment fields: the others pick
+ * who to include, and getting one wrong means a smaller or larger list. These
+ * decide whether a customer who was messaged on Tuesday gets messaged again
+ * today, and whether a page somebody opened is read back as interest. Both are
+ * felt by a person rather than seen on a screen.
+ */
+describe('the quiet period, and what it counts as having messaged somebody', () => {
+  const where = (field: string, value: unknown) =>
+    segmentWhere({
+      id: 'seg_q',
+      tenantId: 't1',
+      isDynamic: true,
+      rules: { match: 'all', conditions: [{ field, op: 'gte', value }] },
+    });
+
+  it('is built from their messages rather than a stored column', async () => {
+    // A "last marketing at" column drifts and needs a backfill. `none` across
+    // the relation cannot be out of date.
+    const sql = JSON.stringify(await where('noMarketingInDays', 7));
+    expect(sql).toContain('messages');
+    expect(sql).toContain('none');
+  });
+
+  it('counts marketing only, so a booking confirmation does not lock somebody out', async () => {
+    /**
+     * The failure this prevents: counting every message would exclude the
+     * customers who come most often — they get a confirmation and a reminder
+     * every visit — which is exactly backwards for a rebooking campaign.
+     */
+    const sql = JSON.stringify(await where('noMarketingInDays', 7));
+    expect(sql).toContain('MARKETING');
+  });
+
+  it('does not count a message that never left the building', async () => {
+    // A SKIPPED message annoyed nobody. Treating it as contact would hold a
+    // customer out of a campaign because of the app's own fault.
+    const sql = JSON.stringify(await where('noMarketingInDays', 7));
+    expect(sql).toContain('SKIPPED');
+    expect(sql).toContain('FAILED');
+  });
+});
+
+describe('segmenting on what somebody looked at', () => {
+  const where = (field: string, value: unknown) =>
+    segmentWhere({
+      id: 'seg_i',
+      tenantId: 't1',
+      isDynamic: true,
+      rules: { match: 'all', conditions: [{ field, op: 'eq', value }] },
+    });
+
+  it('reads the rollup, not the event log', async () => {
+    // The events grow forever. A segment that scanned them would get slower
+    // every month for no better answer.
+    const sql = JSON.stringify(await where('viewedService', 'svc-spa'));
+    expect(sql).toContain('interests');
+    expect(sql).toContain('SERVICE');
+    expect(sql).toContain('svc-spa');
+  });
+
+  it('separates a service from its category', async () => {
+    const service = JSON.stringify(await where('viewedService', 'svc-spa'));
+    const category = JSON.stringify(await where('viewedCategory', 'cat-hair'));
+    expect(service).toContain('"kind":"SERVICE"');
+    expect(category).toContain('"kind":"CATEGORY"');
+  });
+
+  it('asks whether a link was ever tapped, not whether it is currently CLICKED', async () => {
+    /**
+     * A message that was clicked and later replied to has moved past CLICKED.
+     * A salon asking "who reads my messages" means ever, so this is on the
+     * clickedAt timestamp rather than on the status column.
+     */
+    const sql = JSON.stringify(await where('clickedAnyMessage', true));
+    expect(sql).toContain('clickedAt');
+    expect(sql).not.toContain('"status"');
+  });
+
+  it('inverts to people who have never tapped one', async () => {
+    const sql = JSON.stringify(await where('clickedAnyMessage', false));
+    expect(sql).toContain('none');
   });
 });
