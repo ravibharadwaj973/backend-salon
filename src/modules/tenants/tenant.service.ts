@@ -126,9 +126,22 @@ export async function tenantOverview(tenantId: string) {
 }
 
 export async function updateTenant(tenantId: string, data: Record<string, unknown>) {
-  const { settings, ...rest } = data as { settings?: Record<string, unknown> };
+  const { settings, ...rest } = data as { settings?: Record<string, unknown>; websiteUrl?: string };
   const current = await runUnscoped(() => prisma.tenant.findUnique({ where: { id: tenantId } }));
   if (!current) throw NotFound('Tenant');
+
+  /**
+   * An empty website field means "I do not have one", which has to reach the
+   * column as NULL rather than as "". An empty string would build
+   * {{gallery_link}} as "/gallery" with no host in front of it — a link that
+   * resolves against whatever mail client the customer happens to be reading
+   * in, which is nowhere.
+   */
+  if ('websiteUrl' in rest) {
+    (rest as { websiteUrl?: string | null }).websiteUrl = rest.websiteUrl?.trim()
+      ? rest.websiteUrl.trim().replace(/\/+$/, '')
+      : null;
+  }
 
   return runUnscoped(() =>
     prisma.tenant.update({

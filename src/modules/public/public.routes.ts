@@ -1,4 +1,4 @@
-import { Router, type RequestHandler } from 'express';
+import express, { Router, type RequestHandler } from 'express';
 import { z } from 'zod';
 import { asyncHandler, created, ok } from '../../core/http';
 import { validate } from '../../middleware/validate';
@@ -17,6 +17,7 @@ import * as enquiries from '../tenants/enquiry.service';
 import { bookingUrl, refererHost } from '../../core/public-links';
 import type { Gender } from '@prisma/client';
 import { readAsset } from '../tenants/asset.service';
+import * as siteVisits from './site-visit.service';
 
 const router = Router();
 router.use(publicLimiter);
@@ -494,6 +495,66 @@ router.post(
       reason: reason ?? 'Cancelled by customer online',
     });
     return ok(res, { id: updated.id, status: updated.status });
+  }),
+);
+
+// ---------------------------------------------------------- site visits ---
+
+/**
+ * The salon's own website reporting what a visitor did after arriving.
+ *
+ * Unauthenticated, like everything else on this router, and written on the
+ * assumption the body is hostile — recordSiteVisit checks the code belongs to
+ * this salon, caps how many reports one link may file, and strips the query
+ * string off the path before storing it.
+ *
+ * ALWAYS 204, whatever happened. A browser sending this by sendBeacon cannot
+ * read a response and has nothing to do with an error; and a reply that
+ * distinguished a real code from an unknown one would turn this into an oracle
+ * for guessing codes. Nothing useful is lost: the website does not care.
+ */
+router.post(
+  '/:slug/visit',
+  /**
+   * text/plain, and the reason is not cosmetic.
+   *
+   * The browser sends this with navigator.sendBeacon, which is the only way to
+   * report the last thing somebody did before closing the tab — and often the
+   * most interesting event on the page. A Blob of application/json is not a
+   * CORS-safelisted content type, so it needs a preflight, and a preflight
+   * fired during unload frequently never completes. text/plain is safelisted,
+   * goes straight out, and costs one JSON.parse here.
+   *
+   * express.json() has already run and ignored the body, so this parses it.
+   */
+  express.text({ type: ['text/plain', 'application/json'], limit: '4kb' }),
+  (req, _res, next) => {
+    if (typeof req.body === 'string') {
+      try {
+        req.body = JSON.parse(req.body) as unknown;
+      } catch {
+        // Left as a string; validate() below turns it into a 400, which is the
+        // right answer for a body that is not the shape we documented.
+        req.body = {};
+      }
+    }
+    next();
+  },
+  resolveTenantBySlug,
+  validate({
+    body: z.object({
+      code: z.string().trim().min(1).max(40),
+      event: z.string().trim().min(1).max(40),
+      path: z.string().trim().max(300).default('/'),
+      label: z.string().trim().max(120).optional(),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const body = req.body as { code: string; event: string; path: string; label?: string };
+    await siteVisits
+      .recordSiteVisit(req.publicTenantId!, body)
+      .catch(() => undefined);
+    return res.status(204).end();
   }),
 );
 

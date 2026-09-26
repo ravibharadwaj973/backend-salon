@@ -830,6 +830,13 @@ model Tenant {
   timezone   String       @default("Asia/Kolkata")
   locale     String       @default("en-IN")
   logoUrl    String?
+  /// The salon's OWN website, if they have one.
+  ///
+  /// Two jobs. It builds {{website_link}} and {{gallery_link}} for messages,
+  /// and it is the allow-list for the arrival token: a tracked link is only
+  /// given a ?pv= when it points somewhere this salon owns, so a redirect to
+  /// Google or Instagram never carries one.
+  websiteUrl String?
   status     TenantStatus @default(TRIAL)
   trialEndsAt DateTime?
   planId     String?
@@ -2400,9 +2407,47 @@ model TrackedLink {
   createdAt    DateTime  @default(now())
 
   messageLog MessageLog? @relation(fields: [messageLogId], references: [id], onDelete: Cascade)
+  visits     SiteVisit[]
 
   @@index([tenantId, campaignId])
   @@index([messageLogId])
+}
+
+/// WHAT A VISITOR DID AFTER TAPPING THE LINK.
+///
+/// Only ever written for somebody who ARRIVED FROM A MESSAGE THE SALON SENT
+/// THEM. The salon's website reports back against the tracked-link code it was
+/// handed on arrival; a visitor who found the salon on Google or typed the
+/// address in is never recorded here, anonymously or otherwise. See the note at
+/// the top of the website's src/lib/track.ts for why the line is drawn there.
+///
+/// A row per event rather than a counter, because "they opened the gallery and
+/// then the booking page" and "they opened the booking page twice" are
+/// different stories and a counter tells neither.
+model SiteVisit {
+  id            String   @id @default(cuid())
+  tenantId      String
+  trackedLinkId String?
+  messageLogId  String?
+  campaignId    String?
+  customerId    String?
+  /// page_view, gallery_filter, booking_started, booked.
+  event         String
+  /// The path on the salon's site. Never a full URL: a query string is where
+  /// somebody's name or phone number ends up by accident, and this table has
+  /// no use for one.
+  path          String
+  /// Which collection, which service — whatever the event is about.
+  label         String?
+  at            DateTime @default(now())
+
+  trackedLink TrackedLink? @relation(fields: [trackedLinkId], references: [id], onDelete: Cascade)
+  messageLog  MessageLog?  @relation(fields: [messageLogId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, at])
+  @@index([messageLogId])
+  @@index([campaignId, at])
+  @@map("site_visits")
 }
 
 model MessageLog {
@@ -2447,6 +2492,13 @@ model MessageLog {
   /// 16 October" is answerable, and a recomputed window is not.
   attributionFrom     DateTime?
   attributionUntil    DateTime?
+  /// They came back to the salon's own website after tapping the link.
+  ///
+  /// The step between "clicked" and "booked" that nothing measured. A campaign
+  /// where forty people opened the gallery and none booked looked identical to
+  /// one nobody opened — and those are opposite problems.
+  siteVisitedAt       DateTime?
+  siteViews           Int      @default(0)
   /// The appointment this recipient booked inside the window, if any.
   attributedAppointmentId String?
   /// How many times they came inside the window. More than one is common on a
@@ -2459,6 +2511,7 @@ model MessageLog {
   template   MessageTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
   journeyRun JourneyRun?      @relation(fields: [journeyRunId], references: [id], onDelete: SetNull)
   trackedLinks TrackedLink[]
+  siteVisits   SiteVisit[]
 
   @@index([tenantId, status])
   @@index([tenantId, campaignId])

@@ -64,6 +64,9 @@ export const AUTOMATIC_IN_CAMPAIGN = new Set([
   'last_service',
   'usual_gap',
   'usual_gap_days',
+  // The salon's own website, when one is set under Settings.
+  'website_link',
+  'gallery_link',
 ]);
 
 /**
@@ -113,6 +116,8 @@ const LABELS: Record<string, { label: string; example?: string }> = {
   last_service: { label: 'Last service', example: 'Haircut' },
   usual_gap: { label: 'How often they visit', example: 'about every six weeks' },
   usual_gap_days: { label: 'Their usual gap, in days', example: '42' },
+  website_link: { label: 'Your website', example: 'https://glowstudio.in' },
+  gallery_link: { label: 'Your gallery page', example: 'https://glowstudio.in/gallery' },
   offer: { label: 'Offer', example: '20% off all colour services' },
   discount: { label: 'Discount', example: '20%' },
   valid_till: { label: 'Valid until', example: '31 Oct 2026' },

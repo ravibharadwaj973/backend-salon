@@ -56,6 +56,21 @@ export const updateTenantSchema = z.object({
   currency: z.string().length(3).optional(),
   timezone: z.string().optional(),
   logoUrl: z.string().url().max(500).optional(),
+  /**
+   * The salon's own website.
+   *
+   * Validated as a real URL rather than taken as typed, because it does two
+   * jobs where a near-miss fails quietly: it builds {{website_link}} and
+   * {{gallery_link}} for messages, and it is the allow-list deciding which
+   * redirect targets may carry an arrival token. "glowstudio.in" with no
+   * scheme would match no origin, so tracking would simply never work and
+   * nobody would know why.
+   *
+   * Empty string clears it — a salon that takes their site down needs a way
+   * to say so, and a field that can only ever be set is a field people work
+   * around.
+   */
+  websiteUrl: z.union([z.string().url().max(300), z.literal('')]).optional(),
   settings: z.record(z.unknown()).optional(),
 });
 

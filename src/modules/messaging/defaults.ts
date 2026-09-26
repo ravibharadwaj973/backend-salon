@@ -367,6 +367,34 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     variables: ['customer_name', 'last_service', 'days_since_visit', 'salon_name', 'booking_link'],
     approvalStatus: 'DRAFT',
   },
+  /**
+   * NEW WORK ON THE WALL.
+   *
+   * Sent as a campaign rather than an automation, and that is not an omission:
+   * nothing in the app can observe a salon photographing a balayage. The
+   * trigger is a person deciding the pictures are good enough to show, which
+   * is exactly the sort of thing that should stay a person's decision.
+   *
+   * What IS automatic is the measurement. The link is rewritten to /r/<code>
+   * on the way out, the redirect hands the code to the salon's own site, and
+   * the site reports back which collection was opened — so "forty people
+   * looked at the colour work and two booked" is answerable, which it never
+   * was before.
+   *
+   * {{gallery_link}} only resolves once the salon has set their website under
+   * Settings. Until then this template will not send, rather than sending a
+   * sentence that trails off into nothing.
+   */
+  {
+    name: 'gallery_update',
+    channel: 'WHATSAPP',
+    category: 'MARKETING',
+    language: 'en',
+    bodyText:
+      'Hi {{customer_name}} — we have put up some of the work from the last few weeks at {{salon_name}}: {{gallery_link}}\n\nIf anything catches your eye, bring it with you. It is far easier to work from than a description.',
+    variables: ['customer_name', 'salon_name', 'gallery_link'],
+    approvalStatus: 'DRAFT',
+  },
   {
     name: 'winback_offer',
     channel: 'WHATSAPP',
@@ -596,6 +624,17 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     bodyText:
       'Dear {{customer_name}},\n\nYour last {{last_service}} with us was {{days_since_visit}} days ago — a little longer than you usually leave it, so we wanted to check in rather than let it slide.\n\nThe same again, or something new this time, whenever you are ready: {{booking_link}}\n\nWarm regards,\n{{salon_name}}',
     variables: ['customer_name', 'last_service', 'days_since_visit', 'booking_link', 'salon_name'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    name: 'gallery_update',
+    channel: 'EMAIL',
+    category: 'MARKETING',
+    language: 'en',
+    headerText: 'Some of what we have been doing',
+    bodyText:
+      'Dear {{customer_name}},\n\nWe have put up photographs of the last few weeks\u2019 work \u2014 colour, cuts and a couple of the bridal trials.\n\nHave a look: {{gallery_link}}\n\nIf something catches your eye, bring the picture with you. It is far easier to work from than a description.\n\nWarm regards,\n{{salon_name}}',
+    variables: ['customer_name', 'gallery_link', 'salon_name'],
     approvalStatus: 'APPROVED',
   },
   {

@@ -74,7 +74,7 @@ export async function getCampaign(id: string) {
   });
   if (!campaign) throw NotFound('Campaign');
 
-  const [statusCounts, revenue, awaitingReceipt, lastReceipt, tenantLastReceipt] = await Promise.all([
+  const [statusCounts, revenue, awaitingReceipt, lastReceipt, tenantLastReceipt, siteVisited, siteEvents] = await Promise.all([
     prisma.messageLog.groupBy({ by: ['status'], where: { campaignId: id }, _count: { _all: true } }),
     prisma.messageLog.aggregate({ where: { campaignId: id }, _sum: { attributedRevenue: true, cost: true } }),
     /**
@@ -110,6 +110,26 @@ export async function getCampaign(id: string) {
       orderBy: { deliveredAt: 'desc' },
       select: { deliveredAt: true },
     }),
+
+    /**
+     * THE STAGE BETWEEN THE TAP AND THE BOOKING.
+     *
+     * Recipients who came back to the salon's own website after tapping. The
+     * funnel ran "clicked → booked" with nothing in between, so a campaign
+     * where forty people opened the gallery and nobody booked read exactly
+     * like one nobody opened — and the salon's next move is completely
+     * different for each: rework the offer, or rework the message.
+     *
+     * Counted per RECIPIENT, not per page view, because the funnel is about
+     * people. The page counts are below, separately, for the same reason the
+     * two are not the same number.
+     */
+    prisma.messageLog.count({ where: { campaignId: id, siteVisitedAt: { not: null } } }),
+    prisma.siteVisit.groupBy({
+      by: ['event'],
+      where: { campaignId: id },
+      _count: { _all: true },
+    }),
   ]);
 
   const byStatus = Object.fromEntries(statusCounts.map((s) => [s.status, s._count._all]));
@@ -136,6 +156,7 @@ export async function getCampaign(id: string) {
       sent: campaign.sentCount,
       delivered: campaign.deliveredCount,
       engaged: campaign.engagedCount,
+      visitedSite: siteVisited,
       booked: campaign.bookingCount,
       visited: campaign.visitCount,
       revenue: earned,
@@ -166,6 +187,22 @@ export async function getCampaign(id: string) {
       /** What each visit cost to buy — the number that decides the next campaign. */
       costPerVisit: campaign.visitCount > 0 ? round2(d(spend).dividedBy(campaign.visitCount)) : null,
       revenuePerMessageSent: campaign.sentCount > 0 ? round2(d(earned).dividedBy(campaign.sentCount)) : null,
+    },
+    /**
+     * What happened on the salon's own website afterwards.
+     *
+     * Only ever populated for salons that have a website with the reporting
+     * snippet on it, and only for visitors who arrived through a tracked link.
+     * Everything here is therefore a FLOOR, never a total — which is why the
+     * screen says "at least" rather than printing it as a rate.
+     */
+    site: {
+      /** Recipients who came back to the site at all. */
+      visitors: siteVisited,
+      /** Every reported event, by kind. */
+      events: Object.fromEntries(siteEvents.map((e) => [e.event, e._count._all])),
+      /** Whether this salon has reporting at all, so a zero can be explained. */
+      measured: siteEvents.length > 0,
     },
     /**
      * Null figures until attribution has run — the honest answer while the

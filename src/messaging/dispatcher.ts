@@ -145,12 +145,25 @@ export async function buildVariables(input: {
 
   const tenant = await prisma.tenant.findUnique({
     where: { id: input.tenantId },
-    select: { name: true, slug: true, phone: true },
+    select: { name: true, slug: true, phone: true, websiteUrl: true },
   });
   if (tenant) {
     vars.salon_name = tenant.name;
     vars.salon_phone = tenant.phone;
     vars.booking_link = bookingUrl(tenant.slug);
+
+    /**
+     * The salon's OWN site, when they have one.
+     *
+     * Both left unset when websiteUrl is blank, which means a template using
+     * them will not send — correct, and loud. The alternative is a message
+     * reading "see our latest work at" followed by nothing, which is the
+     * failure mode this app already had once and spent a test suite on.
+     */
+    if (tenant.websiteUrl) {
+      vars.website_link = tenant.websiteUrl.replace(/\/+$/, '');
+      vars.gallery_link = `${vars.website_link}/gallery`;
+    }
   }
 
   if (input.customerId) {

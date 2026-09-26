@@ -149,9 +149,20 @@ export async function rewriteLinks(input: {
  * link has expired" page rather than an error — an old message forwarded to a
  * friend is a normal thing to happen, not a fault.
  */
-export async function resolveClick(code: string): Promise<{ targetUrl: string; messageLogId: string | null } | null> {
+export async function resolveClick(
+  code: string,
+): Promise<{ targetUrl: string; messageLogId: string | null; trackedLinkId: string } | null> {
   const link = await prisma.trackedLink.findUnique({ where: { code } });
   if (!link) return null;
+
+  /**
+   * The salon's own hosts, for the token allow-list above. One small read on a
+   * redirect a customer is waiting on; it is a primary-key lookup and it is
+   * the only thing between this and handing a per-person token to Google.
+   */
+  const tenant = await prisma.tenant
+    .findUnique({ where: { id: link.tenantId }, select: { websiteUrl: true } })
+    .catch(() => null);
 
   const now = new Date();
 
@@ -169,5 +180,56 @@ export async function resolveClick(code: string): Promise<{ targetUrl: string; m
     })
     .catch((err: unknown) => logger.warn({ err, code }, 'click count not recorded'));
 
-  return { targetUrl: link.targetUrl, messageLogId: link.messageLogId };
+  return {
+    targetUrl: withVisitToken(link.targetUrl, link.code, [tenant?.websiteUrl, env.PUBLIC_APP_URL]),
+    messageLogId: link.messageLogId,
+    trackedLinkId: link.id,
+  };
 }
+
+/**
+ * ADD THE ARRIVAL TOKEN — BUT ONLY TO THE SALON'S OWN PAGES.
+ *
+ * The redirect already knows which message a tap came from. Handing that code
+ * on to the destination is what lets the salon's website report back what the
+ * visitor then did, which is the whole gap between "clicked" and "booked".
+ *
+ * The allow-list is the point of this function. A salon's messages contain
+ * links to Google reviews, to Instagram, to a map. Appending a token that
+ * identifies one customer to a URL on somebody else's host hands that host a
+ * per-person identifier for no reason at all — a small leak, easy to write by
+ * accident, and invisible once shipped. So the token goes on only where the
+ * origin is one this salon owns.
+ *
+ * Returns the URL untouched on anything it cannot parse or does not recognise.
+ * An unmeasured link that works beats a measured one that does not, which is
+ * the rule the rest of this file is built on too.
+ */
+export function withVisitToken(targetUrl: string, code: string, allowedOrigins: (string | null | undefined)[]): string {
+  try {
+    const url = new URL(targetUrl);
+
+    const allowed = allowedOrigins
+      .filter((value): value is string => Boolean(value))
+      .map((value) => {
+        try {
+          return new URL(value).origin;
+        } catch {
+          return null;
+        }
+      })
+      .filter((origin): origin is string => Boolean(origin));
+
+    if (!allowed.includes(url.origin)) return targetUrl;
+
+    // Never overwrite one that is already there: a link built by hand with its
+    // own pv is the salon meaning something by it.
+    if (url.searchParams.has('pv')) return targetUrl;
+
+    url.searchParams.set('pv', code);
+    return url.toString();
+  } catch {
+    return targetUrl;
+  }
+}
+
