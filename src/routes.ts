@@ -27,6 +27,7 @@ import { segmentRouter, campaignRouter, journeyRouter, templateRouter, messageRo
 import { usageRouter, platformQuotaRouter } from './modules/quotas/quota.routes';
 import { auditRouter, platformAuditRouter } from './modules/audit/audit.routes';
 import messagingRouter from './modules/messaging/messaging.routes';
+import galleryRoutes from './modules/gallery/gallery.routes';
 import { requireFeature } from './middleware/feature';
 import { authenticate } from './middleware/auth';
 import { FEATURES } from './core/features';
@@ -89,6 +90,7 @@ export function buildRouter(): Router {
     campaignRouter,
   );
   router.use('/journeys', authenticate, requireFeature(FEATURES.JOURNEYS), journeyRouter);
+  router.use('/gallery', galleryRoutes);
   router.use('/templates', templateRouter);
   router.use('/messages', messageRouter);
   router.use('/feedback', feedbackRoutes);

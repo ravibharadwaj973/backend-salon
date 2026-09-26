@@ -19,6 +19,7 @@ import type { Gender } from '@prisma/client';
 import { readAsset } from '../tenants/asset.service';
 import * as siteVisits from './site-visit.service';
 import * as websiteFeedback from '../feedback/website-feedback.service';
+import * as gallery from '../gallery/gallery.service';
 
 const router = Router();
 router.use(publicLimiter);
@@ -557,6 +558,22 @@ router.post(
       .catch(() => undefined);
     return res.status(204).end();
   }),
+);
+
+// ---------------------------------------------------------------- gallery ---
+
+/**
+ * The salon's gallery, as their own website reads it.
+ *
+ * Served from here rather than left to the website's Cloudinary tag lookup,
+ * because the tag list knows nothing about the salon's ORDER, about a
+ * photograph they hid, or about a caption they edited after uploading. The tag
+ * route still works and is the website's fallback when this API is unreachable.
+ */
+router.get(
+  '/:slug/gallery',
+  resolveTenantBySlug,
+  asyncHandler(async (req, res) => ok(res, await gallery.publicGallery(req.publicTenantId!))),
 );
 
 // ------------------------------------------------- feedback on their site ---

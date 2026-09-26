@@ -2663,6 +2663,51 @@ model Feedback {
   @@map("feedback")
 }
 
+/// A PHOTOGRAPH OF THE SALON'S WORK.
+///
+/// The FILE lives in Cloudinary; this row is the salon's own record of it —
+/// which collection it belongs to, what the alt text says, what order it sits
+/// in, and whether it is currently shown.
+///
+/// Both, rather than one or the other. Cloudinary alone would mean the salon's
+/// gallery order, captions and hidden/shown state lived in an image host's tag
+/// and context fields, editable by anyone with the account and invisible to
+/// this app. This app alone would mean serving photographs from our own disk.
+///
+/// publicId is the join. Deleting the row deletes the image; an image that
+/// loses its row is an orphan costing a fraction of a paisa, which is the
+/// cheaper of the two failures.
+model GalleryPhoto {
+  id        String   @id @default(cuid())
+  tenantId  String
+  /// Which collection on the website: colour, cuts, bridal. Matched to the
+  /// site's own tags rather than to a Service row, because a gallery groups by
+  /// the KIND of work and a salon's service list is finer than that — nobody
+  /// wants a category per price point.
+  collection String
+  /// Cloudinary's id for the file. The only thing here the website needs.
+  publicId  String   @unique
+  format    String
+  width     Int
+  height    Int
+  bytes     Int
+  /// What is in the picture, in a sentence. Required by the upload, because a
+  /// gallery is a page somebody chooses a salon from and "image 4" is not
+  /// information.
+  alt       String
+  caption   String?
+  /// Hidden without being deleted — for a photograph of a customer who has
+  /// since asked for it to come down, where deleting the file loses the record
+  /// that it was ever published.
+  isVisible Boolean  @default(true)
+  sortOrder Int      @default(0)
+  uploadedById String?
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, collection, sortOrder])
+  @@map("gallery_photos")
+}
+
 // ============================== GAMIFICATION ================================
 
 model Challenge {

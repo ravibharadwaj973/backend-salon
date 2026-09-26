@@ -101,6 +101,28 @@ const envSchema = z.object({
   /// Estimated, for reporting only — MSG91 does not return a per-message price.
   SMS_COST_PER_SEGMENT: z.coerce.number().min(0).default(0.18),
 
+  /**
+   * CLOUDINARY — where photographs live.
+   *
+   * The cloud name is public: it appears in every delivery URL. The key and
+   * secret are not, and they are why this lives here rather than in a website:
+   * the secret can delete every image in the account, so it belongs on a server
+   * nobody downloads.
+   *
+   * All three optional. A salon that has not set them up has no gallery
+   * uploads, and everything else in the app carries on — the alternative is an
+   * app that refuses to boot because nobody signed up to an image host.
+   */
+  CLOUDINARY_CLOUD_NAME: z.string().optional().default(''),
+  CLOUDINARY_API_KEY: z.string().optional().default(''),
+  CLOUDINARY_API_SECRET: z.string().optional().default(''),
+  /**
+   * The folder every upload goes into, so a shared Cloudinary account can hold
+   * more than this app's pictures without them becoming impossible to tell
+   * apart. Each salon gets a subfolder of it.
+   */
+  CLOUDINARY_FOLDER: z.string().default('parlon'),
+
   EMAIL_DRIVER: z.enum(['console', 'resend']).default('console'),
   EMAIL_API_URL: z.string().default('https://api.resend.com'),
   EMAIL_API_KEY: z.string().optional().default(''),
@@ -146,6 +168,18 @@ export const env = {
   EMAIL_FROM_NAME: raw.EMAIL_FROM_NAME || raw.RESEND_FROM_NAME,
   EMAIL_DRIVER: raw.EMAIL_DRIVER === 'console' && emailApiKey ? ('resend' as const) : raw.EMAIL_DRIVER,
 };
+
+/**
+ * Whether photographs can be uploaded at all.
+ *
+ * All three, not just the cloud name: a cloud name on its own is enough to
+ * BUILD a delivery URL but not to put anything at the other end of one, and an
+ * upload screen that appears and then fails on submit is worse than one that
+ * says what is missing.
+ */
+export const cloudinaryReady = Boolean(
+  env.CLOUDINARY_CLOUD_NAME && env.CLOUDINARY_API_KEY && env.CLOUDINARY_API_SECRET,
+);
 
 export const isProd = env.NODE_ENV === 'production';
 export const isTest = env.NODE_ENV === 'test';
