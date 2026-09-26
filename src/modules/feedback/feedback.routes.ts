@@ -9,6 +9,7 @@ import { audit } from '../../middleware/audit';
 import { idParam, idSchema, paginationQuery } from '../../core/validators';
 import * as service from './feedback.service';
 import type { FeedbackInput } from './feedback.service';
+import * as websiteFeedback from './website-feedback.service';
 
 const router = Router();
 router.use(authenticate);
@@ -24,6 +25,9 @@ router.get(
       maxRating: z.coerce.number().int().min(1).max(5).optional(),
       complaintsOnly: z.enum(['true', 'false']).optional(),
       unresolvedOnly: z.enum(['true', 'false']).optional(),
+      /// Ratings from a visit, or ones typed into the website form. Separable
+      /// because they are not the same evidence — see the FeedbackSource enum.
+      source: z.enum(['VISIT', 'WEBSITE']).optional(),
       from: z.coerce.date().optional(),
       to: z.coerce.date().optional(),
     }),
@@ -34,6 +38,7 @@ router.get(
       ...(q as Parameters<typeof service.listFeedback>[0]),
       complaintsOnly: q.complaintsOnly === 'true',
       unresolvedOnly: q.unresolvedOnly === 'true',
+      source: q.source as 'VISIT' | 'WEBSITE' | undefined,
     });
     return paginated(res, result.items, result.total, result.page, result.pageSize);
   }),
@@ -71,6 +76,30 @@ router.get(
     }),
   }),
   asyncHandler(async (req, res) => ok(res, await service.reputationSummary(req.query as never))),
+);
+
+/**
+ * Put one piece of feedback on the salon's own website, or take it down.
+ *
+ * FEEDBACK_MANAGE rather than FEEDBACK_VIEW: publishing somebody's words under
+ * the salon's name is a different act from reading them, and the person on the
+ * desk who answers complaints is not necessarily the person who decides what
+ * the website says.
+ */
+router.post(
+  '/:id/publish',
+  requirePermission(PERMISSIONS.FEEDBACK_MANAGE),
+  validate({ params: idParam, body: z.object({ isPublic: z.boolean() }) }),
+  asyncHandler(async (req, res) => {
+    const { isPublic } = req.body as { isPublic: boolean };
+    const feedback = await websiteFeedback.setFeedbackPublic(req.params.id!, isPublic, req.ctx.userId ?? null);
+    audit({
+      action: isPublic ? 'feedback.published' : 'feedback.unpublished',
+      entity: 'Feedback',
+      entityId: feedback.id,
+    });
+    return ok(res, feedback);
+  }),
 );
 
 router.post(

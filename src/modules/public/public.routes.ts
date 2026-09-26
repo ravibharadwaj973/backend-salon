@@ -18,6 +18,7 @@ import { bookingUrl, refererHost } from '../../core/public-links';
 import type { Gender } from '@prisma/client';
 import { readAsset } from '../tenants/asset.service';
 import * as siteVisits from './site-visit.service';
+import * as websiteFeedback from '../feedback/website-feedback.service';
 
 const router = Router();
 router.use(publicLimiter);
@@ -555,6 +556,62 @@ router.post(
       .recordSiteVisit(req.publicTenantId!, body)
       .catch(() => undefined);
     return res.status(204).end();
+  }),
+);
+
+// ------------------------------------------------- feedback on their site ---
+
+/**
+ * The feedback section on the salon's OWN website.
+ *
+ * One GET for everything the section needs to draw itself — whether the salon
+ * has switched it on, their own wording for it, and the reviews they have
+ * approved for showing — so a website renders it in a single request and gets
+ * nothing at all when the salon has not turned it on.
+ */
+router.get(
+  '/:slug/feedback-section',
+  resolveTenantBySlug,
+  asyncHandler(async (req, res) => ok(res, await websiteFeedback.publicFeedbackSection(req.publicTenantId!))),
+);
+
+/**
+ * Somebody leaving feedback from the salon's website.
+ *
+ * enquiryLimiter rather than the general public one: this writes a row that a
+ * person then has to read, so the cost of abuse is somebody's morning rather
+ * than a database column.
+ *
+ * Nothing here starts an automation and nothing here is published. Both are
+ * explained at length in website-feedback.service.ts, and both are the
+ * difference between a feedback form and a spam cannon with the salon's name
+ * on it.
+ */
+router.post(
+  '/:slug/feedback',
+  enquiryLimiter,
+  resolveTenantBySlug,
+  validate({
+    body: z.object({
+      rating: z.coerce.number().int().min(1).max(5),
+      comment: z.string().trim().max(2000).optional(),
+      name: z.string().trim().min(1).max(80),
+      phone: z.string().trim().max(20).optional(),
+      branchId: idSchema.optional(),
+      /** The honeypot. Never shown to a person, so never filled in by one. */
+      website: z.string().max(200).optional(),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const body = req.body as websiteFeedback.WebsiteFeedbackInput;
+    const result = await websiteFeedback.submitWebsiteFeedback(req.publicTenantId!, body);
+    /**
+     * The same answer whether it was recorded or quietly dropped as spam.
+     * Telling a bot it was caught tells it which field to leave alone next
+     * time, and a person cannot tell the difference because for a person
+     * there is none.
+     */
+    return created(res, { received: true, id: result.recorded ? result.id : null });
   }),
 );
 

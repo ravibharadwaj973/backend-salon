@@ -3,6 +3,7 @@ import { prisma } from '../../core/prisma';
 import { requireTenantId, runUnscoped } from '../../core/context';
 import { branchFilter } from '../../core/scope';
 import { BadRequest, NotFound } from '../../core/errors';
+import { possibleAuthors } from './website-feedback.service';
 import { pageParams } from '../../core/http';
 import { pctOf, round2 } from '../../core/money';
 import { enqueueSafe } from '../../jobs/queue';
@@ -211,6 +212,8 @@ export async function listFeedback(input: {
   maxRating?: number;
   complaintsOnly?: boolean;
   unresolvedOnly?: boolean;
+  /** 'VISIT', 'WEBSITE', or undefined for both. */
+  source?: 'VISIT' | 'WEBSITE';
   from?: Date;
   to?: Date;
 }) {
@@ -221,6 +224,7 @@ export async function listFeedback(input: {
     tenantId,
     ...branchFilter(input.branchId),
     ...(input.staffId ? { staffId: input.staffId } : {}),
+    ...(input.source ? { source: input.source } : {}),
     ...(input.complaintsOnly ? { isComplaint: true } : {}),
     ...(input.unresolvedOnly ? { isComplaint: true, resolvedAt: null } : {}),
     ...(input.minRating || input.maxRating
@@ -251,7 +255,20 @@ export async function listFeedback(input: {
     prisma.feedback.count({ where }),
   ]);
 
-  return { items, total, page, pageSize };
+  /**
+   * For website feedback, who this MIGHT be — worked out now rather than
+   * stored on the row. A stored link would be the app asserting that an
+   * unverified phone number identifies a named customer; this is the salon
+   * being shown a possible match and left to decide.
+   */
+  const matches = await possibleAuthors(items.filter((i) => i.source === 'WEBSITE').map((i) => i.id));
+
+  return {
+    items: items.map((item) => ({ ...item, possibleCustomer: matches.get(item.id) ?? null })),
+    total,
+    page,
+    pageSize,
+  };
 }
 
 export async function resolveComplaint(id: string, note: string) {
@@ -267,15 +284,29 @@ export async function resolveComplaint(id: string, note: string) {
 export async function reputationSummary(input: { from?: Date; to?: Date; branchId?: string }) {
   const tenantId = requireTenantId();
 
-  const where: Prisma.FeedbackWhereInput = {
+  const period = {
     tenantId,
     ...branchFilter(input.branchId),
     ...(input.from || input.to
       ? { createdAt: { ...(input.from ? { gte: input.from } : {}), ...(input.to ? { lte: input.to } : {}) } }
       : {}),
-  };
+  } satisfies Prisma.FeedbackWhereInput;
 
-  const [agg, distribution, npsRows, staffRatings, unresolved] = await Promise.all([
+  /**
+   * THE SALON'S OWN RATING IS BUILT FROM VISITS ONLY.
+   *
+   * Feedback left on the salon's public website is unverified: anyone with
+   * the address can leave it, including twice, including a competitor. Folded
+   * into this average it would make the number the salon judges itself by
+   * — and prices, and pays bonuses on — something a stranger can move.
+   *
+   * It is not hidden, it is counted separately and reported below, so the
+   * screen can say "plus 12 from your website" rather than leaving somebody
+   * to wonder why two counts disagree.
+   */
+  const where: Prisma.FeedbackWhereInput = { ...period, source: 'VISIT' };
+
+  const [agg, distribution, npsRows, staffRatings, unresolved, fromWebsite] = await Promise.all([
     prisma.feedback.aggregate({ where, _avg: { rating: true }, _count: { _all: true } }),
     prisma.feedback.groupBy({ by: ['rating'], where, _count: { _all: true } }),
     prisma.feedback.findMany({ where: { ...where, npsScore: { not: null } }, select: { npsScore: true } }),
@@ -286,6 +317,11 @@ export async function reputationSummary(input: { from?: Date; to?: Date; branchI
       _count: { _all: true },
     }),
     prisma.feedback.count({ where: { ...where, isComplaint: true, resolvedAt: null } }),
+    prisma.feedback.aggregate({
+      where: { ...period, source: 'WEBSITE' },
+      _avg: { rating: true },
+      _count: { _all: true },
+    }),
   ]);
 
   // The Google funnel: how many were asked, how many actually went. And
@@ -313,6 +349,13 @@ export async function reputationSummary(input: { from?: Date; to?: Date; branchI
   return {
     averageRating: round2(agg._avg.rating ?? 0),
     totalReviews: agg._count._all,
+    /**
+     * Alongside, never inside. See the note on `where` above.
+     */
+    website: {
+      count: fromWebsite._count._all,
+      averageRating: fromWebsite._count._all > 0 ? round2(fromWebsite._avg.rating ?? 0) : null,
+    },
     distribution: Object.fromEntries(distribution.map((d) => [d.rating, d._count._all])),
     positiveRatePct: pctOf(
       distribution.filter((d) => d.rating >= 4).reduce((acc, d) => acc + d._count._all, 0),

@@ -2589,6 +2589,23 @@ model JourneyRun {
 
 // ============================== REVIEWS =====================================
 
+/// WHERE A RATING CAME FROM, AND THEREFORE WHAT IT IS WORTH.
+///
+/// A rating left after a visit is tied to an appointment this salon actually
+/// performed: the salon knows who it was, what was done, and by whom. A rating
+/// typed into a form on the salon's website is tied to nothing. Anyone with
+/// the address can leave one, including a competitor, twice.
+///
+/// Both are worth having. Averaging them together is not: it makes the number
+/// the salon judges itself by something a stranger can move, and once the two
+/// are mixed in one column they cannot be told apart again.
+enum FeedbackSource {
+  /// Left after a visit, through the link in the salon's own message.
+  VISIT
+  /// Typed into the public form on the salon's website. Unverified.
+  WEBSITE
+}
+
 model Feedback {
   id            String   @id @default(cuid())
   tenantId      String
@@ -2611,7 +2628,28 @@ model Feedback {
   googleReviewRequested Boolean @default(false)
   /// Set when the customer actually tapped through to Google, not when we asked.
   googleReviewedAt DateTime?
+  /// Shown on the salon's own website. Never true until a person says so:
+  /// see the note on approvedAt.
   isPublic      Boolean  @default(false)
+  /// When the salon approved this for publication, and who did it.
+  ///
+  /// Nothing from the public form is ever published automatically. A form
+  /// that puts a stranger's words on the salon's website the moment they
+  /// press send is a defacement tool with a rating attached.
+  approvedAt    DateTime?
+  approvedById  String?
+
+  source        FeedbackSource @default(VISIT)
+  /// What the person typed into the public form. Only ever set for WEBSITE,
+  /// and never trusted: it is who they SAID they were.
+  ///
+  /// Deliberately NOT matched to a customer record and written to customerId.
+  /// The phone number is unverified, so linking on it would let anyone attach
+  /// "I was treated badly" to a named customer's profile. The salon is shown a
+  /// possible match at read time instead, which is a suggestion rather than a
+  /// claim.
+  authorName    String?
+  authorPhone   String?
   createdAt     DateTime @default(now())
 
   appointment Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
@@ -2620,6 +2658,8 @@ model Feedback {
 
   @@index([tenantId, branchId, createdAt])
   @@index([tenantId, rating])
+  @@index([tenantId, source, createdAt])
+  @@index([tenantId, isPublic, createdAt])
   @@map("feedback")
 }
 
