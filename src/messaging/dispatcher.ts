@@ -10,7 +10,7 @@ import { addDays, dateKey, dayjs } from '../core/dates';
 import { formatINR } from '../core/money';
 import { resolveProvider } from './providers';
 import { enqueue } from '../jobs/queue';
-import { rewriteLinks } from './tracked-links';
+import { rewriteLinks, rewriteVariableLinks } from './tracked-links';
 import { consume, meterFor } from '../modules/quotas/quota.service';
 import { tenantHasFeature } from '../modules/quotas/limits.service';
 import { FEATURES } from '../core/features';
@@ -693,15 +693,48 @@ export async function deliver(messageLogId: string) {
    * reading the log later should see the message the customer saw, tracked
    * link and all, not a tidier version of it.
    */
-  const body = await runUnscoped(() =>
-    rewriteLinks({
-      body: log.renderedBody ?? '',
-      tenantId: log.tenantId,
-      messageLogId: log.id,
-      campaignId: log.campaignId,
-      customerId: log.customerId,
-    }),
-  );
+  const owner = {
+    tenantId: log.tenantId,
+    messageLogId: log.id,
+    campaignId: log.campaignId,
+    customerId: log.customerId,
+  };
+
+  /**
+   * THE VARIABLES, WHICH IS WHAT WHATSAPP ACTUALLY SENDS.
+   *
+   * An approved WhatsApp template goes to Meta as a template NAME plus
+   * parameters; Meta renders its own stored copy of the wording, so the
+   * rewritten body above is never transmitted. For months that meant every
+   * WhatsApp template link went out untracked, no click was ever recorded, the
+   * arrival token never reached the salon's website, and therefore no site
+   * visit and no interest either — the entire chain dead at its first link,
+   * with the code that builds it running cleanly on every send.
+   *
+   * Rewriting the values fixes it, because Meta substitutes our parameter.
+   */
+  const trackedVariables = await runUnscoped(() => rewriteVariableLinks(variables, owner));
+
+  /**
+   * ONE LINK PER URL, NOT TWO.
+   *
+   * Rewriting the variables AND the rendered body would create two tracked
+   * links for the same address: the body holds the URL because it was rendered
+   * from the variable that holds it. Two rows means the click count splits
+   * across them, and on a template send one of the two is never even sent — so
+   * a campaign would report roughly half its real clicks and there would be
+   * nothing to indicate it.
+   *
+   * With a template, the body is therefore RE-RENDERED from the tracked
+   * variables rather than rewritten. That also makes the stored body the
+   * message the customer actually read, which is the whole point of storing it.
+   *
+   * Without a template the body is the message — a service-window reply — and
+   * there are no variables to have caught the link, so it is rewritten directly.
+   */
+  const body = log.template?.bodyText
+    ? renderTemplate(log.template.bodyText, trackedVariables)
+    : await runUnscoped(() => rewriteLinks({ body: log.renderedBody ?? '', ...owner }));
 
   if (body !== log.renderedBody) {
     await runUnscoped(() =>
@@ -790,8 +823,23 @@ export async function deliver(messageLogId: string) {
     body,
     templateName: log.template?.providerTemplateName ?? null,
     language: log.template?.language ?? 'en',
-    variables,
+    /**
+     * The tracked values, because these are the template's parameters and a
+     * template is what WhatsApp sends.
+     */
+    variables: trackedVariables,
     variableOrder: orderedVariables,
+    /**
+     * buttonValues and email `links` keep the ORIGINAL values, deliberately.
+     *
+     * A WhatsApp URL button is half Meta's: Meta holds the approved base and we
+     * supply only its tail, so substituting a whole tracked URL there produces
+     * base + tracked-code and opens nothing. Email's buttons are built the same
+     * way from base + suffix. Tracking a button needs the button's own base to
+     * be the redirect prefix, which is a template change rather than a send-path
+     * one — so a body link is tracked today and a button link is not, and that
+     * is stated here rather than left to be discovered from a zero.
+     */
     buttonValues,
     links,
     subject,

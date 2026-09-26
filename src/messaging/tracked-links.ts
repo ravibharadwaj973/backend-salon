@@ -85,6 +85,112 @@ export function shortUrl(code: string): string {
  * Returns the body unchanged when there is nothing to rewrite, so the caller
  * never has to care whether tracking applied.
  */
+export interface LinkOwner {
+  tenantId: string;
+  messageLogId: string;
+  campaignId?: string | null;
+  customerId?: string | null;
+}
+
+/**
+ * One target URL in, one tracked URL out.
+ *
+ * Shared by the body rewriter and the variable rewriter so the two cannot
+ * disagree about what a tracked link looks like, which destination it was
+ * filed under, or how long it identifies anybody.
+ */
+async function trackOne(target: string, owner: LinkOwner): Promise<string> {
+  // Already a tracked link — rewriting it again would bounce the customer
+  // through two redirects and count the tap twice.
+  if (target.startsWith(shortUrl(''))) return target;
+
+  /**
+   * The destination is worked out here, not asked for.
+   *
+   * Every send path in the app already builds its own links and none of them
+   * would be changed to pass a label, so a message with three buttons —
+   * gallery, offer, book — gets three correctly-typed links for free. See
+   * destinationOf in the engagement module.
+   */
+  const destination = destinationOf(target);
+
+  const link = await prisma.trackedLink.create({
+    data: {
+      tenantId: owner.tenantId,
+      code: newCode(),
+      targetUrl: target,
+      messageLogId: owner.messageLogId,
+      campaignId: owner.campaignId ?? null,
+      customerId: owner.customerId ?? null,
+      destination,
+      identifiesUntil: identifiesUntil(destination),
+    },
+  });
+
+  return shortUrl(link.code);
+}
+
+/**
+ * TRACK THE LINKS IN A TEMPLATE'S VARIABLES, NOT JUST IN THE BODY.
+ *
+ * The bug this exists for, and it hid in plain sight for months.
+ *
+ * rewriteLinks rewrites the rendered body. For email and for a free-text
+ * WhatsApp reply, that body IS the message, so tracking worked. But every
+ * approved WhatsApp template send — which is every marketing and utility
+ * message outside the 24-hour window, and therefore almost all of them — goes
+ * to Meta as a template NAME plus parameters. Meta renders its own stored copy
+ * of the wording. The rewritten body is never transmitted at all.
+ *
+ * So the customer received {{booking_link}} exactly as the app built it:
+ * untracked. Every click on WhatsApp was invisible, the funnel showed nobody
+ * ever tapping anything, and the arrival token never reached the salon's own
+ * website — which meant no site visits and no recorded interest either. The
+ * whole chain was dead from its first link, while the code that was supposed to
+ * create it ran without error on every send.
+ *
+ * Rewriting the VALUES is what fixes it: Meta substitutes our parameter into
+ * its template, so a tracked URL in the parameter is a tracked URL in the
+ * message the customer reads. It is also shorter than the original, which an
+ * SMS is billed by.
+ */
+export async function rewriteVariableLinks(
+  variables: Record<string, string>,
+  owner: LinkOwner,
+): Promise<Record<string, string>> {
+  if (!env.PUBLIC_API_URL) return variables;
+
+  const out: Record<string, string> = { ...variables };
+
+  try {
+    for (const [key, value] of Object.entries(variables)) {
+      if (!value) continue;
+
+      const found = [...new Set((value.match(URL_PATTERN) ?? []).map(tidy))].filter(Boolean);
+      if (found.length === 0) continue;
+
+      let rewritten = value;
+      for (const target of found) {
+        rewritten = rewritten.split(target).join(await trackOne(target, owner));
+      }
+      out[key] = rewritten;
+    }
+  } catch (err) {
+    /**
+     * The ORIGINAL variables, not a half-rewritten set.
+     *
+     * A partially rewritten map would send some customers a tracked link and
+     * others the raw one from the same campaign, which is worse than tracking
+     * none of it: the click rate would then be a fraction of an unknown
+     * denominator and nobody would know to distrust it.
+     */
+    logger.warn({ err, messageLogId: owner.messageLogId }, 'variable links not tracked; sending the originals');
+    return variables;
+  }
+
+  return out;
+}
+
 export async function rewriteLinks(input: {
   body: string;
   tenantId: string;
@@ -116,34 +222,7 @@ export async function rewriteLinks(input: {
     let body = input.body;
 
     for (const target of found) {
-      // Already a tracked link — rewriting it again would bounce the customer
-      // through two redirects and count the tap twice.
-      if (target.startsWith(shortUrl(''))) continue;
-
-      /**
-       * The destination is worked out here, not asked for.
-       *
-       * Every send path in the app already builds its own links and none of
-       * them would be changed to pass a label, so a message with three buttons
-       * — gallery, offer, book — gets three correctly-typed links for free. See
-       * destinationOf in the engagement module.
-       */
-      const destination = destinationOf(target);
-
-      const link = await prisma.trackedLink.create({
-        data: {
-          tenantId: input.tenantId,
-          code: newCode(),
-          targetUrl: target,
-          messageLogId: input.messageLogId,
-          campaignId: input.campaignId ?? null,
-          customerId: input.customerId ?? null,
-          destination,
-          identifiesUntil: identifiesUntil(destination),
-        },
-      });
-
-      body = body.split(target).join(shortUrl(link.code));
+      body = body.split(target).join(await trackOne(target, input));
     }
 
     return body;
