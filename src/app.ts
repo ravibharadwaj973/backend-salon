@@ -7,6 +7,7 @@ import pinoHttp from 'pino-http';
 import { corsPolicy, env, isTest } from './config/env';
 import { describePolicy, isAllowedOrigin, shouldReportRefusal } from './core/cors';
 import { logger } from './core/logger';
+import { redactUrl } from './core/log-redact';
 import { contextMiddleware } from './middleware/context';
 import { resolveClick } from './messaging/tracked-links';
 import { applyStatusUpdate } from './messaging/dispatcher';
@@ -104,17 +105,27 @@ export function createApp(): Express {
         // pino-http's defaults serialise the entire request and response —
         // every header, on every call. One page load then costs a screen of
         // JSON. In summary mode a request is one readable line instead.
+        // Applied in BOTH modes. `full` logs more, not less carefully — and it is
+        // the mode somebody turns on precisely when they are chasing a problem,
+        // which is the worst moment to start writing tokens to disk.
         ...(compact
           ? {
               serializers: {
-                req: (req: { method: string; url: string }) => ({ method: req.method, url: req.url }),
+                req: (req: { method: string; url: string }) => ({ method: req.method, url: redactUrl(req.url) }),
                 res: (res: { statusCode: number }) => ({ status: res.statusCode }),
               },
-              customSuccessMessage: (req, res) => `${req.method} ${req.url} → ${res.statusCode}`,
+              customSuccessMessage: (req, res) => `${req.method} ${redactUrl(req.url ?? '')} → ${res.statusCode}`,
               customErrorMessage: (req, res, err) =>
-                `${req.method} ${req.url} → ${res.statusCode} ${err?.message ?? ''}`.trim(),
+                `${req.method} ${redactUrl(req.url ?? '')} → ${res.statusCode} ${err?.message ?? ''}`.trim(),
             }
-          : {}),
+          : {
+              serializers: {
+                req: (req: { url?: string }) => ({
+                  ...req,
+                  url: redactUrl(req.url ?? ''),
+                }),
+              },
+            }),
         customLogLevel: (_req, res, err) => {
           if (err || res.statusCode >= 500) return 'error';
           if (res.statusCode >= 400) return 'warn';
