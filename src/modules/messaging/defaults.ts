@@ -319,6 +319,54 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     variables: ['customer_name', 'days_since_visit', 'last_service', 'salon_name', 'booking_link'],
     approvalStatus: 'DRAFT',
   },
+  /**
+   * THE MESSAGE THAT ARRIVES BEFORE THEY NOTICE THEY ARE DUE.
+   *
+   * Everything else in this file chases somebody who has already gone quiet.
+   * This one lands while they are still a customer, at the point their own
+   * history says they start thinking about booking — which is the cheapest
+   * retention there is, because nothing has gone wrong yet and no discount has
+   * to be handed over to fix it.
+   *
+   * It quotes {{usual_gap}}, a figure worked out from their own visits. That
+   * is the whole difference between this and every "we miss you!" ever sent:
+   * "you're usually back about every six weeks" is something the customer can
+   * check against their own memory and find true, and being known is what makes
+   * a salon worth going back to. It is also why the journey that sends this
+   * requires an earned rhythm — the same sentence built from a salon-wide
+   * guess is a lie the customer is uniquely placed to catch.
+   *
+   * No offer, deliberately. A discount to somebody who was going to book
+   * anyway is margin given away, and it teaches regulars to wait for one.
+   */
+  {
+    name: 'rhythm_due_soon',
+    channel: 'WHATSAPP',
+    category: 'MARKETING',
+    language: 'en',
+    bodyText:
+      'Hi {{customer_name}}, it has been {{days_since_visit}} days since your last {{last_service}} at {{salon_name}} — you are usually back {{usual_gap}}, so we thought we would ask before the week fills up.\n\nShall we find you a time? {{booking_link}}',
+    variables: ['customer_name', 'days_since_visit', 'last_service', 'salon_name', 'usual_gap', 'booking_link'],
+    approvalStatus: 'DRAFT',
+  },
+  /**
+   * The same conversation a little later, when they are past their own gap.
+   *
+   * Warmer and shorter, and it names what they had rather than asking them to
+   * remember. Still no discount: this is the stage where a salon finds out
+   * whether the relationship holds without one, and the offer below is what
+   * happens when it does not.
+   */
+  {
+    name: 'rhythm_overdue',
+    channel: 'WHATSAPP',
+    category: 'MARKETING',
+    language: 'en',
+    bodyText:
+      'Hi {{customer_name}}, your {{last_service}} was {{days_since_visit}} days ago — a bit longer than you usually leave it. Everything all right?\n\nIf you would like the same again, or something different this time, we are here: {{booking_link}}\n\n— {{salon_name}}',
+    variables: ['customer_name', 'last_service', 'days_since_visit', 'salon_name', 'booking_link'],
+    approvalStatus: 'DRAFT',
+  },
   {
     name: 'winback_offer',
     channel: 'WHATSAPP',
@@ -526,6 +574,28 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     bodyText:
       'Dear {{customer_name}},\n\nHappy birthday from everyone at {{salon_name}}.\n\nCome and be looked after this month — book any time: {{booking_link}}\n\nWarm regards,\n{{salon_name}}',
     variables: ['customer_name', 'salon_name', 'booking_link'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    name: 'rhythm_due_soon',
+    channel: 'EMAIL',
+    category: 'MARKETING',
+    language: 'en',
+    headerText: 'Ready for your next {{last_service}}?',
+    bodyText:
+      'Dear {{customer_name}},\n\nIt has been {{days_since_visit}} days since your last {{last_service}} with us — and you are usually back {{usual_gap}}, so this felt like about the right moment to ask.\n\nBook whenever suits you: {{booking_link}}\n\nWarm regards,\n{{salon_name}}',
+    variables: ['customer_name', 'days_since_visit', 'last_service', 'usual_gap', 'booking_link', 'salon_name'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    name: 'rhythm_overdue',
+    channel: 'EMAIL',
+    category: 'MARKETING',
+    language: 'en',
+    headerText: 'It has been a while, {{customer_name}}',
+    bodyText:
+      'Dear {{customer_name}},\n\nYour last {{last_service}} with us was {{days_since_visit}} days ago — a little longer than you usually leave it, so we wanted to check in rather than let it slide.\n\nThe same again, or something new this time, whenever you are ready: {{booking_link}}\n\nWarm regards,\n{{salon_name}}',
+    variables: ['customer_name', 'last_service', 'days_since_visit', 'booking_link', 'salon_name'],
     approvalStatus: 'APPROVED',
   },
   {
@@ -863,6 +933,54 @@ export const DEFAULT_JOURNEYS: JourneyDefinition[] = [
     triggerConfig: {},
     isActive: true,
     steps: [{ actionType: 'SEND_MESSAGE', delayMinutes: 5, channel: 'WHATSAPP', templateName: 'feedback_apology' }],
+  },
+  /**
+   * THE TWO AUTOMATIONS THAT RUN ON THE CUSTOMER'S CLOCK.
+   *
+   * "Win back lapsed customers" below fires at a flat 60 days for everybody.
+   * These two fire when a customer passes a stage of their OWN cycle, which is
+   * three weeks for a fortnightly beard trim and five months for balayage. The
+   * machinery is in src/modules/customers/visit-due.ts; the reason it matters
+   * is in the opening comment of visit-rhythm.ts.
+   *
+   * Split into two rather than one journey with an offer ladder, because they
+   * are different conversations. The first is sent to somebody who has not yet
+   * noticed they are due and costs nothing. The second is sent to somebody who
+   * is drifting, and only that one eventually spends a discount.
+   */
+  {
+    name: 'Ready for your next visit',
+    description:
+      'Reaches each regular just before their own usual gap runs out — three weeks for some, five months for others. No discount: they were going to book anyway.',
+    trigger: 'VISIT_DUE',
+    /**
+     * minBasis 3 is not tuning, it is a correctness requirement. The template
+     * quotes the customer's own gap back to them, and a gap invented from a
+     * salon-wide default for somebody with two visits is a claim they can
+     * personally disprove.
+     */
+    triggerConfig: { stages: ['DUE_SOON'], minVisits: 4, minBasis: 3, maxPerRun: 50 },
+    isActive: false,
+    steps: [{ actionType: 'SEND_MESSAGE', delayMinutes: 0, channel: 'WHATSAPP', templateName: 'rhythm_due_soon' }],
+  },
+  {
+    name: 'Drifting away — on their own cycle',
+    description:
+      'For customers well past their own usual gap. Asks once, waits, and only then offers something.',
+    trigger: 'VISIT_DUE',
+    triggerConfig: { stages: ['AT_RISK'], minVisits: 2, minBasis: 0, maxPerRun: 50 },
+    isActive: false,
+    steps: [
+      { actionType: 'SEND_MESSAGE', delayMinutes: 0, channel: 'WHATSAPP', templateName: 'rhythm_overdue' },
+      { actionType: 'EXIT_IF_BOOKED', delayMinutes: 7 * DAY },
+      {
+        actionType: 'SEND_MESSAGE',
+        delayMinutes: 0,
+        channel: 'WHATSAPP',
+        templateName: 'winback_offer',
+        config: { offer: '20% off your next visit' },
+      },
+    ],
   },
   {
     name: 'Win back lapsed customers',

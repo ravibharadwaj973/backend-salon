@@ -2,6 +2,8 @@ import { prisma } from '../../core/prisma';
 import { runUnscoped } from '../../core/context';
 import { logger } from '../../core/logger';
 import { DEFAULT_INTERVAL_DAYS, stageFor } from './visit-rhythm';
+import { dispatchVisitDue } from './visit-due.dispatch';
+import type { StageCrossing } from './visit-due';
 
 /**
  * A customer's stage changes because time passed, not because anything
@@ -38,12 +40,26 @@ const PAGE = 1000;
  */
 const BACKFILL_PER_RUN = 500;
 
+/**
+ * How many of tonight's crossings are kept in memory to be offered to the
+ * journeys.
+ *
+ * The sweep pages through the whole book, so on a first run "changed" can be
+ * every customer there is. The journeys only ever act on a capped handful, and
+ * they want the most overdue of them — which needs the list sorted, which needs
+ * it held. Bounded so a 50,000-customer book cannot turn one nightly job into a
+ * memory problem; anything past the bound waits for tomorrow's sweep, which is
+ * exactly what the cap does to it anyway.
+ */
+const MAX_CROSSINGS_HELD = 5_000;
+
 export async function sweepLifecycleStages(
   now: Date = new Date(),
-): Promise<{ scanned: number; changed: number; filled: number }> {
+): Promise<{ scanned: number; changed: number; filled: number; triggered: number }> {
   let cursor: string | undefined;
   let scanned = 0;
   let changed = 0;
+  const crossings: StageCrossing[] = [];
 
   for (;;) {
     const rows = await runUnscoped(() =>
@@ -51,9 +67,11 @@ export async function sweepLifecycleStages(
         where: { isActive: true },
         select: {
           id: true,
+          tenantId: true,
           totalVisits: true,
           lastVisitAt: true,
           visitIntervalDays: true,
+          visitIntervalBasis: true,
           lifecycleStage: true,
         },
         orderBy: { id: 'asc' },
@@ -76,6 +94,27 @@ export async function sweepLifecycleStages(
       const stage = stageFor({ visits: row.totalVisits, daysSince, ratio });
       if (stage === row.lifecycleStage) continue;
 
+      /**
+       * The crossing, recorded before the write.
+       *
+       * This is the moment the whole VISIT_DUE trigger hangs off: a customer
+       * passing their own due date is not an event anything else can observe,
+       * because nothing happens. Nobody books, nobody is billed, no webhook
+       * fires. Time simply passes, and this sweep is the only thing that
+       * notices.
+       */
+      if (crossings.length < MAX_CROSSINGS_HELD) {
+        crossings.push({
+          customerId: row.id,
+          tenantId: row.tenantId,
+          from: row.lifecycleStage,
+          to: stage,
+          daysSince,
+          totalVisits: row.totalVisits,
+          basedOnIntervals: row.visitIntervalBasis,
+        });
+      }
+
       // Only the rows that actually moved are written, so a quiet night is a
       // handful of updates rather than a rewrite of the whole book.
       await runUnscoped(() =>
@@ -89,8 +128,12 @@ export async function sweepLifecycleStages(
 
   const filled = await backfillMissingRhythms();
 
-  logger.info({ scanned, changed, filled }, 'lifecycle stages swept');
-  return { scanned, changed, filled };
+  // After the stages are written, not during: a journey that reads the
+  // customer's stage as part of its audience rules must see the new one.
+  const { triggered, heldBack } = await dispatchVisitDue(crossings);
+
+  logger.info({ scanned, changed, filled, triggered, heldBack }, 'lifecycle stages swept');
+  return { scanned, changed, filled, triggered };
 }
 
 /**

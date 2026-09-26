@@ -287,6 +287,7 @@ export async function advanceRun(runId: string) {
             extra: {
               ...((runContext.extra as Record<string, string>) ?? {}),
               ...(config as Record<string, string>),
+              ...offerExpiry(config),
             },
           });
 
@@ -473,4 +474,30 @@ export async function cancelRun(id: string) {
     where: { id },
     data: { status: 'CANCELLED', nextRunAt: null, completedAt: new Date() },
   });
+}
+
+/**
+ * THE DATE THE OFFER RUNS OUT.
+ *
+ * Every offer template in this app says "valid until {{offer_expiry}}" and
+ * nothing has ever set it. The missing-variable gate therefore logged each one
+ * SKIPPED, which means the win-back journey's whole point — the step where it
+ * finally offers something — has never sent a single message. The salon saw a
+ * journey switched on, a run count going up, and no complaints.
+ *
+ * Derived from the step rather than from a constant, because an expiry is a
+ * promise the salon has to honour at the desk: it belongs next to the offer
+ * wording, set by whoever wrote it, not buried in the send path.
+ *
+ * A step that names an offer and no window gets a fortnight, which is long
+ * enough to be usable and short enough to be a reason to come in. Saying
+ * nothing is not an option here: the alternative is the message not being sent
+ * at all, and silently, which is the fault being fixed.
+ */
+function offerExpiry(config: Record<string, unknown>): Record<string, string> {
+  if (!config.offer && !config.offer_text) return {};
+  if (typeof config.offer_expiry === 'string' && config.offer_expiry) return {};
+
+  const days = typeof config.offerValidDays === 'number' && config.offerValidDays > 0 ? config.offerValidDays : 14;
+  return { offer_expiry: dayjs().add(days, 'day').format('DD MMM YYYY') };
 }

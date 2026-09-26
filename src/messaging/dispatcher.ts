@@ -1,5 +1,6 @@
 import type { Channel, ConsentStatus, MessagePurpose, MessageTemplate, Prisma } from '@prisma/client';
 import { prisma } from '../core/prisma';
+import { describeGap } from '../modules/customers/visit-due';
 import { runUnscoped } from '../core/context';
 import { logger } from '../core/logger';
 import { classify, recordReachability, suppressionFor } from './reachability';
@@ -155,7 +156,16 @@ export async function buildVariables(input: {
   if (input.customerId) {
     const customer = await prisma.customer.findUnique({
       where: { id: input.customerId },
-      select: { firstName: true, lastName: true, loyaltyPoints: true, lastVisitAt: true, totalVisits: true, phone: true },
+      select: {
+        firstName: true,
+        lastName: true,
+        loyaltyPoints: true,
+        lastVisitAt: true,
+        totalVisits: true,
+        phone: true,
+        visitIntervalDays: true,
+        visitIntervalBasis: true,
+      },
     });
     if (customer) {
       vars.customer_name = customer.firstName;
@@ -166,6 +176,53 @@ export async function buildVariables(input: {
         vars.last_visit_date = dateKey(customer.lastVisitAt);
         vars.days_since_visit = String(dayjs().diff(dayjs(customer.lastVisitAt), 'day'));
       }
+
+      /**
+       * WHAT THEY LAST HAD DONE.
+       *
+       * last_service has been in the shipped rebooking and win-back templates
+       * since the beginning and nothing ever set it. It was only ever filled
+       * from an APPOINTMENT, and a win-back has no appointment — it is sent
+       * precisely because there has not been one. So every message those
+       * journeys produced hit the missing-variable gate and was logged SKIPPED,
+       * and the salon's entire win-back automation has been sending nothing at
+       * all while reporting itself healthy.
+       *
+       * It comes off the last billed service rather than the last booking,
+       * because what somebody paid for is what they had; a booking can be
+       * changed at the chair and often is.
+       */
+      const lastService = await prisma.invoiceItem.findFirst({
+        where: { invoice: { customerId: input.customerId, status: { not: 'VOID' } }, itemType: 'SERVICE' },
+        orderBy: { invoice: { invoiceDate: 'desc' } },
+        select: { name: true },
+      });
+
+      /**
+       * The fallback is a noun that reads correctly in the same sentence.
+       *
+       * Every one of these templates says "your last {{last_service}}", so the
+       * fallback has to survive that slot: "your last visit" is true of
+       * everybody who has ever been billed, and an empty string would take the
+       * message back to being silently skipped — trading a visible fault for
+       * an invisible one.
+       */
+      vars.last_service = lastService?.name ?? 'visit';
+
+      /**
+       * Their own cycle, in their own words, and ONLY when it is earned.
+       *
+       * Left unset below three intervals on purpose. Unset means a template
+       * using it will not send, which is the correct outcome: the alternative
+       * is telling a customer with two visits "you're usually back about every
+       * six weeks" on the strength of a salon-wide default they have never
+       * matched. A journey that uses this variable sets minBasis so only
+       * customers with a real rhythm ever enter it.
+       */
+      if (customer.visitIntervalDays && customer.visitIntervalBasis >= 3) {
+        vars.usual_gap = describeGap(customer.visitIntervalDays);
+        vars.usual_gap_days = String(customer.visitIntervalDays);
+      }
     }
   }
 
@@ -174,9 +231,47 @@ export async function buildVariables(input: {
     if (lead) vars.lead_name = lead.name;
   }
 
-  if (input.appointmentId) {
+  /**
+   * THE VISIT THESE LINKS ARE ABOUT.
+   *
+   * feedback_link and google_review_link both name a specific appointment, and
+   * for a long time the only way to get one was for the caller to pass it. Two
+   * of the most valuable automations in the app do not have one to pass:
+   *
+   *   - "New customer onboarding" asks for a review a week after a FIRST_VISIT,
+   *     which is triggered off the INVOICE.
+   *   - "Happy customer to Google" fires on FEEDBACK_POSITIVE, which is
+   *     triggered off the feedback row.
+   *
+   * Both templates asked for a link the context could not produce, so both were
+   * logged SKIPPED on every run. The salon's review pipeline — the thing that
+   * decides whether anybody new ever finds them — has been sending nothing.
+   *
+   * So the visit is recovered rather than demanded: from the invoice if the
+   * context has one, and failing that from the customer's own most recent
+   * completed appointment, which is the visit any of these messages is about
+   * anyway. Only looked up when there is a customer and nothing better, so the
+   * paths that already pass an appointment are untouched.
+   */
+  const appointmentId =
+    input.appointmentId ??
+    (input.invoiceId
+      ? ((await prisma.invoice.findUnique({ where: { id: input.invoiceId }, select: { appointmentId: true } }))
+          ?.appointmentId ?? null)
+      : null) ??
+    (input.customerId
+      ? ((
+          await prisma.appointment.findFirst({
+            where: { customerId: input.customerId, status: 'COMPLETED' },
+            orderBy: { startAt: 'desc' },
+            select: { id: true },
+          })
+        )?.id ?? null)
+      : null);
+
+  if (appointmentId) {
     const appointment = await prisma.appointment.findUnique({
-      where: { id: input.appointmentId },
+      where: { id: appointmentId },
       include: {
         branch: { select: { name: true, addressLine: true, city: true, timezone: true } },
         services: { include: { service: { select: { name: true } }, staff: { select: { displayName: true } } } },

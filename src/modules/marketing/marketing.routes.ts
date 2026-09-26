@@ -428,6 +428,7 @@ journeyRouter.post(
         'FIRST_VISIT',
         'INVOICE_PAID',
         'NO_VISIT_DAYS',
+        'VISIT_DUE',
         'MEMBERSHIP_EXPIRING',
         'PACKAGE_EXPIRING',
         'BIRTHDAY',

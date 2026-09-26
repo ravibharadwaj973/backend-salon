@@ -218,6 +218,11 @@ export const TRIGGER_LABELS: Record<string, { label: string; timingLabel: string
     timingLabel: 'Days since last visit',
     help: '90 days is the usual point. Shorter for a barber, longer for colour.',
   },
+  VISIT_DUE: {
+    label: 'When a customer is due on their own cycle',
+    timingLabel: null,
+    help: 'Works out each customer\u2019s own gap between visits and fires when they pass it \u2014 three weeks for a regular cut, five months for colour. No day count to set.',
+  },
   MEMBERSHIP_EXPIRING: {
     label: 'Before a membership expires',
     timingLabel: 'Days before',

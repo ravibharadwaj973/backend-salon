@@ -348,6 +348,8 @@ export const KNOWN_VARIABLES = [
   'staff_name',
   'services',
   'last_service',
+  'usual_gap',
+  'usual_gap_days',
   'last_visit_date',
   'days_since_visit',
   'total_visits',
