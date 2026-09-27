@@ -600,6 +600,63 @@ export async function queueMessage(input: QueueMessageInput) {
     });
   }
 
+  /**
+   * A WHATSAPP TEMPLATE META HAS NEVER APPROVED CANNOT BE SENT AS A TEMPLATE.
+   *
+   * `providerTemplateName` is null until the template exists and is approved on
+   * Meta's side. The provider's payload is chosen by that one field: with it,
+   * the send is a template; without it, the send is a plain text message.
+   *
+   * That fallback is not harmless, and it is what this gate exists to stop.
+   * WhatsApp only lets a business open a conversation with an APPROVED
+   * TEMPLATE. Free-form text is allowed only inside the 24 hours after the
+   * customer last wrote to the salon — and a customer who just paid at the
+   * counter has usually never messaged them at all. So the message left, Meta
+   * refused it with error 131047, and the salon read the refusal under Meta's
+   * own name for it: "Re-engagement message". Nothing in those two words says
+   * the template was never submitted, which is the actual problem, so the owner
+   * has no way to act on it.
+   *
+   * Failing here instead is better on every count: it costs no allowance (this
+   * sits above the meter), it says exactly what is wrong and who can fix it,
+   * and it is filed as SKIPPED — something the salon never sent — rather than
+   * FAILED, which claims a delivery was attempted and lost.
+   *
+   * Only when a template was ASKED for. A genuinely free-form send — a staff
+   * member replying inside an open conversation — has no template row and is
+   * left alone, because there the plain text payload is the correct one.
+   */
+  if (input.channel === 'WHATSAPP' && template && !template.providerTemplateName) {
+    logger.warn(
+      { templateId: template.id, template: template.name, approvalStatus: template.approvalStatus },
+      'message not sent: whatsapp template is not live with Meta',
+    );
+    return prisma.messageLog.create({
+      data: {
+        tenantId: input.tenantId,
+        branchId: input.branchId ?? null,
+        channel: input.channel,
+        purpose,
+        category: template.category,
+        customerId: input.customerId ?? null,
+        leadId: input.leadId ?? null,
+        campaignId: input.campaignId ?? null,
+        journeyRunId: input.journeyRunId ?? null,
+        templateId: template.id,
+        toAddress,
+        renderedBody: body,
+        payload: variables as Prisma.InputJsonValue,
+        status: 'SKIPPED',
+        errorCode: 'TEMPLATE_NOT_LIVE',
+        errorMessage:
+          `Not sent: the WhatsApp template “${template.name}” has not been approved by Meta yet` +
+          `${template.approvalStatus ? ` (it is ${String(template.approvalStatus).toLowerCase()})` : ''}. ` +
+          'WhatsApp only lets a business start a conversation with an approved template, so there was nothing ' +
+          'valid to send. Submit it under Templates and send this again once Meta approves it.',
+      },
+    });
+  }
+
   // Metering sits beside the consent gate, in the one place every send passes
   // through, so no campaign, journey or job can spend an allowance it does not
   // have. The charge happens before the message is queued — a queued message is

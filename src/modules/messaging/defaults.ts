@@ -420,8 +420,19 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     channel: 'WHATSAPP',
     category: 'UTILITY',
     language: 'en',
+    /**
+     * Deliberately neutral, and it has to stay that way.
+     *
+     * The old wording opened "So glad you enjoyed it!", which only made sense
+     * when the message went to 4s and 5s alone. Now that it goes to everyone,
+     * that line would be putting words in the mouth of somebody who had a bad
+     * visit — and steering the content of a review is itself against Google's
+     * policy, alongside asking for a stylist to be named or offering anything
+     * in return. "Honest" is doing real work in this sentence: it asks for a
+     * review without asking for a good one.
+     */
     bodyText:
-      'So glad you enjoyed it, {{customer_name}}! If you have a moment, a review on Google helps {{salon_name}} more than you know: {{google_review_link}} — thank you.',
+      'Thanks for telling us how it went, {{customer_name}}. If you have a moment, an honest review on Google helps other people find {{salon_name}}: {{google_review_link}} — thank you.',
     variables: ['customer_name', 'salon_name', 'google_review_link'],
     approvalStatus: 'DRAFT',
   },
@@ -958,16 +969,33 @@ export const DEFAULT_JOURNEYS: JourneyDefinition[] = [
     ],
   },
   {
-    name: 'Happy customer to Google',
-    description: 'After a 4- or 5-star rating, ask for a public review.',
-    trigger: 'FEEDBACK_POSITIVE',
+    name: 'Ask for a Google review',
+    description: 'After any rating, ask for an honest public review. Never only the happy ones.',
+    /**
+     * REVIEW_REQUEST, which fires for every submitted rating — not
+     * FEEDBACK_POSITIVE, which fires only for 4s and 5s.
+     *
+     * Sending this only to happy customers is review gating, which Google
+     * prohibits outright. The trigger is the whole compliance story: reword the
+     * message all you like, if it goes out on FEEDBACK_POSITIVE the salon is
+     * selectively soliciting positive reviews.
+     */
+    trigger: 'REVIEW_REQUEST',
     triggerConfig: {},
     isActive: true,
-    steps: [{ actionType: 'SEND_MESSAGE', delayMinutes: 10, channel: 'WHATSAPP', templateName: 'google_review_request' }],
+    /**
+     * Forty-five minutes, where the happy-only version waited ten.
+     *
+     * The apology journey sends at five minutes. Asking somebody for a public
+     * review five minutes after apologising to them reads as though nobody
+     * read what they wrote. Forty-five is still the same afternoon, still
+     * while the visit is fresh, and clearly a separate message.
+     */
+    steps: [{ actionType: 'SEND_MESSAGE', delayMinutes: 45, channel: 'WHATSAPP', templateName: 'google_review_request' }],
   },
   {
     name: 'Unhappy customer recovery',
-    description: 'After a 1- to 3-star rating, apologise and alert the manager. Never sends them to Google.',
+    description: 'After a 1- to 3-star rating, apologise and alert the manager.',
     trigger: 'FEEDBACK_NEGATIVE',
     triggerConfig: {},
     isActive: true,

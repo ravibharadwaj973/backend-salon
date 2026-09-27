@@ -23,9 +23,29 @@ export interface FeedbackInput {
 }
 
 /**
- * Records a rating. 4–5 stars are invited to leave a public Google review;
- * 1–3 stars are routed to the owner as a complaint instead — the split that
- * keeps bad experiences off the public page and in front of a human.
+ * Records a rating, and offers EVERY customer the Google link.
+ *
+ * ── Why this no longer depends on the rating ──────────────────────────────
+ *
+ * It used to: 4–5 stars were handed the Google link, 1–3 stars were not. That
+ * is called review gating, and Google prohibits it in as many words — a
+ * merchant must not "discourage or prohibit negative reviews, or selectively
+ * solicit positive reviews from customers". In April 2026 they named the
+ * practice directly and put automated detection behind it.
+ *
+ * The penalty is not a warning. It is reviews stripped and the profile
+ * restricted, which destroys the asset the whole feature exists to grow. A
+ * salon with a 4.9 built by gating has a 4.9 that can be deleted.
+ *
+ * ── What did NOT change ───────────────────────────────────────────────────
+ *
+ * The low-rating alert, the complaint flag, and the apology journey all still
+ * fire. Catching a bad visit early and putting a person on it is legitimate
+ * and is most of what this form is for. The only thing that stopped is
+ * withholding the public link from the people most likely to use it.
+ *
+ * Asking everyone honestly also reads as real. A page of nothing but five
+ * stars is something customers have learned to distrust.
  */
 export async function submitFeedback(input: FeedbackInput, tenantIdOverride?: string) {
   const tenantId = tenantIdOverride ?? requireTenantId();
@@ -74,7 +94,10 @@ export async function submitFeedback(input: FeedbackInput, tenantIdOverride?: st
         npsScore: input.npsScore ?? null,
         comment: input.comment ?? null,
         isComplaint,
-        googleReviewRequested: !isComplaint,
+        // Everyone is asked now, so this is true for everyone. It stays as a
+        // column rather than becoming a constant because it is the honest
+        // record of what the salon did, and a future policy may narrow it.
+        googleReviewRequested: true,
       },
     }),
   );
@@ -131,10 +154,16 @@ export async function submitFeedback(input: FeedbackInput, tenantIdOverride?: st
 
   return {
     feedback,
+    /**
+     * What the page says next — NOT who gets the link.
+     *
+     * A complaint still gets an apology and the promise of a person, because
+     * that is the right thing to say to someone who had a bad afternoon. It
+     * just no longer decides whether they are allowed to review the salon.
+     */
     nextStep: isComplaint ? ('APOLOGY' as const) : ('GOOGLE_REVIEW' as const),
-    // Only a happy customer is ever handed the Google link. Sending an unhappy
-    // one there is how a salon buys itself a public one-star review.
-    googleReviewUrl: isComplaint ? null : await googleReviewUrlFor(tenantId, branchId),
+    /** Offered whatever they rated. See the note on this function. */
+    googleReviewUrl: await googleReviewUrlFor(tenantId, branchId),
   };
 }
 
