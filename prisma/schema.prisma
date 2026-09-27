@@ -2746,6 +2746,23 @@ model GalleryPhoto {
   /// the KIND of work and a salon's service list is finer than that — nobody
   /// wants a category per price point.
   collection String
+
+  /// THE SERVICE THIS IS WORK FOR, when it is one.
+  ///
+  /// Optional and additional to `collection`, not a replacement for it. The
+  /// collection answers the customer's question ("show me colour"); this answers
+  /// the one they ask next, standing in front of the picture: what is that, and
+  /// what does it cost.
+  ///
+  /// Which is the whole point of linking it. A gallery that only shows pictures
+  /// leaves somebody to guess the price and go and look for it, and most of them
+  /// do not bother. A picture with "Balayage · from ₹2,500 · Book this" under it
+  /// is the shortest path from wanting something to having an appointment.
+  ///
+  /// Nullable because the studio photographs — the room, the tools, the
+  /// shopfront — are not work for anything, and forcing a service onto them
+  /// would mean inventing one.
+  serviceId  String?
   /// Cloudinary's id for the file. The only thing here the website needs.
   publicId  String   @unique
   format    String
@@ -2766,6 +2783,7 @@ model GalleryPhoto {
   createdAt DateTime @default(now())
 
   @@index([tenantId, collection, sortOrder])
+  @@index([serviceId])
   @@map("gallery_photos")
 }
 

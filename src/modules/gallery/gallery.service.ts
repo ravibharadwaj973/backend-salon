@@ -49,14 +49,28 @@ export function tagsFor(tenantSlug: string, collection: string): string[] {
 export async function listPhotos(input: { collection?: string; includeHidden?: boolean } = {}) {
   const tenantId = requireTenantId();
 
-  const photos = await prisma.galleryPhoto.findMany({
-    where: {
-      tenantId,
-      ...(input.collection ? { collection: input.collection } : {}),
-      ...(input.includeHidden ? {} : { isVisible: true }),
-    },
-    orderBy: [{ collection: 'asc' }, { sortOrder: 'asc' }, { createdAt: 'desc' }],
-  });
+  const [photos, services] = await Promise.all([
+    prisma.galleryPhoto.findMany({
+      where: {
+        tenantId,
+        ...(input.collection ? { collection: input.collection } : {}),
+        ...(input.includeHidden ? {} : { isVisible: true }),
+      },
+      orderBy: [{ collection: 'asc' }, { sortOrder: 'asc' }, { createdAt: 'desc' }],
+    }),
+    /**
+     * The bookable menu, for the upload screen's service picker.
+     *
+     * onlineBookable only: offering to tag a photograph with a service a
+     * customer cannot book online would put a "Book this" button on the website
+     * that leads nowhere.
+     */
+    prisma.service.findMany({
+      where: { tenantId, isActive: true, onlineBookable: true },
+      orderBy: [{ category: { sortOrder: 'asc' } }, { name: 'asc' }],
+      select: { id: true, name: true, price: true, category: { select: { id: true, name: true } } },
+    }),
+  ]);
 
   return {
     /**
@@ -67,6 +81,12 @@ export async function listPhotos(input: { collection?: string; includeHidden?: b
     ready: cloudinaryReady,
     cloudName: env.CLOUDINARY_CLOUD_NAME || null,
     collections: COLLECTIONS,
+    services: services.map((service) => ({
+      id: service.id,
+      name: service.name,
+      price: service.price,
+      categoryName: service.category?.name ?? null,
+    })),
     photos,
   };
 }
@@ -76,6 +96,8 @@ export interface AddPhotoInput {
   dataUrl: string;
   alt: string;
   caption?: string;
+  /** The service this is work for, when it is one. */
+  serviceId?: string;
 }
 
 export async function addPhoto(input: AddPhotoInput, userId: string | null) {
@@ -95,6 +117,19 @@ export async function addPhoto(input: AddPhotoInput, userId: string | null) {
    * salon's fault to every customer who sees it. A failed upload throws before
    * anything is written.
    */
+  /**
+   * The service is checked against THIS salon before the upload, not after.
+   *
+   * An id that is not theirs would otherwise put another salon's service name
+   * and price under their photograph on their own website. Refusing before the
+   * file goes to Cloudinary also means a rejected upload leaves nothing behind
+   * to clean up.
+   */
+  if (input.serviceId) {
+    const owns = await prisma.service.count({ where: { id: input.serviceId, tenantId } });
+    if (!owns) throw NotFound('Service');
+  }
+
   const uploaded = await uploadImage({
     dataUrl: input.dataUrl,
     folder: tenant.slug,
@@ -126,6 +161,7 @@ export async function addPhoto(input: AddPhotoInput, userId: string | null) {
       bytes: uploaded.bytes,
       alt: input.alt.trim().slice(0, 300),
       caption: input.caption?.trim().slice(0, 300) || null,
+      serviceId: input.serviceId ?? null,
       sortOrder: (lowest._min.sortOrder ?? 0) - 1,
       uploadedById: userId,
     },
@@ -134,7 +170,14 @@ export async function addPhoto(input: AddPhotoInput, userId: string | null) {
 
 export async function updatePhoto(
   id: string,
-  data: { alt?: string; caption?: string | null; isVisible?: boolean; collection?: CollectionKey; sortOrder?: number },
+  data: {
+    alt?: string;
+    caption?: string | null;
+    isVisible?: boolean;
+    collection?: CollectionKey;
+    sortOrder?: number;
+    serviceId?: string | null;
+  },
 ) {
   const tenantId = requireTenantId();
   const photo = await prisma.galleryPhoto.findFirst({ where: { id, tenantId } });
@@ -148,6 +191,7 @@ export async function updatePhoto(
       ...(data.isVisible !== undefined ? { isVisible: data.isVisible } : {}),
       ...(data.collection !== undefined ? { collection: data.collection } : {}),
       ...(data.sortOrder !== undefined ? { sortOrder: data.sortOrder } : {}),
+      ...(data.serviceId !== undefined ? { serviceId: data.serviceId } : {}),
     },
   });
 }
@@ -199,13 +243,72 @@ export async function publicGallery(tenantId: string) {
         caption: true,
         width: true,
         height: true,
+        serviceId: true,
       },
     }),
   );
 
+  /**
+   * THE PRICE BESIDE THE PICTURE.
+   *
+   * Read live from the catalogue rather than copied onto the photograph when it
+   * was uploaded. A price that was snapshotted six months ago is a price the
+   * salon has since changed, quoted to a customer on their own website, and the
+   * first they hear of it is somebody arriving expecting to pay it.
+   *
+   * One query for the services actually referenced, not a join per photo.
+   */
+  const serviceIds = [...new Set(photos.map((photo) => photo.serviceId).filter((id): id is string => Boolean(id)))];
+
+  const services = serviceIds.length
+    ? await runUnscoped(() =>
+        prisma.service.findMany({
+          where: { id: { in: serviceIds }, tenantId, isActive: true, onlineBookable: true },
+          select: {
+            id: true,
+            name: true,
+            price: true,
+            durationMin: true,
+            category: { select: { id: true, name: true } },
+          },
+        }),
+      )
+    : [];
+
+  const byId = new Map(services.map((service) => [service.id, service]));
+
   return {
     cloudName: env.CLOUDINARY_CLOUD_NAME || null,
     collections: COLLECTIONS,
-    photos,
+    photos: photos.map((photo) => {
+      const service = photo.serviceId ? byId.get(photo.serviceId) : undefined;
+
+      return {
+        publicId: photo.publicId,
+        collection: photo.collection,
+        alt: photo.alt,
+        caption: photo.caption,
+        width: photo.width,
+        height: photo.height,
+        /**
+         * Absent rather than half-filled when the service has been deleted,
+         * deactivated or taken off online booking.
+         *
+         * The photograph stays — the work was really done, and deleting a
+         * salon's portfolio because they retired a service would be absurd. But
+         * a name and a price with no bookable service behind them is a "Book
+         * this" button that leads nowhere, which is worse than no button.
+         */
+        service: service
+          ? {
+              id: service.id,
+              name: service.name,
+              price: service.price,
+              durationMin: service.durationMin,
+              categoryName: service.category?.name ?? null,
+            }
+          : null,
+      };
+    }),
   };
 }

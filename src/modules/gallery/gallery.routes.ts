@@ -6,7 +6,7 @@ import { authenticate } from '../../middleware/auth';
 import { requirePermission } from '../../middleware/rbac';
 import { PERMISSIONS } from '../../core/permissions';
 import { audit } from '../../middleware/audit';
-import { idParam } from '../../core/validators';
+import { idParam, idSchema } from '../../core/validators';
 import * as service from './gallery.service';
 
 const router = Router();
@@ -57,6 +57,8 @@ router.post(
        */
       alt: z.string().trim().min(3).max(300),
       caption: z.string().trim().max(300).optional(),
+      /** Optional: the service this is work for, so the site can price it. */
+      serviceId: idSchema.optional(),
     }),
   }),
   asyncHandler(async (req, res) => {
@@ -78,6 +80,8 @@ router.patch(
       isVisible: z.boolean().optional(),
       collection: collectionSchema.optional(),
       sortOrder: z.coerce.number().int().min(-100_000).max(100_000).optional(),
+      // null clears the link, for a photograph tagged with the wrong service.
+      serviceId: idSchema.nullable().optional(),
     }),
   }),
   asyncHandler(async (req, res) => ok(res, await service.updatePhoto(req.params.id!, req.body as never))),
