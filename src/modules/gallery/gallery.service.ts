@@ -320,14 +320,23 @@ export async function publicGallery(tenantId: string) {
   );
 
   /**
-   * THE PRICE BESIDE THE PICTURE.
+   * WHAT THE PHOTOGRAPH IS OF — THE NAME, AND DELIBERATELY NOT THE PRICE.
    *
-   * Read live from the catalogue rather than copied onto the photograph when it
-   * was uploaded. A price that was snapshotted six months ago is a price the
-   * salon has since changed, quoted to a customer on their own website, and the
-   * first they hear of it is somebody arriving expecting to pay it.
+   * The gallery names the work and offers to book it. It does not quote for it.
    *
-   * One query for the services actually referenced, not a join per photo.
+   * A price on a photograph is a price for one service on one head, and the work
+   * in the picture almost never costs what the line item says: length, condition
+   * and how long it took all move it. "Balayage from ₹6,000" under a photograph
+   * of six hours on very long hair sets up a conversation at the counter that
+   * starts with the customer feeling misled — and a gallery's job is to make
+   * somebody want to come in, not to pre-negotiate.
+   *
+   * So the price is not returned at all, rather than returned and left unused.
+   * A field in a response that nothing renders is a field somebody renders by
+   * accident later, and the booking flow asks for prices on its own where a
+   * total is actually being quoted.
+   *
+   * One query for the services referenced, not a join per photo.
    */
   const serviceIds = [...new Set(photos.map((photo) => photo.serviceId).filter((id): id is string => Boolean(id)))];
 
@@ -335,13 +344,7 @@ export async function publicGallery(tenantId: string) {
     ? await runUnscoped(() =>
         prisma.service.findMany({
           where: { id: { in: serviceIds }, tenantId, isActive: true, onlineBookable: true },
-          select: {
-            id: true,
-            name: true,
-            price: true,
-            durationMin: true,
-            category: { select: { id: true, name: true } },
-          },
+          select: { id: true, name: true },
         }),
       )
     : [];
@@ -370,15 +373,7 @@ export async function publicGallery(tenantId: string) {
          * a name and a price with no bookable service behind them is a "Book
          * this" button that leads nowhere, which is worse than no button.
          */
-        service: service
-          ? {
-              id: service.id,
-              name: service.name,
-              price: service.price,
-              durationMin: service.durationMin,
-              categoryName: service.category?.name ?? null,
-            }
-          : null,
+        service: service ? { id: service.id, name: service.name } : null,
       };
     }),
   };
