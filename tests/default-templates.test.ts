@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_TEMPLATES } from '../src/modules/messaging/defaults';
+import { templateProblems } from '../src/messaging/whatsapp-template-format';
 
 /**
  * The starter templates every new salon is seeded with.
@@ -77,5 +78,34 @@ describe('the starter templates', () => {
     for (const t of promotional) {
       expect(t.category, `${t.name} (${t.channel})`).toBe('MARKETING');
     }
+  });
+
+  /**
+   * EVERY WHATSAPP STARTER MUST BE ONE META WOULD ACCEPT.
+   *
+   * Five of them were not. They ended on a variable followed by a full stop —
+   * "...your balance is now {{points_balance}}." — which reads as a finished
+   * sentence and which Meta refuses as a dangling parameter, because it wants
+   * the placeholder explained by words rather than punctuation. invoice_sent
+   * was one of them, so no salon seeded from these could ever get an invoice
+   * template approved, and the failure arrived as a rejection at submission
+   * time rather than as anything visible here.
+   *
+   * This is the cheap guard: a template nobody can submit is not a starter
+   * template, and that is decided at build time rather than by Meta.
+   */
+  it('ships no WhatsApp template that Meta would refuse', () => {
+    const broken = DEFAULT_TEMPLATES.filter((t) => t.channel === 'WHATSAPP').flatMap((t) => {
+      const problems = templateProblems({
+        name: t.name,
+        bodyText: t.bodyText,
+        headerText: t.headerText ?? null,
+        footerText: t.footerText ?? null,
+        buttons: t.buttons ?? null,
+      });
+      return problems.length > 0 ? [`${t.name}: ${problems.join('; ')}`] : [];
+    });
+
+    expect(broken).toEqual([]);
   });
 });

@@ -223,11 +223,41 @@ export function templateProblems(input: {
   if ((input.headerText ?? '').length > MAX_HEADER) problems.push(`The header is longer than ${MAX_HEADER} characters.`);
   if ((input.footerText ?? '').length > MAX_FOOTER) problems.push(`The footer is longer than ${MAX_FOOTER} characters.`);
 
-  if (/^\s*\{\{/.test(body)) {
+  /**
+   * A "dangling parameter": punctuation does not count as text.
+   *
+   * These two used to allow anything at all after the last variable, so a body
+   * closing on "{{salon_name}}." passed here and was refused by Meta with
+   * "Variables can't be at the start or end of the template" — an error whose
+   * wording sends you looking at a template that plainly ends in a full stop.
+   *
+   * Meta wants the variable EXPLAINED by surrounding words, and a lone comma or
+   * period explains nothing. So the test now steps over trailing punctuation
+   * and whitespace before deciding whether a placeholder is the last thing in
+   * the message, and likewise for the first.
+   */
+  const DANGLING_START = /^[\s\p{P}\p{S}]*\{\{/u;
+  const DANGLING_END = /\}\}[\s\p{P}\p{S}]*$/u;
+
+  if (DANGLING_START.test(body)) {
     problems.push('The message starts with a variable. Meta rejects that — put a word before it, such as "Hi {{customer_name}}".');
   }
-  if (/\}\}\s*$/.test(body)) {
-    problems.push('The message ends with a variable. Meta rejects that — add a closing line after it.');
+  if (DANGLING_END.test(body)) {
+    problems.push(
+      'The message ends with a variable, and Meta does not count a full stop as text after it. ' +
+        'Add a few closing words, such as "See you soon." on the end.',
+    );
+  }
+  /**
+   * The same rule, on the header.
+   *
+   * Meta applies it per component, and a header is very often nothing but a
+   * variable — which is the purest form of the thing it refuses. Checking only
+   * the body meant the app passed a submission Meta would always reject.
+   */
+  const header = (input.headerText ?? '').trim();
+  if (header && (DANGLING_START.test(header) || DANGLING_END.test(header))) {
+    problems.push('The header begins or ends with a variable, which Meta rejects. Put a word around it.');
   }
   if (/\}\}\s*\{\{/.test(body)) {
     problems.push('Two variables sit next to each other with nothing between them, which Meta rejects. Put a word or punctuation between them.');

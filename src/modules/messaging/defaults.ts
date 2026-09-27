@@ -69,7 +69,7 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     category: 'UTILITY',
     language: 'en',
     bodyText:
-      'Hi {{customer_name}}, your appointment at {{salon_name}} is in about 2 hours ({{appointment_time}}). We are at {{branch_address}}.',
+      'Hi {{customer_name}}, your appointment at {{salon_name}} is in about 2 hours ({{appointment_time}}). We are at {{branch_address}} — see you shortly.',
     variables: ['customer_name', 'salon_name', 'appointment_time', 'branch_address'],
     approvalStatus: 'DRAFT',
   },
@@ -142,7 +142,7 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     category: 'UTILITY',
     language: 'en',
     bodyText:
-      'Thank you for visiting {{salon_name}}, {{customer_name}}. Invoice {{invoice_number}} for {{amount}} is ready: {{invoice_link}}. You earned points today — your balance is now {{points_balance}}.',
+      'Thank you for visiting {{salon_name}}, {{customer_name}}. Invoice {{invoice_number}} for {{amount}} is ready: {{invoice_link}}. You earned points today: your balance is now {{points_balance}} points. Thank you for coming in.',
     variables: ['salon_name', 'customer_name', 'invoice_number', 'amount', 'invoice_link', 'points_balance'],
     approvalStatus: 'DRAFT',
   },
@@ -195,7 +195,7 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     category: 'UTILITY',
     language: 'en',
     bodyText:
-      'Hi {{customer_name}}, your {{package_name}} at {{salon_name}} is ready to use. Sessions credited: {{sessions_left}}, valid until {{expiry_date}}.',
+      'Hi {{customer_name}}, your {{package_name}} at {{salon_name}} is ready to use. Sessions credited: {{sessions_left}}, valid until {{expiry_date}} — book any time.',
     variables: ['customer_name', 'package_name', 'salon_name', 'sessions_left', 'expiry_date'],
     approvalStatus: 'DRAFT',
   },
@@ -345,7 +345,7 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     category: 'MARKETING',
     language: 'en',
     bodyText:
-      'Hi {{customer_name}}, it has been {{days_since_visit}} days since your last {{last_service}} at {{salon_name}} — you are usually back {{usual_gap}}, so we thought we would ask before the week fills up.\n\nShall we find you a time? {{booking_link}}',
+      'Hi {{customer_name}}, it has been {{days_since_visit}} days since your last {{last_service}} at {{salon_name}} — you are usually back {{usual_gap}}, so we thought we would ask before the week fills up.\n\nShall we find you a time? {{booking_link}}\n\nWe would love to see you again.',
     variables: ['customer_name', 'days_since_visit', 'last_service', 'salon_name', 'usual_gap', 'booking_link'],
     approvalStatus: 'DRAFT',
   },
@@ -363,7 +363,7 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     category: 'MARKETING',
     language: 'en',
     bodyText:
-      'Hi {{customer_name}}, your {{last_service}} was {{days_since_visit}} days ago — a bit longer than you usually leave it. Everything all right?\n\nIf you would like the same again, or something different this time, we are here: {{booking_link}}\n\n— {{salon_name}}',
+      'Hi {{customer_name}}, your {{last_service}} was {{days_since_visit}} days ago — a bit longer than you usually leave it. Everything all right?\n\nIf you would like the same again, or something different this time, we are here: {{booking_link}}\n\nEither way, it would be good to see you back at {{salon_name}} soon.',
     variables: ['customer_name', 'last_service', 'days_since_visit', 'salon_name', 'booking_link'],
     approvalStatus: 'DRAFT',
   },
