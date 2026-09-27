@@ -195,7 +195,7 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     category: 'UTILITY',
     language: 'en',
     bodyText:
-      'Hi {{customer_name}}, your {{package_name}} at {{salon_name}} is ready to use. Sessions credited: {{sessions_left}}, valid until {{expiry_date}} — book any time.',
+      'Hi {{customer_name}}, your {{package_name}} at {{salon_name}} is ready to use. Sessions credited: {{sessions_left}}, valid until {{expiry_date}}. We will keep track of the balance for you.',
     variables: ['customer_name', 'package_name', 'salon_name', 'sessions_left', 'expiry_date'],
     approvalStatus: 'DRAFT',
   },
