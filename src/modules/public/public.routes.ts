@@ -658,13 +658,32 @@ router.post(
       waitRating: z.coerce.number().int().min(1).max(5).optional(),
       npsScore: z.coerce.number().int().min(0).max(10).optional(),
       comment: z.string().trim().max(2000).optional(),
+      /**
+       * One entry per service the customer was asked about. Shape-checked here;
+       * whether each id belongs to THIS visit is checked in the service, which
+       * is the only place that knows.
+       */
+      services: z
+        .array(
+          z.object({
+            serviceId: z.string().min(1),
+            rating: z.coerce.number().int().min(1).max(5),
+            comment: z.string().trim().max(500).optional(),
+          }),
+        )
+        .max(20)
+        .optional(),
     }),
   }),
   asyncHandler(async (req, res) => {
     const context = await feedback.publicFeedbackContext(req.params.appointmentId!);
     if (context.alreadySubmitted) throw BadRequest('Feedback has already been submitted for this visit');
 
-    const body = req.body as { rating: number; comment?: string };
+    const body = req.body as {
+      rating: number;
+      comment?: string;
+      services?: { serviceId: string; rating: number; comment?: string }[];
+    };
     const result = await feedback.submitFeedback(
       { appointmentId: req.params.appointmentId!, ...body },
       context.tenantId,

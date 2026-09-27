@@ -541,30 +541,30 @@ enum EnquiryStatus {
 /// Not tenant-scoped: an enquiry exists before any salon does, so it sits
 /// alongside PlatformUser rather than under a tenant.
 model Enquiry {
-  id         String        @id @default(cuid())
-  salonName  String
+  id          String  @id @default(cuid())
+  salonName   String
   contactName String
-  email      String
-  phone      String
-  city       String?
+  email       String
+  phone       String
+  city        String?
   /// How many chairs, roughly — the one qualifying question worth asking up front.
-  size       String?
+  size        String?
   /// Anything they wanted to tell you. Their words, untouched.
-  message    String?
+  message     String?
 
-  status     EnquiryStatus @default(NEW)
+  status EnquiryStatus @default(NEW)
   /// Where they came from: the pricing page, the home page, a campaign.
-  source     String?
+  source String?
   /// Free notes from whoever is working the pipeline.
-  notes      String?
+  notes  String?
 
-  contactedAt DateTime?
+  contactedAt       DateTime?
   /// Set when this enquiry became a real salon.
   convertedTenantId String?
-  convertedAt DateTime?
+  convertedAt       DateTime?
 
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([status, createdAt])
   @@index([email])
@@ -572,14 +572,14 @@ model Enquiry {
 }
 
 model PlatformUser {
-  id           String   @id @default(cuid())
+  id           String    @id @default(cuid())
   name         String
-  email        String   @unique
+  email        String    @unique
   passwordHash String
-  isActive     Boolean  @default(true)
+  isActive     Boolean   @default(true)
   lastLoginAt  DateTime?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
   @@map("platform_users")
 }
@@ -607,22 +607,22 @@ enum CreditEntryReason {
 }
 
 model Plan {
-  id              String   @id @default(cuid())
-  name            String   @unique
-  code            String   @unique
-  pricePerMonth   Decimal  @db.Decimal(12, 2)
-  pricePerYear    Decimal? @db.Decimal(12, 2)
-  maxBranches     Int      @default(1)
-  maxStaff        Int      @default(10)
-  maxCustomers    Int      @default(5000)
+  id            String   @id @default(cuid())
+  name          String   @unique
+  code          String   @unique
+  pricePerMonth Decimal  @db.Decimal(12, 2)
+  pricePerYear  Decimal? @db.Decimal(12, 2)
+  maxBranches   Int      @default(1)
+  maxStaff      Int      @default(10)
+  maxCustomers  Int      @default(5000)
 
   /// Monthly allowances, reset on the 1st of each calendar month in the tenant's
   /// timezone. Zero means the plan does not include that channel at all.
-  waUtilityQuota     Int @default(500)
-  waMarketingQuota   Int @default(0)
-  waAuthQuota        Int @default(0)
-  smsQuota           Int @default(250)
-  emailQuota         Int @default(2000)
+  waUtilityQuota   Int @default(500)
+  waMarketingQuota Int @default(0)
+  waAuthQuota      Int @default(0)
+  smsQuota         Int @default(250)
+  emailQuota       Int @default(2000)
 
   /// Campaigns the salon may start each calendar month. Resets on the 1st, like
   /// the message allowances. Use FAIR_USE_UNLIMITED for "as many as they like".
@@ -639,10 +639,10 @@ model Plan {
   extraBranchPrice Decimal? @db.Decimal(12, 2)
 
   /// Feature switches, keyed by the strings in core/features.ts.
-  features        Json     @default("{}")
-  isActive        Boolean  @default(true)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  features  Json     @default("{}")
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   tenants Tenant[]
   packs   CreditPack[]
@@ -670,8 +670,8 @@ enum MessagingSetupStatus {
 /// Everything here falls back to the environment when absent, which is what
 /// lets a demo tenant work before any of it is set up.
 model TenantMessagingConfig {
-  id       String  @id @default(cuid())
-  tenantId String  @unique
+  id       String @id @default(cuid())
+  tenantId String @unique
 
   // --- WhatsApp Cloud API (per salon, via Meta embedded signup) ---
   waStatus         MessagingSetupStatus @default(NOT_CONNECTED)
@@ -680,7 +680,7 @@ model TenantMessagingConfig {
   /// arrives carrying only this id, so it is how an inbound event finds the
   /// tenant it belongs to. Without that lookup a STOP from one salon's
   /// customer would be applied to every salon.
-  waPhoneNumberId  String?  @unique
+  waPhoneNumberId  String?              @unique
   waBusinessId     String?
   /// Stored server-side only and never returned to the browser in full.
   waAccessToken    String?
@@ -693,19 +693,19 @@ model TenantMessagingConfig {
   waVerifiedAt     DateTime?
 
   // --- SMS (MSG91 or compatible; India needs a DLT-registered header) ---
-  smsStatus     MessagingSetupStatus @default(NOT_CONNECTED)
-  smsSenderId   String?
-  smsApiKey     String?
+  smsStatus      MessagingSetupStatus @default(NOT_CONNECTED)
+  smsSenderId    String?
+  smsApiKey      String?
   /// DLT principal entity id, required by Indian operators.
   smsDltEntityId String?
-  smsRoute      String?
+  smsRoute       String?
 
   // --- Email ---
-  emailStatus    MessagingSetupStatus @default(NOT_CONNECTED)
-  emailFromName  String?
+  emailStatus      MessagingSetupStatus @default(NOT_CONNECTED)
+  emailFromName    String?
   emailFromAddress String?
-  emailApiKey    String?
-  emailReplyTo   String?
+  emailApiKey      String?
+  emailReplyTo     String?
 
   // --- Sending suspension ---
   /// True once the salon has overdrawn its allowance. Nothing new sends until a
@@ -813,68 +813,68 @@ model CreditLedger {
 }
 
 model Tenant {
-  id         String       @id @default(cuid())
-  name       String
-  slug       String       @unique
-  legalName  String?
-  gstin      String?
-  phone      String
-  email      String
+  id          String       @id @default(cuid())
+  name        String
+  slug        String       @unique
+  legalName   String?
+  gstin       String?
+  phone       String
+  email       String
   addressLine String?
-  city       String?
-  state      String?
-  stateCode  String?
-  pincode    String?
-  country    String       @default("IN")
-  currency   String       @default("INR")
-  timezone   String       @default("Asia/Kolkata")
-  locale     String       @default("en-IN")
-  logoUrl    String?
+  city        String?
+  state       String?
+  stateCode   String?
+  pincode     String?
+  country     String       @default("IN")
+  currency    String       @default("INR")
+  timezone    String       @default("Asia/Kolkata")
+  locale      String       @default("en-IN")
+  logoUrl     String?
   /// The salon's OWN website, if they have one.
   ///
   /// Two jobs. It builds {{website_link}} and {{gallery_link}} for messages,
   /// and it is the allow-list for the arrival token: a tracked link is only
   /// given a ?pv= when it points somewhere this salon owns, so a redirect to
   /// Google or Instagram never carries one.
-  websiteUrl String?
-  status     TenantStatus @default(TRIAL)
+  websiteUrl  String?
+  status      TenantStatus @default(TRIAL)
   trialEndsAt DateTime?
-  planId     String?
-  settings   Json         @default("{}")
-  createdAt  DateTime     @default(now())
-  updatedAt  DateTime     @updatedAt
+  planId      String?
+  settings    Json         @default("{}")
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
 
   plan Plan? @relation(fields: [planId], references: [id])
 
-  branches              Branch[]
-  users                 User[]
-  customers             Customer[]
-  services              Service[]
-  serviceCategories     ServiceCategory[]
-  staff                 Staff[]
-  appointments          Appointment[]
-  invoices              Invoice[]
-  settingsKv            Setting[]
-  subscriptions         TenantSubscription[]
-  messageUsage          MessageUsage[]
-  creditBalances        CreditBalance[]
-  creditLedger          CreditLedger[]
-  messagingConfig       TenantMessagingConfig?
+  branches          Branch[]
+  users             User[]
+  customers         Customer[]
+  services          Service[]
+  serviceCategories ServiceCategory[]
+  staff             Staff[]
+  appointments      Appointment[]
+  invoices          Invoice[]
+  settingsKv        Setting[]
+  subscriptions     TenantSubscription[]
+  messageUsage      MessageUsage[]
+  creditBalances    CreditBalance[]
+  creditLedger      CreditLedger[]
+  messagingConfig   TenantMessagingConfig?
 
   @@index([status])
   @@map("tenants")
 }
 
 model TenantSubscription {
-  id             String   @id @default(cuid())
-  tenantId       String
-  planCode       String
-  startedAt      DateTime @default(now())
+  id               String    @id @default(cuid())
+  tenantId         String
+  planCode         String
+  startedAt        DateTime  @default(now())
   currentPeriodEnd DateTime
-  amount         Decimal  @db.Decimal(12, 2)
-  isActive       Boolean  @default(true)
-  cancelledAt    DateTime?
-  createdAt      DateTime @default(now())
+  amount           Decimal   @db.Decimal(12, 2)
+  isActive         Boolean   @default(true)
+  cancelledAt      DateTime?
+  createdAt        DateTime  @default(now())
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -900,22 +900,22 @@ model Setting {
 // ============================== ORG =========================================
 
 model Branch {
-  id           String   @id @default(cuid())
-  tenantId     String
-  name         String
-  code         String
-  phone        String?
-  email        String?
-  addressLine  String?
-  city         String?
-  state        String?
-  stateCode    String?
-  pincode      String?
-  gstin        String?
-  timezone     String   @default("Asia/Kolkata")
-  region       String?
-  openingHours Json     @default("{}") // { "1": [{"open":"10:00","close":"20:00"}], ... 0=Sunday }
-  slotIntervalMin Int   @default(15)
+  id                    String   @id @default(cuid())
+  tenantId              String
+  name                  String
+  code                  String
+  phone                 String?
+  email                 String?
+  addressLine           String?
+  city                  String?
+  state                 String?
+  stateCode             String?
+  pincode               String?
+  gstin                 String?
+  timezone              String   @default("Asia/Kolkata")
+  region                String?
+  openingHours          Json     @default("{}") // { "1": [{"open":"10:00","close":"20:00"}], ... 0=Sunday }
+  slotIntervalMin       Int      @default(15)
   /// How many appointments this shop will let the INTERNET book into one moment.
   ///
   /// Null, the default, means "as many as there are stylists free" — capacity
@@ -931,15 +931,15 @@ model Branch {
   maxConcurrentBookings Int?
   /// The salon's own Google review link, pasted from Google Business Profile.
   /// Per branch: each shop has its own listing, and a review on the wrong one is wasted.
-  googleReviewUrl String?
-  invoicePrefix String  @default("INV")
+  googleReviewUrl       String?
+  invoicePrefix         String   @default("INV")
   /// Superseded by InvoiceSeries, which can restart and can hold more than one
   /// series. Kept so the numbers already issued can be migrated across, and so
   /// a rollback cannot lose a branch's position in its own series.
-  invoiceCounter Int    @default(0)
-  isActive     Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  invoiceCounter        Int      @default(0)
+  isActive              Boolean  @default(true)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -976,30 +976,30 @@ model Holiday {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  tenantId     String
-  name         String
-  email        String
-  phone        String?
-  passwordHash String
-  role         UserRole
-  isActive     Boolean  @default(true)
-  avatarUrl    String?
-  lastLoginAt  DateTime?
-  mustChangePassword Boolean @default(false)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id                 String    @id @default(cuid())
+  tenantId           String
+  name               String
+  email              String
+  phone              String?
+  passwordHash       String
+  role               UserRole
+  isActive           Boolean   @default(true)
+  avatarUrl          String?
+  lastLoginAt        DateTime?
+  mustChangePassword Boolean   @default(false)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
-  branches      UserBranch[]
-  refreshTokens RefreshToken[]
-  overrides     PermissionOverride[]
-  staffProfile  Staff?
-  auditLogs     AuditLog[]
-  createdAppointments Appointment[] @relation("AppointmentCreatedBy")
-  createdInvoices     Invoice[]     @relation("InvoiceCreatedBy")
-  assignedLeads       Lead[]        @relation("LeadAssignee")
+  branches            UserBranch[]
+  refreshTokens       RefreshToken[]
+  overrides           PermissionOverride[]
+  staffProfile        Staff?
+  auditLogs           AuditLog[]
+  createdAppointments Appointment[]        @relation("AppointmentCreatedBy")
+  createdInvoices     Invoice[]            @relation("InvoiceCreatedBy")
+  assignedLeads       Lead[]               @relation("LeadAssignee")
 
   @@unique([tenantId, email])
   @@index([tenantId, role])
@@ -1035,16 +1035,16 @@ model PermissionOverride {
 }
 
 model RefreshToken {
-  id        String   @id @default(cuid())
-  tenantId  String?
-  userId    String?
+  id             String    @id @default(cuid())
+  tenantId       String?
+  userId         String?
   platformUserId String?
-  tokenHash String   @unique
-  userAgent String?
-  ip        String?
-  expiresAt DateTime
-  revokedAt DateTime?
-  createdAt DateTime @default(now())
+  tokenHash      String    @unique
+  userAgent      String?
+  ip             String?
+  expiresAt      DateTime
+  revokedAt      DateTime?
+  createdAt      DateTime  @default(now())
 
   user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -1076,11 +1076,11 @@ model AuditLog {
 // ============================== CATALOG =====================================
 
 model ServiceCategory {
-  id       String  @id @default(cuid())
-  tenantId String
-  name     String
-  sortOrder Int    @default(0)
-  isActive Boolean @default(true)
+  id        String  @id @default(cuid())
+  tenantId  String
+  name      String
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
 
   tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   services Service[]
@@ -1090,28 +1090,28 @@ model ServiceCategory {
 }
 
 model Service {
-  id             String   @id @default(cuid())
-  tenantId       String
-  categoryId     String?
-  name           String
-  code           String?
-  description    String?
-  gender         Gender   @default(UNISEX)
-  durationMin    Int      @default(30)
-  bufferMin      Int      @default(0)
-  price          Decimal  @db.Decimal(12, 2)
-  memberPrice    Decimal? @db.Decimal(12, 2)
-  taxRatePct     Decimal  @default(18) @db.Decimal(5, 2)
-  hsnSac         String?
-  commissionType CommissionType @default(NONE)
-  commissionRate Decimal  @default(0) @db.Decimal(6, 2)
-  requiresResource Boolean @default(false)
-  resourceType   ResourceType?
-  onlineBookable Boolean  @default(true)
-  isActive       Boolean  @default(true)
-  imageUrl       String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id               String         @id @default(cuid())
+  tenantId         String
+  categoryId       String?
+  name             String
+  code             String?
+  description      String?
+  gender           Gender         @default(UNISEX)
+  durationMin      Int            @default(30)
+  bufferMin        Int            @default(0)
+  price            Decimal        @db.Decimal(12, 2)
+  memberPrice      Decimal?       @db.Decimal(12, 2)
+  taxRatePct       Decimal        @default(18) @db.Decimal(5, 2)
+  hsnSac           String?
+  commissionType   CommissionType @default(NONE)
+  commissionRate   Decimal        @default(0) @db.Decimal(6, 2)
+  requiresResource Boolean        @default(false)
+  resourceType     ResourceType?
+  onlineBookable   Boolean        @default(true)
+  isActive         Boolean        @default(true)
+  imageUrl         String?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
 
   tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   category ServiceCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
@@ -1123,6 +1123,8 @@ model Service {
   membershipBenefits   MembershipPlanBenefit[]
   packagePurchaseItems PackagePurchaseItem[]
   rewards              Reward[]
+
+  feedbackRatings FeedbackServiceRating[]
 
   @@unique([tenantId, name, gender])
   @@index([tenantId, isActive])
@@ -1147,48 +1149,48 @@ model ServiceConsumption {
 // ============================== STAFF =======================================
 
 model Staff {
-  id             String   @id @default(cuid())
+  id             String         @id @default(cuid())
   tenantId       String
   branchId       String
-  userId         String?  @unique
+  userId         String?        @unique
   code           String?
   displayName    String
   designation    String?
   phone          String?
   email          String?
   gender         Gender?
-  dob            DateTime? @db.Date
-  joinedAt       DateTime? @db.Date
-  exitedAt       DateTime? @db.Date
-  specialities   String[]  @default([])
-  isBookable     Boolean  @default(true)
-  isActive       Boolean  @default(true)
+  dob            DateTime?      @db.Date
+  joinedAt       DateTime?      @db.Date
+  exitedAt       DateTime?      @db.Date
+  specialities   String[]       @default([])
+  isBookable     Boolean        @default(true)
+  isActive       Boolean        @default(true)
   colorHex       String?
   avatarUrl      String?
-  baseSalary     Decimal  @default(0) @db.Decimal(12, 2)
+  baseSalary     Decimal        @default(0) @db.Decimal(12, 2)
   commissionType CommissionType @default(NONE)
-  commissionRate Decimal  @default(0) @db.Decimal(6, 2)
-  avgRating      Decimal  @default(0) @db.Decimal(3, 2)
-  ratingCount    Int      @default(0)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  commissionRate Decimal        @default(0) @db.Decimal(6, 2)
+  avgRating      Decimal        @default(0) @db.Decimal(3, 2)
+  ratingCount    Int            @default(0)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
   user   User?  @relation(fields: [userId], references: [id], onDelete: SetNull)
 
-  services            StaffService[]
-  availability        StaffAvailability[]
-  timeOff             StaffTimeOff[]
-  appointmentServices AppointmentService[]
-  invoiceItems        InvoiceItem[]
-  attendance          Attendance[]
-  leaveRequests       LeaveRequest[]
-  targets             StaffTarget[]
-  commissions         CommissionEntry[]
-  payrolls            PayrollItem[]
-  preferredByCustomers Customer[] @relation("PreferredStaff")
-  feedback            Feedback[]
+  services             StaffService[]
+  availability         StaffAvailability[]
+  timeOff              StaffTimeOff[]
+  appointmentServices  AppointmentService[]
+  invoiceItems         InvoiceItem[]
+  attendance           Attendance[]
+  leaveRequests        LeaveRequest[]
+  targets              StaffTarget[]
+  commissions          CommissionEntry[]
+  payrolls             PayrollItem[]
+  preferredByCustomers Customer[]           @relation("PreferredStaff")
+  feedback             Feedback[]
 
   @@unique([tenantId, code])
   @@index([tenantId, branchId, isActive])
@@ -1196,11 +1198,11 @@ model Staff {
 }
 
 model StaffService {
-  id            String   @id @default(cuid())
-  tenantId      String
-  staffId       String
-  serviceId     String
-  priceOverride Decimal? @db.Decimal(12, 2)
+  id                  String   @id @default(cuid())
+  tenantId            String
+  staffId             String
+  serviceId           String
+  priceOverride       Decimal? @db.Decimal(12, 2)
   durationOverrideMin Int?
 
   staff   Staff   @relation(fields: [staffId], references: [id], onDelete: Cascade)
@@ -1241,16 +1243,16 @@ model StaffTimeOff {
 }
 
 model Attendance {
-  id       String           @id @default(cuid())
-  tenantId String
-  branchId String
-  staffId  String
-  date     DateTime         @db.Date
-  status   AttendanceStatus @default(PRESENT)
-  checkIn  DateTime?
-  checkOut DateTime?
-  workedMinutes Int         @default(0)
-  notes    String?
+  id            String           @id @default(cuid())
+  tenantId      String
+  branchId      String
+  staffId       String
+  date          DateTime         @db.Date
+  status        AttendanceStatus @default(PRESENT)
+  checkIn       DateTime?
+  checkOut      DateTime?
+  workedMinutes Int              @default(0)
+  notes         String?
 
   staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
 
@@ -1260,16 +1262,16 @@ model Attendance {
 }
 
 model LeaveRequest {
-  id         String      @id @default(cuid())
-  tenantId   String
-  staffId    String
-  fromDate   DateTime    @db.Date
-  toDate     DateTime    @db.Date
-  reason     String?
-  status     LeaveStatus @default(PENDING)
+  id           String      @id @default(cuid())
+  tenantId     String
+  staffId      String
+  fromDate     DateTime    @db.Date
+  toDate       DateTime    @db.Date
+  reason       String?
+  status       LeaveStatus @default(PENDING)
   approvedById String?
-  decidedAt  DateTime?
-  createdAt  DateTime    @default(now())
+  decidedAt    DateTime?
+  createdAt    DateTime    @default(now())
 
   staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
 
@@ -1278,13 +1280,13 @@ model LeaveRequest {
 }
 
 model StaffTarget {
-  id            String  @id @default(cuid())
-  tenantId      String
-  staffId       String
-  periodMonth   Int
-  periodYear    Int
-  revenueTarget Decimal @db.Decimal(12, 2)
-  serviceCountTarget Int @default(0)
+  id                 String  @id @default(cuid())
+  tenantId           String
+  staffId            String
+  periodMonth        Int
+  periodYear         Int
+  revenueTarget      Decimal @db.Decimal(12, 2)
+  serviceCountTarget Int     @default(0)
 
   staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
 
@@ -1334,17 +1336,17 @@ model Payroll {
 }
 
 model PayrollItem {
-  id         String  @id @default(cuid())
-  tenantId   String
-  payrollId  String
-  staffId    String
-  baseSalary Decimal @db.Decimal(12, 2)
-  commission Decimal @db.Decimal(12, 2)
-  incentive  Decimal @default(0) @db.Decimal(12, 2)
-  deductions Decimal @default(0) @db.Decimal(12, 2)
-  netPay     Decimal @db.Decimal(12, 2)
-  daysPresent Int    @default(0)
-  notes      String?
+  id          String  @id @default(cuid())
+  tenantId    String
+  payrollId   String
+  staffId     String
+  baseSalary  Decimal @db.Decimal(12, 2)
+  commission  Decimal @db.Decimal(12, 2)
+  incentive   Decimal @default(0) @db.Decimal(12, 2)
+  deductions  Decimal @default(0) @db.Decimal(12, 2)
+  netPay      Decimal @db.Decimal(12, 2)
+  daysPresent Int     @default(0)
+  notes       String?
 
   payroll Payroll @relation(fields: [payrollId], references: [id], onDelete: Cascade)
   staff   Staff   @relation(fields: [staffId], references: [id], onDelete: Cascade)
@@ -1374,30 +1376,30 @@ model Resource {
 // ============================== CRM =========================================
 
 model Customer {
-  id             String   @id @default(cuid())
-  tenantId       String
-  branchId       String?
-  code           String?
-  firstName      String
-  lastName       String?
-  phone          String
-  altPhone       String?
-  email          String?
-  gender         Gender?
-  dob            DateTime? @db.Date
-  anniversary    DateTime? @db.Date
-  addressLine    String?
-  city           String?
-  pincode        String?
-  source         LeadSource @default(WALK_IN)
-  sourceDetail   String?
-  referredById   String?
+  id               String       @id @default(cuid())
+  tenantId         String
+  branchId         String?
+  code             String?
+  firstName        String
+  lastName         String?
+  phone            String
+  altPhone         String?
+  email            String?
+  gender           Gender?
+  dob              DateTime?    @db.Date
+  anniversary      DateTime?    @db.Date
+  addressLine      String?
+  city             String?
+  pincode          String?
+  source           LeadSource   @default(WALK_IN)
+  sourceDetail     String?
+  referredById     String?
   preferredStaffId String?
-  tags           String[] @default([])
-  notes          String?
-  tier           CustomerTier @default(BRONZE)
-  isActive       Boolean  @default(true)
-  isBlacklisted  Boolean  @default(false)
+  tags             String[]     @default([])
+  notes            String?
+  tier             CustomerTier @default(BRONZE)
+  isActive         Boolean      @default(true)
+  isBlacklisted    Boolean      @default(false)
 
   whatsappConsent ConsentStatus @default(UNKNOWN)
   smsConsent      ConsentStatus @default(UNKNOWN)
@@ -1426,22 +1428,22 @@ model Customer {
   smsLastError String?
   smsCheckedAt DateTime?
 
-  emailStatus    ReachStatus @default(UNKNOWN)
-  emailLastError String?
-  emailCheckedAt DateTime?
+  emailStatus      ReachStatus @default(UNKNOWN)
+  emailLastError   String?
+  emailCheckedAt   DateTime?
   consentUpdatedAt DateTime?
 
   // denormalised rollups, maintained by billing/appointment services
-  firstVisitAt   DateTime?
-  lastVisitAt    DateTime?
-  totalVisits    Int      @default(0)
-  totalSpent     Decimal  @default(0) @db.Decimal(14, 2)
-  avgBill        Decimal  @default(0) @db.Decimal(12, 2)
-  loyaltyPoints  Int      @default(0)
-  walletBalance  Decimal  @default(0) @db.Decimal(12, 2)
-  outstanding    Decimal  @default(0) @db.Decimal(12, 2)
-  currentStreak  Int      @default(0)
-  longestStreak  Int      @default(0)
+  firstVisitAt  DateTime?
+  lastVisitAt   DateTime?
+  totalVisits   Int       @default(0)
+  totalSpent    Decimal   @default(0) @db.Decimal(14, 2)
+  avgBill       Decimal   @default(0) @db.Decimal(12, 2)
+  loyaltyPoints Int       @default(0)
+  walletBalance Decimal   @default(0) @db.Decimal(12, 2)
+  outstanding   Decimal   @default(0) @db.Decimal(12, 2)
+  currentStreak Int       @default(0)
+  longestStreak Int       @default(0)
 
   /// THE CUSTOMER'S OWN CLOCK. Maintained alongside the rollups above.
   ///
@@ -1454,50 +1456,50 @@ model Customer {
   /// because one year abroad would otherwise double a monthly regular's cycle
   /// and stop the salon chasing them. Null until three intervals exist, since
   /// a single gap is a coincidence, not a habit.
-  visitIntervalDays    Int?
+  visitIntervalDays   Int?
   /// How many intervals the figure rests on. 0 means the salon-wide fallback.
-  visitIntervalBasis   Int      @default(0)
+  visitIntervalBasis  Int            @default(0)
   /// When they are due, on their own clock. Indexed: this is what "due now"
   /// and "due this week" segments actually filter on.
-  expectedNextVisitAt  DateTime?
+  expectedNextVisitAt DateTime?
   /// Where they sit on the ladder, recomputed with the rollups.
-  lifecycleStage       LifecycleStage @default(NEVER_VISITED)
+  lifecycleStage      LifecycleStage @default(NEVER_VISITED)
 
   /// Missed appointments, for the segments that protect chair time.
-  noShowCount    Int      @default(0)
+  noShowCount           Int     @default(0)
   /// What they last actually bought — different services have different
   /// natural cycles, and a colour reminder to a waxing customer is noise.
   lastServiceCategoryId String?
 
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  tenant         Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  branch         Branch?   @relation(fields: [branchId], references: [id], onDelete: SetNull)
-  referredBy     Customer? @relation("CustomerReferral", fields: [referredById], references: [id], onDelete: SetNull)
+  tenant         Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch         Branch?    @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  referredBy     Customer?  @relation("CustomerReferral", fields: [referredById], references: [id], onDelete: SetNull)
   referrals      Customer[] @relation("CustomerReferral")
-  preferredStaff Staff?    @relation("PreferredStaff", fields: [preferredStaffId], references: [id], onDelete: SetNull)
+  preferredStaff Staff?     @relation("PreferredStaff", fields: [preferredStaffId], references: [id], onDelete: SetNull)
 
-  appointments        Appointment[]
-  invoices            Invoice[]
-  payments            Payment[]
-  notesLog            CustomerNote[]
-  photos              CustomerPhoto[]
-  hairProfile         HairProfile?
-  packagePurchases    PackagePurchase[]
-  memberships         MembershipSubscription[]
-  loyaltyTxns         LoyaltyTransaction[]
-  rewardRedemptions   RewardRedemption[]
-  walletTxns          WalletTransaction[]
-  feedback            Feedback[]
-  messages            MessageLog[]
-  journeyRuns         JourneyRun[]
-  segmentMembers      SegmentMember[]
-  enrollments         ChallengeEnrollment[]
-  waitlistEntries     Waitlist[]
-  couponRedemptions   CouponRedemption[]
-  interests           CustomerInterest[]
-  convertedFromLead   Lead[]
+  appointments      Appointment[]
+  invoices          Invoice[]
+  payments          Payment[]
+  notesLog          CustomerNote[]
+  photos            CustomerPhoto[]
+  hairProfile       HairProfile?
+  packagePurchases  PackagePurchase[]
+  memberships       MembershipSubscription[]
+  loyaltyTxns       LoyaltyTransaction[]
+  rewardRedemptions RewardRedemption[]
+  walletTxns        WalletTransaction[]
+  feedback          Feedback[]
+  messages          MessageLog[]
+  journeyRuns       JourneyRun[]
+  segmentMembers    SegmentMember[]
+  enrollments       ChallengeEnrollment[]
+  waitlistEntries   Waitlist[]
+  couponRedemptions CouponRedemption[]
+  interests         CustomerInterest[]
+  convertedFromLead Lead[]
 
   @@unique([tenantId, phone])
   @@index([tenantId, lastVisitAt])
@@ -1509,12 +1511,12 @@ model Customer {
 }
 
 model CustomerNote {
-  id         String   @id @default(cuid())
-  tenantId   String
-  customerId String
-  note       String
+  id          String   @id @default(cuid())
+  tenantId    String
+  customerId  String
+  note        String
   createdById String?
-  createdAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
 
   customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
@@ -1539,9 +1541,9 @@ model CustomerPhoto {
 }
 
 model HairProfile {
-  id             String   @id @default(cuid())
+  id             String    @id @default(cuid())
   tenantId       String
-  customerId     String   @unique
+  customerId     String    @unique
   hairType       String?
   hairCondition  String?
   scalpCondition String?
@@ -1552,7 +1554,7 @@ model HairProfile {
   allergies      String?
   sensitivities  String?
   notes          String?
-  updatedAt      DateTime @updatedAt
+  updatedAt      DateTime  @updatedAt
 
   customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
@@ -1563,39 +1565,39 @@ model HairProfile {
 // ============================== APPOINTMENTS ================================
 
 model Appointment {
-  id             String            @id @default(cuid())
-  tenantId       String
-  branchId       String
-  customerId     String?
-  walkInName     String?
-  walkInPhone    String?
-  startAt        DateTime
-  endAt          DateTime
-  status         AppointmentStatus @default(BOOKED)
-  source         BookingSource     @default(RECEPTION)
+  id               String            @id @default(cuid())
+  tenantId         String
+  branchId         String
+  customerId       String?
+  walkInName       String?
+  walkInPhone      String?
+  startAt          DateTime
+  endAt            DateTime
+  status           AppointmentStatus @default(BOOKED)
+  source           BookingSource     @default(RECEPTION)
   /// Where an online booking actually came from — the salon's own website, a
   /// QR code on the counter, an Instagram link. `source` says which channel;
   /// this says which page, so an owner can tell their website from their
   /// Instagram bio without guessing. Free text, supplied by whoever embedded
   /// the booking widget, so it is displayed and grouped but never trusted.
-  sourceRef      String?
-  notes          String?
-  internalNotes  String?
-  totalDurationMin Int             @default(0)
-  estimatedAmount Decimal          @default(0) @db.Decimal(12, 2)
-  isRecurring    Boolean           @default(false)
+  sourceRef        String?
+  notes            String?
+  internalNotes    String?
+  totalDurationMin Int               @default(0)
+  estimatedAmount  Decimal           @default(0) @db.Decimal(12, 2)
+  isRecurring      Boolean           @default(false)
   recurringGroupId String?
-  confirmedAt    DateTime?
-  checkedInAt    DateTime?
-  startedAt      DateTime?
-  completedAt    DateTime?
-  cancelledAt    DateTime?
-  cancelReason   String?
+  confirmedAt      DateTime?
+  checkedInAt      DateTime?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  cancelledAt      DateTime?
+  cancelReason     String?
   reminder24SentAt DateTime?
   reminder2SentAt  DateTime?
-  createdById    String?
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
+  createdById      String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
 
   tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   branch    Branch    @relation(fields: [branchId], references: [id], onDelete: Cascade)
@@ -1640,19 +1642,19 @@ model AppointmentService {
 }
 
 model Waitlist {
-  id             String         @id @default(cuid())
-  tenantId       String
-  branchId       String
-  customerId     String
-  serviceId      String?
+  id               String         @id @default(cuid())
+  tenantId         String
+  branchId         String
+  customerId       String
+  serviceId        String?
   preferredStaffId String?
-  preferredDate  DateTime       @db.Date
-  preferredFrom  String?
-  preferredTo    String?
-  status         WaitlistStatus @default(WAITING)
-  notifiedAt     DateTime?
-  notes          String?
-  createdAt      DateTime       @default(now())
+  preferredDate    DateTime       @db.Date
+  preferredFrom    String?
+  preferredTo      String?
+  status           WaitlistStatus @default(WAITING)
+  notifiedAt       DateTime?
+  notes            String?
+  createdAt        DateTime       @default(now())
 
   customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
@@ -1661,14 +1663,14 @@ model Waitlist {
 }
 
 model RecurringRule {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   tenantId    String
-  groupId     String   @unique
+  groupId     String    @unique
   frequency   String // WEEKLY | MONTHLY
-  interval    Int      @default(1)
+  interval    Int       @default(1)
   occurrences Int
   until       DateTime?
-  createdAt   DateTime @default(now())
+  createdAt   DateTime  @default(now())
 
   @@index([tenantId])
   @@map("recurring_rules")
@@ -1677,14 +1679,14 @@ model RecurringRule {
 // ============================== BILLING / POS ===============================
 
 model Invoice {
-  id             String        @id @default(cuid())
-  tenantId       String
-  branchId       String
-  invoiceNumber  String
-  customerId     String?
-  appointmentId  String?       @unique
-  invoiceDate    DateTime      @default(now())
-  isGst          Boolean       @default(true)
+  id            String   @id @default(cuid())
+  tenantId      String
+  branchId      String
+  invoiceNumber String
+  customerId    String?
+  appointmentId String?  @unique
+  invoiceDate   DateTime @default(now())
+  isGst         Boolean  @default(true)
   /// What this bill was CALLED when it was issued: "Tax Invoice", "Bill of
   /// Supply" or "Invoice".
   ///
@@ -1692,41 +1694,41 @@ model Invoice {
   /// GST in November must not have last June's bills silently reprint as tax
   /// invoices showing a GSTIN it did not hold then — that is a rewritten
   /// record, and reprinting an old bill is exactly when it would happen.
-  documentTitle  String?
-  placeOfSupply  String?
-  isInterState   Boolean       @default(false)
+  documentTitle String?
+  placeOfSupply String?
+  isInterState  Boolean  @default(false)
 
-  grossAmount    Decimal       @default(0) @db.Decimal(12, 2)
-  itemDiscount   Decimal       @default(0) @db.Decimal(12, 2)
-  billDiscount   Decimal       @default(0) @db.Decimal(12, 2)
+  grossAmount    Decimal @default(0) @db.Decimal(12, 2)
+  itemDiscount   Decimal @default(0) @db.Decimal(12, 2)
+  billDiscount   Decimal @default(0) @db.Decimal(12, 2)
   discountReason String?
   couponId       String?
-  taxableAmount  Decimal       @default(0) @db.Decimal(12, 2)
-  cgstAmount     Decimal       @default(0) @db.Decimal(12, 2)
-  sgstAmount     Decimal       @default(0) @db.Decimal(12, 2)
-  igstAmount     Decimal       @default(0) @db.Decimal(12, 2)
-  totalTax       Decimal       @default(0) @db.Decimal(12, 2)
-  roundOff       Decimal       @default(0) @db.Decimal(6, 2)
-  grandTotal     Decimal       @default(0) @db.Decimal(12, 2)
-  paidAmount     Decimal       @default(0) @db.Decimal(12, 2)
-  dueAmount      Decimal       @default(0) @db.Decimal(12, 2)
-  refundedAmount Decimal       @default(0) @db.Decimal(12, 2)
+  taxableAmount  Decimal @default(0) @db.Decimal(12, 2)
+  cgstAmount     Decimal @default(0) @db.Decimal(12, 2)
+  sgstAmount     Decimal @default(0) @db.Decimal(12, 2)
+  igstAmount     Decimal @default(0) @db.Decimal(12, 2)
+  totalTax       Decimal @default(0) @db.Decimal(12, 2)
+  roundOff       Decimal @default(0) @db.Decimal(6, 2)
+  grandTotal     Decimal @default(0) @db.Decimal(12, 2)
+  paidAmount     Decimal @default(0) @db.Decimal(12, 2)
+  dueAmount      Decimal @default(0) @db.Decimal(12, 2)
+  refundedAmount Decimal @default(0) @db.Decimal(12, 2)
 
-  status         InvoiceStatus @default(DRAFT)
-  notes          String?
+  status           InvoiceStatus @default(DRAFT)
+  notes            String?
   /// The unguessable half of the customer's link to this bill.
   ///
   /// Deliberately not the row's own id: an id that appears in customers'
   /// WhatsApp messages is no longer internal, and welding a public address to
   /// a primary key means neither can change without breaking the other. Issued
   /// on demand, so invoices nobody ever shared have no public address at all.
-  publicToken    String?       @unique
+  publicToken      String?       @unique
   sentOnWhatsappAt DateTime?
-  createdById    String?
-  voidedAt       DateTime?
-  voidReason     String?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  createdById      String?
+  voidedAt         DateTime?
+  voidReason       String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
 
   tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   branch      Branch       @relation(fields: [branchId], references: [id], onDelete: Cascade)
@@ -1735,12 +1737,12 @@ model Invoice {
   createdBy   User?        @relation("InvoiceCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   coupon      Coupon?      @relation(fields: [couponId], references: [id], onDelete: SetNull)
 
-  items        InvoiceItem[]
-  payments     Payment[]
-  refunds      Refund[]
-  commissions  CommissionEntry[]
-  loyaltyTxns  LoyaltyTransaction[]
-  redemptions  PackageRedemption[]
+  items          InvoiceItem[]
+  payments       Payment[]
+  refunds        Refund[]
+  commissions    CommissionEntry[]
+  loyaltyTxns    LoyaltyTransaction[]
+  redemptions    PackageRedemption[]
   stockMovements StockMovement[]
 
   @@unique([tenantId, invoiceNumber])
@@ -1764,15 +1766,15 @@ model Invoice {
 /// A duplicate bill number is not a glitch — it is a defective invoice on both
 /// bills and an unanswerable question at audit.
 model InvoiceSeries {
-  id       String @id @default(cuid())
-  tenantId String
-  branchId String
+  id         String   @id @default(cuid())
+  tenantId   String
+  branchId   String
   /// "25-26" when numbering resets yearly; "" when it runs continuously.
-  key      String
+  key        String
   /// The highest number ISSUED. The next bill is this plus one.
-  lastNumber Int  @default(0)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  lastNumber Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
   branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
 
@@ -1782,26 +1784,26 @@ model InvoiceSeries {
 }
 
 model InvoiceItem {
-  id            String           @id @default(cuid())
-  tenantId      String
-  branchId      String
-  invoiceId     String
-  itemType      InvoiceItemType
-  refId         String? // serviceId | productId | packageTemplateId | membershipPlanId
-  name          String
-  hsnSac        String?
-  staffId       String?
-  quantity      Decimal          @default(1) @db.Decimal(10, 2)
-  unitPrice     Decimal          @db.Decimal(12, 2)
-  discount      Decimal          @default(0) @db.Decimal(12, 2)
-  taxableValue  Decimal          @db.Decimal(12, 2)
-  taxRatePct    Decimal          @default(0) @db.Decimal(5, 2)
-  cgstAmount    Decimal          @default(0) @db.Decimal(12, 2)
-  sgstAmount    Decimal          @default(0) @db.Decimal(12, 2)
-  igstAmount    Decimal          @default(0) @db.Decimal(12, 2)
-  lineTotal     Decimal          @db.Decimal(12, 2)
-  redeemedFrom  RedemptionSource @default(NONE)
-  packagePurchaseItemId String?
+  id                       String           @id @default(cuid())
+  tenantId                 String
+  branchId                 String
+  invoiceId                String
+  itemType                 InvoiceItemType
+  refId                    String? // serviceId | productId | packageTemplateId | membershipPlanId
+  name                     String
+  hsnSac                   String?
+  staffId                  String?
+  quantity                 Decimal          @default(1) @db.Decimal(10, 2)
+  unitPrice                Decimal          @db.Decimal(12, 2)
+  discount                 Decimal          @default(0) @db.Decimal(12, 2)
+  taxableValue             Decimal          @db.Decimal(12, 2)
+  taxRatePct               Decimal          @default(0) @db.Decimal(5, 2)
+  cgstAmount               Decimal          @default(0) @db.Decimal(12, 2)
+  sgstAmount               Decimal          @default(0) @db.Decimal(12, 2)
+  igstAmount               Decimal          @default(0) @db.Decimal(12, 2)
+  lineTotal                Decimal          @db.Decimal(12, 2)
+  redeemedFrom             RedemptionSource @default(NONE)
+  packagePurchaseItemId    String?
   membershipSubscriptionId String?
 
   invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
@@ -1814,19 +1816,19 @@ model InvoiceItem {
 }
 
 model Payment {
-  id          String           @id @default(cuid())
-  tenantId    String
-  branchId    String
-  invoiceId   String?
-  customerId  String?
-  mode        PaymentMode
-  direction   PaymentDirection @default(IN)
-  amount      Decimal          @db.Decimal(12, 2)
-  reference   String?
-  isAdvance   Boolean          @default(false)
-  receivedAt  DateTime         @default(now())
+  id           String           @id @default(cuid())
+  tenantId     String
+  branchId     String
+  invoiceId    String?
+  customerId   String?
+  mode         PaymentMode
+  direction    PaymentDirection @default(IN)
+  amount       Decimal          @db.Decimal(12, 2)
+  reference    String?
+  isAdvance    Boolean          @default(false)
+  receivedAt   DateTime         @default(now())
   receivedById String?
-  notes       String?
+  notes        String?
 
   invoice  Invoice?  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
@@ -1837,14 +1839,14 @@ model Payment {
 }
 
 model Refund {
-  id         String      @id @default(cuid())
-  tenantId   String
-  branchId   String
-  invoiceId  String
-  amount     Decimal     @db.Decimal(12, 2)
-  mode       PaymentMode
-  reason     String?
-  refundedAt DateTime    @default(now())
+  id           String      @id @default(cuid())
+  tenantId     String
+  branchId     String
+  invoiceId    String
+  amount       Decimal     @db.Decimal(12, 2)
+  mode         PaymentMode
+  reason       String?
+  refundedAt   DateTime    @default(now())
   refundedById String?
 
   invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
@@ -1854,22 +1856,22 @@ model Refund {
 }
 
 model Coupon {
-  id              String       @id @default(cuid())
-  tenantId        String
-  code            String
-  description     String?
-  discountType    DiscountType @default(PERCENT)
-  value           Decimal      @db.Decimal(12, 2)
-  maxDiscount     Decimal?     @db.Decimal(12, 2)
-  minBillAmount   Decimal      @default(0) @db.Decimal(12, 2)
-  applicableServiceIds String[] @default([])
-  validFrom       DateTime
-  validTo         DateTime
-  usageLimit      Int?
-  perCustomerLimit Int         @default(1)
-  usedCount       Int          @default(0)
-  isActive        Boolean      @default(true)
-  createdAt       DateTime     @default(now())
+  id                   String       @id @default(cuid())
+  tenantId             String
+  code                 String
+  description          String?
+  discountType         DiscountType @default(PERCENT)
+  value                Decimal      @db.Decimal(12, 2)
+  maxDiscount          Decimal?     @db.Decimal(12, 2)
+  minBillAmount        Decimal      @default(0) @db.Decimal(12, 2)
+  applicableServiceIds String[]     @default([])
+  validFrom            DateTime
+  validTo              DateTime
+  usageLimit           Int?
+  perCustomerLimit     Int          @default(1)
+  usedCount            Int          @default(0)
+  isActive             Boolean      @default(true)
+  createdAt            DateTime     @default(now())
 
   invoices    Invoice[]
   redemptions CouponRedemption[]
@@ -1896,16 +1898,16 @@ model CouponRedemption {
 }
 
 model WalletTransaction {
-  id         String   @id @default(cuid())
-  tenantId   String
-  customerId String
-  direction  PaymentDirection
-  amount     Decimal  @db.Decimal(12, 2)
-  balanceAfter Decimal @db.Decimal(12, 2)
-  reason     String
-  refType    String?
-  refId      String?
-  createdAt  DateTime @default(now())
+  id           String           @id @default(cuid())
+  tenantId     String
+  customerId   String
+  direction    PaymentDirection
+  amount       Decimal          @db.Decimal(12, 2)
+  balanceAfter Decimal          @db.Decimal(12, 2)
+  reason       String
+  refType      String?
+  refId        String?
+  createdAt    DateTime         @default(now())
 
   customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
@@ -1949,18 +1951,18 @@ model PackageTemplateItem {
 }
 
 model PackagePurchase {
-  id          String        @id @default(cuid())
-  tenantId    String
-  branchId    String
-  customerId  String
-  templateId  String
-  invoiceId   String?
-  purchasedAt DateTime      @default(now())
-  expiresAt   DateTime
-  price       Decimal       @db.Decimal(12, 2)
-  status      PackageStatus @default(ACTIVE)
+  id               String        @id @default(cuid())
+  tenantId         String
+  branchId         String
+  customerId       String
+  templateId       String
+  invoiceId        String?
+  purchasedAt      DateTime      @default(now())
+  expiresAt        DateTime
+  price            Decimal       @db.Decimal(12, 2)
+  status           PackageStatus @default(ACTIVE)
   expiryNotifiedAt DateTime?
-  createdAt   DateTime      @default(now())
+  createdAt        DateTime      @default(now())
 
   customer Customer        @relation(fields: [customerId], references: [id], onDelete: Cascade)
   template PackageTemplate @relation(fields: [templateId], references: [id], onDelete: Restrict)
@@ -2007,20 +2009,20 @@ model PackageRedemption {
 }
 
 model MembershipPlan {
-  id              String   @id @default(cuid())
-  tenantId        String
-  name            String
-  description     String?
-  price           Decimal  @db.Decimal(12, 2)
-  taxRatePct      Decimal  @default(18) @db.Decimal(5, 2)
-  durationDays    Int      @default(365)
-  serviceDiscountPct Decimal @default(0) @db.Decimal(5, 2)
-  productDiscountPct Decimal @default(0) @db.Decimal(5, 2)
-  priorityBooking Boolean  @default(false)
-  birthdayBenefit String?
-  loyaltyMultiplier Decimal @default(1) @db.Decimal(4, 2)
-  isActive        Boolean  @default(true)
-  createdAt       DateTime @default(now())
+  id                 String   @id @default(cuid())
+  tenantId           String
+  name               String
+  description        String?
+  price              Decimal  @db.Decimal(12, 2)
+  taxRatePct         Decimal  @default(18) @db.Decimal(5, 2)
+  durationDays       Int      @default(365)
+  serviceDiscountPct Decimal  @default(0) @db.Decimal(5, 2)
+  productDiscountPct Decimal  @default(0) @db.Decimal(5, 2)
+  priorityBooking    Boolean  @default(false)
+  birthdayBenefit    String?
+  loyaltyMultiplier  Decimal  @default(1) @db.Decimal(4, 2)
+  isActive           Boolean  @default(true)
+  createdAt          DateTime @default(now())
 
   benefits      MembershipPlanBenefit[]
   subscriptions MembershipSubscription[]
@@ -2045,21 +2047,21 @@ model MembershipPlanBenefit {
 }
 
 model MembershipSubscription {
-  id         String           @id @default(cuid())
-  tenantId   String
-  branchId   String
-  customerId String
-  planId     String
-  invoiceId  String?
-  startAt    DateTime         @default(now())
-  endAt      DateTime
-  price      Decimal          @db.Decimal(12, 2)
-  status     MembershipStatus @default(ACTIVE)
-  autoRenew  Boolean          @default(false)
+  id                 String           @id @default(cuid())
+  tenantId           String
+  branchId           String
+  customerId         String
+  planId             String
+  invoiceId          String?
+  startAt            DateTime         @default(now())
+  endAt              DateTime
+  price              Decimal          @db.Decimal(12, 2)
+  status             MembershipStatus @default(ACTIVE)
+  autoRenew          Boolean          @default(false)
   expiry30NotifiedAt DateTime?
   expiry7NotifiedAt  DateTime?
   expiry1NotifiedAt  DateTime?
-  createdAt  DateTime         @default(now())
+  createdAt          DateTime         @default(now())
 
   customer Customer       @relation(fields: [customerId], references: [id], onDelete: Cascade)
   plan     MembershipPlan @relation(fields: [planId], references: [id], onDelete: Restrict)
@@ -2089,19 +2091,19 @@ model MembershipBenefitUsage {
 // ============================== LOYALTY =====================================
 
 model LoyaltyProgram {
-  id                String  @id @default(cuid())
-  tenantId          String  @unique
-  isActive          Boolean @default(true)
-  amountPerPoint    Decimal @default(100) @db.Decimal(10, 2)
-  pointValue        Decimal @default(0.5) @db.Decimal(10, 2)
-  referralPoints    Int     @default(100)
-  birthdayPoints    Int     @default(50)
-  reviewPoints      Int     @default(25)
-  signupPoints      Int     @default(0)
-  minRedeemPoints   Int     @default(100)
-  maxRedeemPctOfBill Decimal @default(20) @db.Decimal(5, 2)
-  expiryMonths      Int     @default(12)
-  updatedAt         DateTime @updatedAt
+  id                 String   @id @default(cuid())
+  tenantId           String   @unique
+  isActive           Boolean  @default(true)
+  amountPerPoint     Decimal  @default(100) @db.Decimal(10, 2)
+  pointValue         Decimal  @default(0.5) @db.Decimal(10, 2)
+  referralPoints     Int      @default(100)
+  birthdayPoints     Int      @default(50)
+  reviewPoints       Int      @default(25)
+  signupPoints       Int      @default(0)
+  minRedeemPoints    Int      @default(100)
+  maxRedeemPctOfBill Decimal  @default(20) @db.Decimal(5, 2)
+  expiryMonths       Int      @default(12)
+  updatedAt          DateTime @updatedAt
 
   @@map("loyalty_programs")
 }
@@ -2162,26 +2164,26 @@ model RewardRedemption {
 // ============================== LEADS =======================================
 
 model Lead {
-  id           String     @id @default(cuid())
-  tenantId     String
-  branchId     String?
-  name         String
-  phone        String
-  email        String?
-  gender       Gender?
-  source       LeadSource @default(MANUAL)
-  sourceDetail String?
-  campaignId   String?
-  status       LeadStatus @default(NEW)
-  assignedToId String?
-  interestedServiceIds String[] @default([])
-  notes        String?
-  followUpAt   DateTime?
-  convertedCustomerId String?
-  convertedAt  DateTime?
-  lostReason   String?
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  id                   String     @id @default(cuid())
+  tenantId             String
+  branchId             String?
+  name                 String
+  phone                String
+  email                String?
+  gender               Gender?
+  source               LeadSource @default(MANUAL)
+  sourceDetail         String?
+  campaignId           String?
+  status               LeadStatus @default(NEW)
+  assignedToId         String?
+  interestedServiceIds String[]   @default([])
+  notes                String?
+  followUpAt           DateTime?
+  convertedCustomerId  String?
+  convertedAt          DateTime?
+  lostReason           String?
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
 
   branch            Branch?   @relation(fields: [branchId], references: [id], onDelete: SetNull)
   assignedTo        User?     @relation("LeadAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
@@ -2199,13 +2201,13 @@ model Lead {
 }
 
 model LeadActivity {
-  id        String   @id @default(cuid())
-  tenantId  String
-  leadId    String
-  type      String // CALL | WHATSAPP | NOTE | STATUS_CHANGE | APPOINTMENT
-  notes     String?
+  id          String   @id @default(cuid())
+  tenantId    String
+  leadId      String
+  type        String // CALL | WHATSAPP | NOTE | STATUS_CHANGE | APPOINTMENT
+  notes       String?
   createdById String?
-  createdAt DateTime @default(now())
+  createdAt   DateTime @default(now())
 
   lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
 
@@ -2216,16 +2218,16 @@ model LeadActivity {
 // ============================== MARKETING ===================================
 
 model Segment {
-  id              String   @id @default(cuid())
-  tenantId        String
-  name            String
-  description     String?
-  isDynamic       Boolean  @default(true)
-  rules           Json     @default("{}") // { all: [ {field, op, value}, ... ] }
-  lastCount       Int      @default(0)
-  lastComputedAt  DateTime?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id             String    @id @default(cuid())
+  tenantId       String
+  name           String
+  description    String?
+  isDynamic      Boolean   @default(true)
+  rules          Json      @default("{}") // { all: [ {field, op, value}, ... ] }
+  lastCount      Int       @default(0)
+  lastComputedAt DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   members   SegmentMember[]
   campaigns Campaign[]
@@ -2250,13 +2252,13 @@ model SegmentMember {
 }
 
 model MessageTemplate {
-  id             String                 @id @default(cuid())
-  tenantId       String
+  id                   String                 @id @default(cuid())
+  tenantId             String
   /// Set when this was installed from the template library, so the salon can be
   /// shown what they already have. Null for templates they wrote themselves.
-  libraryKey     String?
-  name           String
-  channel        Channel
+  libraryKey           String?
+  name                 String
+  channel              Channel
   /// What this template is FOR, as far as anyone here is concerned — and, once
   /// it has been submitted, whatever Meta decided it is instead.
   ///
@@ -2264,11 +2266,11 @@ model MessageTemplate {
   /// category the content belongs to, ignoring the one submitted. This column
   /// holds their answer, because it is the one that governs sending: MARKETING
   /// requires an explicit opt-in, UTILITY does not.
-  category       TemplateCategory       @default(UTILITY)
+  category             TemplateCategory       @default(UTILITY)
   /// The category we ASKED for, kept only so the app can say that Meta
   /// disagreed. Null until the template has been submitted.
-  requestedCategory TemplateCategory?
-  language       String                 @default("en")
+  requestedCategory    TemplateCategory?
+  language             String                 @default("en")
   providerTemplateName String?
   /// Meta's own id for this template, returned when it is submitted. Present
   /// only for templates that exist on a WABA.
@@ -2285,16 +2287,16 @@ model MessageTemplate {
   /// the moment a template is approved. Deriving it from the body at send time
   /// instead works right up until somebody reorders a sentence, after which
   /// every customer receives another customer's values with no error anywhere.
-  metaVariableOrder    String[]  @default([])
-  headerText     String?
-  bodyText       String
-  footerText     String?
-  buttons        Json                   @default("[]")
-  variables      String[]               @default([])
-  approvalStatus TemplateApprovalStatus @default(DRAFT)
-  isActive       Boolean                @default(true)
-  createdAt      DateTime               @default(now())
-  updatedAt      DateTime               @updatedAt
+  metaVariableOrder    String[]               @default([])
+  headerText           String?
+  bodyText             String
+  footerText           String?
+  buttons              Json                   @default("[]")
+  variables            String[]               @default([])
+  approvalStatus       TemplateApprovalStatus @default(DRAFT)
+  isActive             Boolean                @default(true)
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
 
   campaigns    Campaign[]
   journeySteps JourneyStep[]
@@ -2305,63 +2307,63 @@ model MessageTemplate {
 }
 
 model Campaign {
-  id           String         @id @default(cuid())
-  tenantId     String
-  branchId     String?
-  name         String
-  channel      Channel
-  templateId   String?
-  segmentId    String?
-  status       CampaignStatus @default(DRAFT)
-  scheduledAt  DateTime?
-  startedAt    DateTime?
-  completedAt  DateTime?
-  costPerMessage Decimal      @default(0) @db.Decimal(8, 4)
-  objective    CampaignObjective @default(OTHER)
+  id                    String            @id @default(cuid())
+  tenantId              String
+  branchId              String?
+  name                  String
+  channel               Channel
+  templateId            String?
+  segmentId             String?
+  status                CampaignStatus    @default(DRAFT)
+  scheduledAt           DateTime?
+  startedAt             DateTime?
+  completedAt           DateTime?
+  costPerMessage        Decimal           @default(0) @db.Decimal(8, 4)
+  objective             CampaignObjective @default(OTHER)
   /// The campaign this one follows up, when it targets a group defined by
   /// what people did with an earlier send rather than by a segment rule.
-  followUpOfId String?
+  followUpOfId          String?
   /// Which of that campaign's outcome groups this one goes to.
   ///
   /// Resolved at SEND time, never at creation: a follow-up scheduled for
   /// Thursday and aimed at "read but has not booked" must not reach somebody
   /// who booked on Wednesday. Keeping it as a rule rather than a copied list
   /// is what makes that true without any stop-the-follow-up machinery.
-  followUpAudience CampaignAudience?
+  followUpAudience      CampaignAudience?
   /// How long after EACH RECIPIENT'S delivery a booking or visit still counts.
   ///
   /// Per recipient, not per campaign: a campaign that goes out over five days
   /// gives the person reached on the fifth day the same window as the first.
   /// Anchoring everyone to the campaign's start would quietly shorten the
   /// window for everybody it reached late.
-  attributionWindowDays Int   @default(14)
+  attributionWindowDays Int               @default(14)
   /// Which of booking, visit and revenue this campaign is being judged on.
-  conversionEvents ConversionEvent[] @default([BOOKING, VISIT, REVENUE])
-  variables    Json           @default("{}")
+  conversionEvents      ConversionEvent[] @default([BOOKING, VISIT, REVENUE])
+  variables             Json              @default("{}")
 
-  targetCount    Int     @default(0)
-  sentCount      Int     @default(0)
-  deliveredCount Int     @default(0)
-  readCount      Int     @default(0)
-  clickedCount   Int     @default(0)
+  targetCount    Int       @default(0)
+  sentCount      Int       @default(0)
+  deliveredCount Int       @default(0)
+  readCount      Int       @default(0)
+  clickedCount   Int       @default(0)
   /// Customers who wrote back. The strongest signal short of a booking.
-  repliedCount   Int     @default(0)
-  failedCount    Int     @default(0)
+  repliedCount   Int       @default(0)
+  failedCount    Int       @default(0)
   /// Recipients who did something with it — read, clicked or wrote back.
   ///
   /// The stage the funnel was missing. Between "it arrived" and "they came" is
   /// "they looked", and without it a campaign that nobody opened is
   /// indistinguishable from one that everybody opened and ignored.
-  engagedCount   Int     @default(0)
+  engagedCount   Int       @default(0)
   /// Recipients who BOOKED inside their window. Appointments, not invoices.
-  bookingCount   Int     @default(0)
+  bookingCount   Int       @default(0)
   /// Recipients who actually CAME. A booking that turns into a no-show is
   /// counted above and not here, which is how the two stay tellable apart.
-  visitCount     Int     @default(0)
-  revenue        Decimal @default(0) @db.Decimal(14, 2)
+  visitCount     Int       @default(0)
+  revenue        Decimal   @default(0) @db.Decimal(14, 2)
   /// Set when attribution last ran, so a half-finished run is visible.
   attributedAt   DateTime?
-  cost           Decimal @default(0) @db.Decimal(12, 2)
+  cost           Decimal   @default(0) @db.Decimal(12, 2)
 
   createdById String?
   createdAt   DateTime @default(now())
@@ -2370,12 +2372,12 @@ model Campaign {
   template MessageTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
   segment  Segment?         @relation(fields: [segmentId], references: [id], onDelete: SetNull)
 
-  messages MessageLog[]
-  leads    Lead[]
+  messages   MessageLog[]
+  leads      Lead[]
   /// Self-relation: a follow-up points at the campaign whose recipients it is
   /// drawn from, so the chain is walkable in both directions.
-  followUpOf Campaign?  @relation("CampaignFollowUps", fields: [followUpOfId], references: [id], onDelete: SetNull)
-  followUps  Campaign[] @relation("CampaignFollowUps")
+  followUpOf Campaign?    @relation("CampaignFollowUps", fields: [followUpOfId], references: [id], onDelete: SetNull)
+  followUps  Campaign[]   @relation("CampaignFollowUps")
 
   @@index([tenantId, status])
   @@index([followUpOfId])
@@ -2412,20 +2414,20 @@ enum LinkDestination {
 }
 
 model TrackedLink {
-  id        String   @id @default(cuid())
-  tenantId  String
+  id           String  @id @default(cuid())
+  tenantId     String
   /// What appears in the message: /r/<code>. Short because an SMS is billed
   /// by the character and a long link eats a second segment.
-  code      String   @unique
+  code         String  @unique
   /// Where the customer actually ends up.
-  targetUrl String
+  targetUrl    String
   /// The message this link was put in, so a tap can move that message to
   /// CLICKED and be credited to the right campaign.
   messageLogId String?
   campaignId   String?
   customerId   String?
 
-  destination  LinkDestination @default(OTHER)
+  destination LinkDestination @default(OTHER)
 
   /// WHEN THIS LINK STOPS BEING *PRIVA'S* LINK.
   ///
@@ -2464,7 +2466,7 @@ model TrackedLink {
 /// then the booking page" and "they opened the booking page twice" are
 /// different stories and a counter tells neither.
 model SiteVisit {
-  id            String   @id @default(cuid())
+  id            String  @id @default(cuid())
   tenantId      String
   trackedLinkId String?
   messageLogId  String?
@@ -2489,15 +2491,15 @@ model SiteVisit {
   /// sessionStorage and dies with the tab, so it cannot be used to recognise
   /// somebody across visits; the tracked-link code already says who this is,
   /// and it says so because the salon sent them the link.
-  sessionId     String?
+  sessionId String?
 
   /// What the event was about, in the shape the event needs: a service id for
   /// service_view, a collection key for gallery_filter. Json because each
   /// event carries something different and a column per event kind would be a
   /// migration every time a page is added to a website we do not own.
-  metadata      Json?
+  metadata Json?
 
-  at            DateTime @default(now())
+  at DateTime @default(now())
 
   trackedLink TrackedLink? @relation(fields: [trackedLinkId], references: [id], onDelete: Cascade)
   messageLog  MessageLog?  @relation(fields: [messageLogId], references: [id], onDelete: Cascade)
@@ -2512,65 +2514,65 @@ model SiteVisit {
 }
 
 model MessageLog {
-  id           String        @id @default(cuid())
-  tenantId     String
-  branchId     String?
-  channel      Channel
+  id                      String           @id @default(cuid())
+  tenantId                String
+  branchId                String?
+  channel                 Channel
   /// Snapshotted from the template at queue time. A template's category can be
   /// changed later; what it was billed as must not move with it.
-  category     TemplateCategory @default(UTILITY)
+  category                TemplateCategory @default(UTILITY)
   /// What this message was FOR — see MessagePurpose. Snapshotted alongside
   /// category, and for the same reason.
-  purpose      MessagePurpose @default(OTHER)
-  meter        MeterKey?
-  customerId   String?
-  leadId       String?
-  campaignId   String?
-  journeyRunId String?
-  templateId   String?
-  toAddress    String
-  payload      Json          @default("{}")
-  renderedBody String?
-  status       MessageStatus @default(QUEUED)
-  providerMessageId String?
-  errorCode    String?
-  errorMessage String?
-  cost         Decimal       @default(0) @db.Decimal(8, 4)
-  queuedAt     DateTime      @default(now())
-  sentAt       DateTime?
-  deliveredAt  DateTime?
-  readAt       DateTime?
-  clickedAt    DateTime?
+  purpose                 MessagePurpose   @default(OTHER)
+  meter                   MeterKey?
+  customerId              String?
+  leadId                  String?
+  campaignId              String?
+  journeyRunId            String?
+  templateId              String?
+  toAddress               String
+  payload                 Json             @default("{}")
+  renderedBody            String?
+  status                  MessageStatus    @default(QUEUED)
+  providerMessageId       String?
+  errorCode               String?
+  errorMessage            String?
+  cost                    Decimal          @default(0) @db.Decimal(8, 4)
+  queuedAt                DateTime         @default(now())
+  sentAt                  DateTime?
+  deliveredAt             DateTime?
+  readAt                  DateTime?
+  clickedAt               DateTime?
   /// When the customer wrote back, if they did.
-  repliedAt    DateTime?
-  attributedInvoiceId String?
-  attributedRevenue   Decimal @default(0) @db.Decimal(12, 2)
+  repliedAt               DateTime?
+  attributedInvoiceId     String?
+  attributedRevenue       Decimal          @default(0) @db.Decimal(12, 2)
   /// The start of this recipient's own window — their delivery, or their send
   /// when the channel never confirmed delivery.
   ///
   /// Stored rather than recomputed so an attribution can be explained months
   /// later: "counted because they visited on 2 October, inside 25 September to
   /// 16 October" is answerable, and a recomputed window is not.
-  attributionFrom     DateTime?
-  attributionUntil    DateTime?
+  attributionFrom         DateTime?
+  attributionUntil        DateTime?
   /// They came back to the salon's own website after tapping the link.
   ///
   /// The step between "clicked" and "booked" that nothing measured. A campaign
   /// where forty people opened the gallery and none booked looked identical to
   /// one nobody opened — and those are opposite problems.
-  siteVisitedAt       DateTime?
-  siteViews           Int      @default(0)
+  siteVisitedAt           DateTime?
+  siteViews               Int              @default(0)
   /// The appointment this recipient booked inside the window, if any.
   attributedAppointmentId String?
   /// How many times they came inside the window. More than one is common on a
   /// long window, and counting only the first understates the campaign.
-  attributedVisits    Int     @default(0)
+  attributedVisits        Int              @default(0)
 
-  customer   Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  lead       Lead?            @relation(fields: [leadId], references: [id], onDelete: SetNull)
-  campaign   Campaign?        @relation(fields: [campaignId], references: [id], onDelete: SetNull)
-  template   MessageTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
-  journeyRun JourneyRun?      @relation(fields: [journeyRunId], references: [id], onDelete: SetNull)
+  customer     Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  lead         Lead?            @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  campaign     Campaign?        @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  template     MessageTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  journeyRun   JourneyRun?      @relation(fields: [journeyRunId], references: [id], onDelete: SetNull)
   trackedLinks TrackedLink[]
   siteVisits   SiteVisit[]
 
@@ -2668,39 +2670,39 @@ enum FeedbackSource {
 }
 
 model Feedback {
-  id            String   @id @default(cuid())
-  tenantId      String
-  branchId      String
-  appointmentId String?  @unique
-  customerId    String?
-  staffId       String?
-  rating        Int
-  serviceRating Int?
-  ambienceRating Int?
+  id                    String    @id @default(cuid())
+  tenantId              String
+  branchId              String
+  appointmentId         String?   @unique
+  customerId            String?
+  staffId               String?
+  rating                Int
+  serviceRating         Int?
+  ambienceRating        Int?
   /// How the stylist was, and whether the wait was acceptable — the two things
   /// a salon can actually act on.
-  staffRating   Int?
-  waitRating    Int?
-  npsScore      Int?
-  comment       String?
-  isComplaint   Boolean  @default(false)
-  resolvedAt    DateTime?
-  resolutionNote String?
-  googleReviewRequested Boolean @default(false)
+  staffRating           Int?
+  waitRating            Int?
+  npsScore              Int?
+  comment               String?
+  isComplaint           Boolean   @default(false)
+  resolvedAt            DateTime?
+  resolutionNote        String?
+  googleReviewRequested Boolean   @default(false)
   /// Set when the customer actually tapped through to Google, not when we asked.
-  googleReviewedAt DateTime?
+  googleReviewedAt      DateTime?
   /// Shown on the salon's own website. Never true until a person says so:
   /// see the note on approvedAt.
-  isPublic      Boolean  @default(false)
+  isPublic              Boolean   @default(false)
   /// When the salon approved this for publication, and who did it.
   ///
   /// Nothing from the public form is ever published automatically. A form
   /// that puts a stranger's words on the salon's website the moment they
   /// press send is a defacement tool with a rating attached.
-  approvedAt    DateTime?
-  approvedById  String?
+  approvedAt            DateTime?
+  approvedById          String?
 
-  source        FeedbackSource @default(VISIT)
+  source      FeedbackSource @default(VISIT)
   /// What the person typed into the public form. Only ever set for WEBSITE,
   /// and never trusted: it is who they SAID they were.
   ///
@@ -2709,9 +2711,9 @@ model Feedback {
   /// "I was treated badly" to a named customer's profile. The salon is shown a
   /// possible match at read time instead, which is a suggestion rather than a
   /// claim.
-  authorName    String?
-  authorPhone   String?
-  createdAt     DateTime @default(now())
+  authorName  String?
+  authorPhone String?
+  createdAt   DateTime       @default(now())
 
   /// WHAT THE WORDS SAID, KEPT APART FROM WHAT THE CUSTOMER SCORED.
   ///
@@ -2731,10 +2733,11 @@ model Feedback {
   /// Never posted anywhere by this app. See feedback-ai.ts.
   reviewDraft    String?
 
-  topics      FeedbackTopic[]
-  appointment Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
-  customer    Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  staff       Staff?       @relation(fields: [staffId], references: [id], onDelete: SetNull)
+  topics         FeedbackTopic[]
+  serviceRatings FeedbackServiceRating[]
+  appointment    Appointment?            @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  customer       Customer?               @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  staff          Staff?                  @relation(fields: [staffId], references: [id], onDelete: SetNull)
 
   @@index([tenantId, branchId, createdAt])
   @@index([tenantId, rating])
@@ -2768,6 +2771,38 @@ model FeedbackTopic {
   @@unique([feedbackId, topic])
   @@index([tenantId, topic, sentiment])
   @@map("feedback_topics")
+}
+
+/// WHAT THE CUSTOMER THOUGHT OF EACH SERVICE, ONE ROW EACH.
+///
+/// A visit is rarely one thing. Somebody has a cut and a facial, loves the cut
+/// and is unimpressed by the facial, and leaves 4 overall — a number that says
+/// nothing true about either. The single `serviceRating` on feedback could not
+/// hold that, so the one question a salon owner actually asks ("which of my
+/// services is letting me down?") had no answer in the data.
+///
+/// A row per service rather than columns per service, because salons do not
+/// share a service list: one has Bridal Makeup and Pedicure, another Beard
+/// Styling and Hair Spa. Columns would mean a migration per salon per service.
+model FeedbackServiceRating {
+  id         String   @id @default(cuid())
+  tenantId   String
+  feedbackId String
+  serviceId  String
+  /// 1 to 5, the customer's own tap. Never written by the analysis job.
+  rating     Int
+  comment    String?
+  createdAt  DateTime @default(now())
+
+  feedback Feedback @relation(fields: [feedbackId], references: [id], onDelete: Cascade)
+  /// Restrict, not Cascade: a retired service still has to answer for the
+  /// months it was sold. Deleting its history would quietly raise the salon's
+  /// averages, which is the one thing this table exists to prevent.
+  service  Service  @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+
+  @@unique([feedbackId, serviceId])
+  @@index([tenantId, serviceId])
+  @@map("feedback_service_ratings")
 }
 
 /// How a comment reads. Three values, because a dashboard that groups by this
@@ -2810,8 +2845,8 @@ enum FeedbackTopicKind {
 /// loses its row is an orphan costing a fraction of a paisa, which is the
 /// cheaper of the two failures.
 model GalleryPhoto {
-  id        String   @id @default(cuid())
-  tenantId  String
+  id         String @id @default(cuid())
+  tenantId   String
   /// Which collection on the website: colour, cuts, bridal. Matched to the
   /// site's own tags rather than to a Service row, because a gallery groups by
   /// the KIND of work and a salon's service list is finer than that — nobody
@@ -2833,25 +2868,25 @@ model GalleryPhoto {
   /// Nullable because the studio photographs — the room, the tools, the
   /// shopfront — are not work for anything, and forcing a service onto them
   /// would mean inventing one.
-  serviceId  String?
+  serviceId    String?
   /// Cloudinary's id for the file. The only thing here the website needs.
-  publicId  String   @unique
-  format    String
-  width     Int
-  height    Int
-  bytes     Int
+  publicId     String   @unique
+  format       String
+  width        Int
+  height       Int
+  bytes        Int
   /// What is in the picture, in a sentence. Required by the upload, because a
   /// gallery is a page somebody chooses a salon from and "image 4" is not
   /// information.
-  alt       String
-  caption   String?
+  alt          String
+  caption      String?
   /// Hidden without being deleted — for a photograph of a customer who has
   /// since asked for it to come down, where deleting the file loses the record
   /// that it was ever published.
-  isVisible Boolean  @default(true)
-  sortOrder Int      @default(0)
+  isVisible    Boolean  @default(true)
+  sortOrder    Int      @default(0)
   uploadedById String?
-  createdAt DateTime @default(now())
+  createdAt    DateTime @default(now())
 
   @@index([tenantId, collection, sortOrder])
   @@index([serviceId])
@@ -2880,20 +2915,20 @@ model GalleryPhoto {
 /// about the thing she was curious about. See the segment fields
 /// viewedServiceInDays and noMarketingInDays.
 model CustomerInterest {
-  id         String   @id @default(cuid())
-  tenantId   String
-  customerId String
+  id            String   @id @default(cuid())
+  tenantId      String
+  customerId    String
   /// SERVICE or CATEGORY. Both, because a customer browsing three colour
   /// services has shown interest in colour, and a campaign is usually about
   /// the category while the page was about one service.
-  kind       String
+  kind          String
   /// The service or category id. Not a free-text topic: a rollup keyed on
   /// whatever a website happened to put in a URL cannot be joined to anything.
-  refId      String
+  refId         String
   /// The name at the time, so an old interest still reads if the service is
   /// renamed or deleted. Display only — refId is the join.
-  label      String
-  views      Int      @default(1)
+  label         String
+  views         Int      @default(1)
   firstViewedAt DateTime @default(now())
   lastViewedAt  DateTime @default(now())
 
@@ -2991,26 +3026,26 @@ model Supplier {
 }
 
 model Product {
-  id            String   @id @default(cuid())
-  tenantId      String
-  brandId       String?
-  categoryId    String?
-  name          String
-  sku           String?
-  shade         String?
-  unit          String   @default("ml") // ml | g | pcs
-  packSize      Decimal  @default(1) @db.Decimal(12, 3)
-  costPrice     Decimal  @default(0) @db.Decimal(12, 2)
-  sellingPrice  Decimal  @default(0) @db.Decimal(12, 2)
-  taxRatePct    Decimal  @default(18) @db.Decimal(5, 2)
-  hsnSac        String?
-  isRetail      Boolean  @default(false)
-  isConsumable  Boolean  @default(true)
-  reorderLevel  Decimal  @default(0) @db.Decimal(12, 3)
-  trackExpiry   Boolean  @default(false)
-  isActive      Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id           String   @id @default(cuid())
+  tenantId     String
+  brandId      String?
+  categoryId   String?
+  name         String
+  sku          String?
+  shade        String?
+  unit         String   @default("ml") // ml | g | pcs
+  packSize     Decimal  @default(1) @db.Decimal(12, 3)
+  costPrice    Decimal  @default(0) @db.Decimal(12, 2)
+  sellingPrice Decimal  @default(0) @db.Decimal(12, 2)
+  taxRatePct   Decimal  @default(18) @db.Decimal(5, 2)
+  hsnSac       String?
+  isRetail     Boolean  @default(false)
+  isConsumable Boolean  @default(true)
+  reorderLevel Decimal  @default(0) @db.Decimal(12, 3)
+  trackExpiry  Boolean  @default(false)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   brand    Brand?           @relation(fields: [brandId], references: [id], onDelete: SetNull)
   category ProductCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
@@ -3060,21 +3095,21 @@ model Stock {
 }
 
 model StockMovement {
-  id        String            @id @default(cuid())
-  tenantId  String
-  branchId  String
-  productId String
-  type      StockMovementType
-  quantity  Decimal           @db.Decimal(12, 3) // signed: + in, - out
-  unitCost  Decimal           @default(0) @db.Decimal(12, 2)
-  balanceAfter Decimal        @default(0) @db.Decimal(12, 3)
-  refType   String?
-  refId     String?
-  invoiceId String?
-  batchId   String?
-  notes     String?
-  createdById String?
-  createdAt DateTime          @default(now())
+  id           String            @id @default(cuid())
+  tenantId     String
+  branchId     String
+  productId    String
+  type         StockMovementType
+  quantity     Decimal           @db.Decimal(12, 3) // signed: + in, - out
+  unitCost     Decimal           @default(0) @db.Decimal(12, 2)
+  balanceAfter Decimal           @default(0) @db.Decimal(12, 3)
+  refType      String?
+  refId        String?
+  invoiceId    String?
+  batchId      String?
+  notes        String?
+  createdById  String?
+  createdAt    DateTime          @default(now())
 
   branch  Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
   product Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
@@ -3086,22 +3121,22 @@ model StockMovement {
 }
 
 model PurchaseOrder {
-  id           String              @id @default(cuid())
-  tenantId     String
-  branchId     String
-  supplierId   String
-  poNumber     String
-  status       PurchaseOrderStatus @default(DRAFT)
-  orderedAt    DateTime            @default(now())
-  expectedAt   DateTime?
-  receivedAt   DateTime?
-  subTotal     Decimal             @default(0) @db.Decimal(12, 2)
-  taxAmount    Decimal             @default(0) @db.Decimal(12, 2)
-  totalAmount  Decimal             @default(0) @db.Decimal(12, 2)
-  invoiceRef   String?
-  notes        String?
-  createdById  String?
-  createdAt    DateTime            @default(now())
+  id          String              @id @default(cuid())
+  tenantId    String
+  branchId    String
+  supplierId  String
+  poNumber    String
+  status      PurchaseOrderStatus @default(DRAFT)
+  orderedAt   DateTime            @default(now())
+  expectedAt  DateTime?
+  receivedAt  DateTime?
+  subTotal    Decimal             @default(0) @db.Decimal(12, 2)
+  taxAmount   Decimal             @default(0) @db.Decimal(12, 2)
+  totalAmount Decimal             @default(0) @db.Decimal(12, 2)
+  invoiceRef  String?
+  notes       String?
+  createdById String?
+  createdAt   DateTime            @default(now())
 
   branch   Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
   supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Restrict)
@@ -3114,17 +3149,17 @@ model PurchaseOrder {
 }
 
 model PurchaseOrderItem {
-  id           String  @id @default(cuid())
-  tenantId     String
+  id              String    @id @default(cuid())
+  tenantId        String
   purchaseOrderId String
-  productId    String
-  quantity     Decimal @db.Decimal(12, 3)
-  receivedQty  Decimal @default(0) @db.Decimal(12, 3)
-  unitCost     Decimal @db.Decimal(12, 2)
-  taxRatePct   Decimal @default(18) @db.Decimal(5, 2)
-  lineTotal    Decimal @db.Decimal(12, 2)
-  batchNo      String?
-  expiryDate   DateTime? @db.Date
+  productId       String
+  quantity        Decimal   @db.Decimal(12, 3)
+  receivedQty     Decimal   @default(0) @db.Decimal(12, 3)
+  unitCost        Decimal   @db.Decimal(12, 2)
+  taxRatePct      Decimal   @default(18) @db.Decimal(5, 2)
+  lineTotal       Decimal   @db.Decimal(12, 2)
+  batchNo         String?
+  expiryDate      DateTime? @db.Date
 
   purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
   product       Product       @relation(fields: [productId], references: [id], onDelete: Restrict)
@@ -3136,11 +3171,11 @@ model PurchaseOrderItem {
 // ============================== EXPENSES ====================================
 
 model ExpenseCategory {
-  id        String  @id @default(cuid())
-  tenantId  String
-  name      String
-  isFixed   Boolean @default(false)
-  isActive  Boolean @default(true)
+  id       String  @id @default(cuid())
+  tenantId String
+  name     String
+  isFixed  Boolean @default(false)
+  isActive Boolean @default(true)
 
   expenses Expense[]
 
@@ -3149,20 +3184,20 @@ model ExpenseCategory {
 }
 
 model Expense {
-  id          String      @id @default(cuid())
-  tenantId    String
-  branchId    String
-  categoryId  String
-  expenseDate DateTime    @db.Date
-  amount      Decimal     @db.Decimal(12, 2)
-  paymentMode PaymentMode @default(CASH)
-  vendor      String?
-  reference   String?
-  notes       String?
-  isRecurring Boolean     @default(false)
+  id            String      @id @default(cuid())
+  tenantId      String
+  branchId      String
+  categoryId    String
+  expenseDate   DateTime    @db.Date
+  amount        Decimal     @db.Decimal(12, 2)
+  paymentMode   PaymentMode @default(CASH)
+  vendor        String?
+  reference     String?
+  notes         String?
+  isRecurring   Boolean     @default(false)
   attachmentUrl String?
-  createdById String?
-  createdAt   DateTime    @default(now())
+  createdById   String?
+  createdAt     DateTime    @default(now())
 
   branch   Branch          @relation(fields: [branchId], references: [id], onDelete: Cascade)
   category ExpenseCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
@@ -3174,20 +3209,20 @@ model Expense {
 // ============================== PLATFORM PLUMBING ===========================
 
 model Job {
-  id         String    @id @default(cuid())
-  tenantId   String?
-  type       String
-  payload    Json      @default("{}")
-  runAt      DateTime  @default(now())
-  status     JobStatus @default(PENDING)
-  attempts   Int       @default(0)
-  maxAttempts Int      @default(5)
-  lockedAt   DateTime?
-  lockedBy   String?
-  lastError  String?
-  uniqueKey  String?   @unique
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
+  id          String    @id @default(cuid())
+  tenantId    String?
+  type        String
+  payload     Json      @default("{}")
+  runAt       DateTime  @default(now())
+  status      JobStatus @default(PENDING)
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(5)
+  lockedAt    DateTime?
+  lockedBy    String?
+  lastError   String?
+  uniqueKey   String?   @unique
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   @@index([status, runAt])
   @@index([tenantId, type])
@@ -3195,19 +3230,19 @@ model Job {
 }
 
 model BusinessAlert {
-  id         String        @id @default(cuid())
-  tenantId   String
-  branchId   String?
-  type       String
-  title      String
-  body       String
-  severity   AlertSeverity @default(INFO)
-  data       Json          @default("{}")
-  actionUrl  String?
-  isRead     Boolean       @default(false)
-  isDismissed Boolean      @default(false)
-  forDate    DateTime      @db.Date
-  createdAt  DateTime      @default(now())
+  id          String        @id @default(cuid())
+  tenantId    String
+  branchId    String?
+  type        String
+  title       String
+  body        String
+  severity    AlertSeverity @default(INFO)
+  data        Json          @default("{}")
+  actionUrl   String?
+  isRead      Boolean       @default(false)
+  isDismissed Boolean       @default(false)
+  forDate     DateTime      @db.Date
+  createdAt   DateTime      @default(now())
 
   @@unique([tenantId, branchId, type, forDate])
   @@index([tenantId, isRead, createdAt])
@@ -3249,27 +3284,27 @@ model TenantAsset {
 }
 
 model WebhookEvent {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   provider    String
   eventType   String
   payload     Json
   processedAt DateTime?
   error       String?
-  createdAt   DateTime @default(now())
+  createdAt   DateTime  @default(now())
 
   @@index([provider, createdAt])
   @@map("webhook_events")
 }
 
 model PasswordResetToken {
-  id        String   @id @default(cuid())
-  tenantId  String?
-  userId    String?
+  id             String    @id @default(cuid())
+  tenantId       String?
+  userId         String?
   platformUserId String?
-  tokenHash String   @unique
-  expiresAt DateTime
-  usedAt    DateTime?
-  createdAt DateTime @default(now())
+  tokenHash      String    @unique
+  expiresAt      DateTime
+  usedAt         DateTime?
+  createdAt      DateTime  @default(now())
 
   @@index([userId])
   @@map("password_reset_tokens")
