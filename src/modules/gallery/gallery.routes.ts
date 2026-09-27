@@ -12,7 +12,12 @@ import * as service from './gallery.service';
 const router = Router();
 router.use(authenticate);
 
-const collectionSchema = z.enum(service.COLLECTION_KEYS);
+/**
+ * A collection is a ServiceCategory id or 'studio', which is per-salon data —
+ * so the route can only check the SHAPE, and the service checks ownership.
+ * A zod enum here would have to know one salon's categories at import time.
+ */
+const collectionSchema = z.string().trim().min(1).max(40);
 
 router.get(
   '/',

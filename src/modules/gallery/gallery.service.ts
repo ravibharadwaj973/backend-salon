@@ -8,48 +8,95 @@ import { destroyImage, uploadImage } from './cloudinary';
 /**
  * THE SALON'S GALLERY.
  *
- * ── The collections, and why they are a fixed list ───────────────────────
+ * ── The collections come from the salon, not from this file ───────────────
  *
- * A gallery groups by the KIND of work, not by the price list. A salon's
- * services are finer than a customer's question: the menu has "Root touch-up",
- * "Global colour" and "Balayage" at three prices, and the customer wants to see
- * colour. Free-text categories would drift the moment two people typed
- * "Bridal" and "bridal & occasion", and the website's tags would drift with
- * them.
+ * They used to be a fixed list here: colour, cuts, treatments, skin, bridal,
+ * studio. That was wrong in two ways at once.
  *
- * So the list is fixed and shared: these keys ARE the website's tags, which is
- * what lets a photograph uploaded here appear there with nothing in between.
+ * It assumed every salon is a hair-and-skin salon. A nail bar has Nails,
+ * Extensions and Art; a barber has Beard and Fade; neither has "bridal". A
+ * fixed list means every salon that is not the one it was written for either
+ * files their work under a heading that does not fit or does not use the
+ * gallery.
+ *
+ * And it was a SECOND list of the same thing. The salon already has service
+ * categories — Hair, Skin, Nails, Spa & Massage, Makeup, Grooming — and the
+ * gallery had its own parallel set that duplicated some, contradicted others
+ * ("colour" and "cuts" are both Hair) and could drift from all of them. A
+ * customer reading "Colour" in the gallery and "Hair" on the menu is reading
+ * about two things that are the same thing.
+ *
+ * The earlier note here argued against grouping by SERVICE, because a service
+ * list is finer than a customer's question: nobody browses by price point.
+ * That was right, and categories are the level it pointed at. So the
+ * collections are now the salon's own categories, plus one built-in bucket for
+ * the photographs that are not work for anything.
+ *
+ * `collection` therefore holds either a ServiceCategory id or the literal
+ * 'studio'. Ids rather than names, so renaming a category in the catalogue does
+ * not orphan every photograph filed under it.
  */
-export const COLLECTIONS = [
-  { key: 'colour', label: 'Colour' },
-  { key: 'cuts', label: 'Cuts' },
-  { key: 'treatments', label: 'Treatments' },
-  { key: 'skin', label: 'Skin' },
-  { key: 'bridal', label: 'Bridal & occasion' },
-  { key: 'studio', label: 'The studio' },
-] as const;
+import { STUDIO_KEY, collectionTag } from './collections';
 
-export type CollectionKey = (typeof COLLECTIONS)[number]['key'];
+export { STUDIO_KEY, collectionTag };
 
-export const COLLECTION_KEYS = COLLECTIONS.map((c) => c.key) as unknown as [CollectionKey, ...CollectionKey[]];
+export interface Collection {
+  /** A ServiceCategory id, or STUDIO_KEY. */
+  key: string;
+  label: string;
+  /** The Cloudinary tag, for the website's fallback path. */
+  tag: string;
+}
 
 /**
- * The Cloudinary tag for a collection, and the SECOND tag every photograph
- * carries.
+ * The collections this salon's gallery has.
  *
- * The per-salon tag matters on a shared Cloudinary account: without it, two
- * salons both using `gallery-colour` would each render the other's work. The
- * website reads the collection tag because it already knows whose site it is;
- * the salon tag is what makes the account safe to share.
+ * Every category, whether or not it has photographs yet — an empty one is how
+ * an owner discovers where their nail pictures are supposed to go. The website
+ * drops the empty ones before rendering; the app keeps them, because the app is
+ * where you put things in.
  */
-export function tagsFor(tenantSlug: string, collection: string): string[] {
-  return [`gallery-${collection}`, `salon-${tenantSlug}`];
+export async function collectionsFor(tenantId: string): Promise<Collection[]> {
+  const categories = await runUnscoped(() =>
+    prisma.serviceCategory.findMany({
+      where: { tenantId },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      select: { id: true, name: true },
+    }),
+  );
+
+  return [
+    ...categories.map((category) => ({
+      key: category.id,
+      label: category.name,
+      tag: collectionTag(category.name),
+    })),
+    /**
+     * Last, and built in. The room, the tools and the shopfront are worth
+     * showing and belong to no service category; putting them first would open
+     * the gallery on the furniture rather than on the work.
+     */
+    { key: STUDIO_KEY, label: 'The studio', tag: collectionTag('studio') },
+  ];
+}
+
+/**
+ * Whether a salon may file a photograph under this key.
+ *
+ * Checked in the service rather than as a zod enum on the route, because the
+ * valid values are now per-salon data and a route cannot know them.
+ */
+export async function assertCollection(tenantId: string, key: string): Promise<void> {
+  if (key === STUDIO_KEY) return;
+
+  const owns = await prisma.serviceCategory.count({ where: { id: key, tenantId } });
+  if (!owns) throw NotFound('Collection');
 }
 
 export async function listPhotos(input: { collection?: string; includeHidden?: boolean } = {}) {
   const tenantId = requireTenantId();
 
-  const [photos, services] = await Promise.all([
+  const [photos, services, collections] = await Promise.all([
     prisma.galleryPhoto.findMany({
       where: {
         tenantId,
@@ -70,6 +117,7 @@ export async function listPhotos(input: { collection?: string; includeHidden?: b
       orderBy: [{ category: { sortOrder: 'asc' } }, { name: 'asc' }],
       select: { id: true, name: true, price: true, category: { select: { id: true, name: true } } },
     }),
+    collectionsFor(tenantId),
   ]);
 
   return {
@@ -80,7 +128,7 @@ export async function listPhotos(input: { collection?: string; includeHidden?: b
      */
     ready: cloudinaryReady,
     cloudName: env.CLOUDINARY_CLOUD_NAME || null,
-    collections: COLLECTIONS,
+    collections,
     services: services.map((service) => ({
       id: service.id,
       name: service.name,
@@ -92,7 +140,8 @@ export async function listPhotos(input: { collection?: string; includeHidden?: b
 }
 
 export interface AddPhotoInput {
-  collection: CollectionKey;
+  /** A ServiceCategory id, or STUDIO_KEY. */
+  collection: string;
   dataUrl: string;
   alt: string;
   caption?: string;
@@ -107,6 +156,15 @@ export async function addPhoto(input: AddPhotoInput, userId: string | null) {
     prisma.tenant.findUnique({ where: { id: tenantId }, select: { slug: true } }),
   );
   if (!tenant) throw NotFound('Salon');
+
+  /**
+   * The collection has to be one of THIS salon's, checked before the upload.
+   *
+   * Without it a photograph could be filed under another salon's category id —
+   * invisible in this salon's gallery, and the owner would have no way to find
+   * out where it went.
+   */
+  await assertCollection(tenantId, input.collection);
 
   /**
    * Cloudinary first, the row second.
@@ -130,10 +188,18 @@ export async function addPhoto(input: AddPhotoInput, userId: string | null) {
     if (!owns) throw NotFound('Service');
   }
 
+  /**
+   * Two tags: the collection's own, which the website reads by, and the salon's.
+   *
+   * The salon tag matters on a shared Cloudinary account — without it two salons
+   * both with a "Hair" category would each render the other's work.
+   */
+  const collection = (await collectionsFor(tenantId)).find((entry) => entry.key === input.collection);
+
   const uploaded = await uploadImage({
     dataUrl: input.dataUrl,
     folder: tenant.slug,
-    tags: tagsFor(tenant.slug, input.collection),
+    tags: [collection?.tag ?? collectionTag('other'), `salon-${tenant.slug}`],
     context: { alt: input.alt, caption: input.caption },
   });
 
@@ -174,7 +240,7 @@ export async function updatePhoto(
     alt?: string;
     caption?: string | null;
     isVisible?: boolean;
-    collection?: CollectionKey;
+    collection?: string;
     sortOrder?: number;
     serviceId?: string | null;
   },
@@ -182,6 +248,9 @@ export async function updatePhoto(
   const tenantId = requireTenantId();
   const photo = await prisma.galleryPhoto.findFirst({ where: { id, tenantId } });
   if (!photo) throw NotFound('Photograph');
+
+  // Moving a photograph between collections is the same check as filing it.
+  if (data.collection !== undefined) await assertCollection(tenantId, data.collection);
 
   return prisma.galleryPhoto.update({
     where: { id },
@@ -232,6 +301,8 @@ export async function deletePhoto(id: string) {
  * this API is unreachable — see the website's lib/gallery.ts.
  */
 export async function publicGallery(tenantId: string) {
+  const collections = await collectionsFor(tenantId);
+
   const photos = await runUnscoped(() =>
     prisma.galleryPhoto.findMany({
       where: { tenantId, isVisible: true },
@@ -279,7 +350,7 @@ export async function publicGallery(tenantId: string) {
 
   return {
     cloudName: env.CLOUDINARY_CLOUD_NAME || null,
-    collections: COLLECTIONS,
+    collections,
     photos: photos.map((photo) => {
       const service = photo.serviceId ? byId.get(photo.serviceId) : undefined;
 

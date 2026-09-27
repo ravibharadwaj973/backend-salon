@@ -333,6 +333,50 @@ async function main() {
     { name: 'Bridal Makeup', category: 'Makeup', price: 15000, durationMin: 180, gender: 'FEMALE' as const, commissionRate: 15 },
     { name: 'Beard Trim & Shape', category: 'Grooming', price: 300, durationMin: 25, gender: 'MALE' as const, commissionRate: 10 },
     { name: 'Threading (Eyebrows)', category: 'Grooming', price: 100, durationMin: 15, gender: 'FEMALE' as const, commissionRate: 5 },
+
+    /**
+     * The everyday work, which the seed was missing.
+     *
+     * The list above is the showpieces — keratin, bridal, gel extensions — and
+     * a salon opening this menu on day one saw nothing they do twenty times a
+     * day. A blow dry, a wash, a wax and a nail repaint are most of the diary in
+     * an Indian salon and most of what a gallery has photographs of, so they are
+     * here: a new salon can take a real booking without adding anything first,
+     * and the gallery's categories are populated enough to be worth browsing.
+     *
+     * Prices are Lucknow-and-similar mid-market, meant to be edited rather than
+     * trusted. A seed price nobody changes is a seed price a customer is quoted.
+     */
+    { name: 'Blow Dry & Styling', category: 'Hair', price: 500, durationMin: 30, gender: 'FEMALE' as const, commissionRate: 8 },
+    { name: 'Hair Wash & Blow Dry', category: 'Hair', price: 350, durationMin: 25, gender: 'UNISEX' as const, commissionRate: 8 },
+    { name: 'Hair Highlights', category: 'Hair', price: 4500, durationMin: 150, gender: 'UNISEX' as const, commissionRate: 12 },
+    { name: 'Balayage', category: 'Hair', price: 6000, durationMin: 180, gender: 'FEMALE' as const, commissionRate: 15 },
+    { name: 'Hair Botox / Smoothening', category: 'Hair', price: 5500, durationMin: 150, gender: 'UNISEX' as const, commissionRate: 15 },
+    { name: 'Kids Haircut', category: 'Hair', price: 250, durationMin: 25, gender: 'UNISEX' as const, commissionRate: 8 },
+
+    { name: 'Hydra Facial', category: 'Skin', price: 3500, durationMin: 75, gender: 'UNISEX' as const, commissionRate: 12 },
+    { name: 'De-Tan Pack', category: 'Skin', price: 900, durationMin: 40, gender: 'UNISEX' as const, commissionRate: 8 },
+
+    { name: 'Nail Art (per nail)', category: 'Nails', price: 150, durationMin: 15, gender: 'FEMALE' as const, commissionRate: 10 },
+    { name: 'Gel Polish', category: 'Nails', price: 900, durationMin: 45, gender: 'FEMALE' as const, commissionRate: 10 },
+    { name: 'Nail Extension Refill', category: 'Nails', price: 1200, durationMin: 60, gender: 'FEMALE' as const, commissionRate: 10 },
+
+    { name: 'Engagement Makeup', category: 'Makeup', price: 8000, durationMin: 120, gender: 'FEMALE' as const, commissionRate: 15 },
+    { name: 'Saree Draping', category: 'Makeup', price: 1000, durationMin: 30, gender: 'FEMALE' as const, commissionRate: 10 },
+    /**
+     * The bridal trial is its own service on purpose. It is a real appointment
+     * weeks before the wedding, at its own price, and a salon that has no line
+     * for it either gives it away or books it as the wedding itself and has the
+     * diary wrong on the one day that matters most.
+     */
+    { name: 'Bridal Trial', category: 'Makeup', price: 4000, durationMin: 120, gender: 'FEMALE' as const, commissionRate: 12 },
+
+    { name: 'Full Arms Waxing', category: 'Grooming', price: 400, durationMin: 30, gender: 'FEMALE' as const, commissionRate: 8 },
+    { name: 'Full Legs Waxing', category: 'Grooming', price: 700, durationMin: 40, gender: 'FEMALE' as const, commissionRate: 8 },
+    { name: 'Upper Lip Threading', category: 'Grooming', price: 50, durationMin: 10, gender: 'FEMALE' as const, commissionRate: 5 },
+    { name: 'Shave', category: 'Grooming', price: 200, durationMin: 20, gender: 'MALE' as const, commissionRate: 8 },
+
+    { name: 'Foot Reflexology', category: 'Spa & Massage', price: 1200, durationMin: 45, gender: 'UNISEX' as const, commissionRate: 10 },
   ];
 
   const services = [];
