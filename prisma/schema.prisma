@@ -2713,6 +2713,25 @@ model Feedback {
   authorPhone   String?
   createdAt     DateTime @default(now())
 
+  /// WHAT THE WORDS SAID, KEPT APART FROM WHAT THE CUSTOMER SCORED.
+  ///
+  /// A reading of the comment, never a revision of the rating. `rating` above
+  /// is the customer's own tap and is never written by the analysis; these are
+  /// a model's opinion of their prose and are allowed to be wrong. Averaging
+  /// the two would produce a number that is neither.
+  ///
+  /// Null until the analysis job has run, and still null afterwards if the
+  /// model returned nothing usable or no key is configured. `analyzedAt` is
+  /// what says the attempt happened, so an unanalysed backlog is countable.
+  sentiment      FeedbackSentiment?
+  /// -1 to 1. Null when the model gave no usable number.
+  sentimentScore Float?
+  analyzedAt     DateTime?
+  /// A tidy-up of the customer's OWN words, for them to edit or discard.
+  /// Never posted anywhere by this app. See feedback-ai.ts.
+  reviewDraft    String?
+
+  topics      FeedbackTopic[]
   appointment Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
   customer    Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
   staff       Staff?       @relation(fields: [staffId], references: [id], onDelete: SetNull)
@@ -2722,6 +2741,58 @@ model Feedback {
   @@index([tenantId, source, createdAt])
   @@index([tenantId, isPublic, createdAt])
   @@map("feedback")
+}
+
+/// WHAT A PIECE OF FEEDBACK WAS ABOUT.
+///
+/// One row per topic the customer actually raised, from a fixed list. The list
+/// is fixed on purpose: free text fills with "vibes", "reception" and forty
+/// spellings of the same thing, and then "waiting time was mentioned in 23% of
+/// negative feedback" is a guess rather than a count — and not the same guess
+/// in March as in September.
+///
+/// A model proposes these; anything outside the list is dropped before it gets
+/// here. See feedback-ai.ts.
+model FeedbackTopic {
+  id         String            @id @default(cuid())
+  tenantId   String
+  feedbackId String
+  topic      FeedbackTopicKind
+  sentiment  FeedbackSentiment
+  createdAt  DateTime          @default(now())
+
+  feedback Feedback @relation(fields: [feedbackId], references: [id], onDelete: Cascade)
+
+  /// One reading per topic per feedback. A model that says WAITING_TIME twice
+  /// has not given a second data point.
+  @@unique([feedbackId, topic])
+  @@index([tenantId, topic, sentiment])
+  @@map("feedback_topics")
+}
+
+/// How a comment reads. Three values, because a dashboard that groups by this
+/// cannot group by a scale somebody keeps adding to.
+enum FeedbackSentiment {
+  POSITIVE
+  NEUTRAL
+  NEGATIVE
+}
+
+/// The things a salon can actually do something about. Adding one is a
+/// migration and a decision, which is the right amount of friction for the
+/// dimension every feedback report groups by.
+enum FeedbackTopicKind {
+  SERVICE
+  STAFF
+  CLEANLINESS
+  WAITING_TIME
+  PRICE
+  VALUE
+  AMBIENCE
+  BOOKING
+  PRODUCT_QUALITY
+  RESULT
+  CUSTOMER_SERVICE
 }
 
 /// A PHOTOGRAPH OF THE SALON'S WORK.

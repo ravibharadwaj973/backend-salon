@@ -7,6 +7,7 @@ import { possibleAuthors } from './website-feedback.service';
 import { pageParams } from '../../core/http';
 import { pctOf, round2 } from '../../core/money';
 import { enqueueSafe } from '../../jobs/queue';
+import { aiReady } from '../../config/env';
 
 export interface FeedbackInput {
   appointmentId?: string;
@@ -103,6 +104,19 @@ export async function submitFeedback(input: FeedbackInput, tenantIdOverride?: st
   );
 
   if (staffId) await refreshStaffRating(staffId);
+
+  /**
+   * Read the comment, in the background, if there is a key for it.
+   *
+   * Enqueued rather than awaited: the customer is looking at a spinner, and
+   * whether a model answers in 200ms or times out at twenty seconds is not
+   * their problem. Guarded by aiReady so a salon with no key does not build a
+   * queue of work that can only fail — retries of an impossible job are how
+   * the reminders behind it get delayed.
+   */
+  if (aiReady && feedback.comment?.trim()) {
+    enqueueSafe('feedback.analyze', { feedbackId: feedback.id, tenantId });
+  }
 
   if (isComplaint) {
     await runUnscoped(() =>

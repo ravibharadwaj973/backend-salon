@@ -123,6 +123,27 @@ const envSchema = z.object({
    */
   CLOUDINARY_FOLDER: z.string().default('parlon'),
 
+  /**
+   * GROQ — reading what customers wrote.
+   *
+   * Optional, and the app is fully usable without it: no key means feedback is
+   * simply never analysed, and every rating, alert, journey and report carries
+   * on exactly as before. Nothing a salon depends on is behind this.
+   *
+   * OpenAI-compatible, so BASE_URL can point at any endpoint speaking that
+   * protocol if the account moves. MODEL is configurable because a hosted
+   * model name is a moving target and a stale default should be a one-line env
+   * change rather than a deploy.
+   */
+  GROQ_API_KEY: z.string().optional().default(''),
+  GROQ_BASE_URL: z.string().default('https://api.groq.com/openai/v1'),
+  GROQ_MODEL: z.string().default('llama-3.3-70b-versatile'),
+  /**
+   * A feedback analysis nobody is waiting for. Short on purpose: it runs in a
+   * job, and a request that hangs holds a worker slot that reminders need.
+   */
+  GROQ_TIMEOUT_MS: z.coerce.number().int().positive().default(20_000),
+
   EMAIL_DRIVER: z.enum(['console', 'resend']).default('console'),
   EMAIL_API_URL: z.string().default('https://api.resend.com'),
   EMAIL_API_KEY: z.string().optional().default(''),
@@ -180,6 +201,15 @@ export const env = {
 export const cloudinaryReady = Boolean(
   env.CLOUDINARY_CLOUD_NAME && env.CLOUDINARY_API_KEY && env.CLOUDINARY_API_SECRET,
 );
+
+/**
+ * Whether feedback can be analysed at all.
+ *
+ * Read before enqueuing rather than inside the job: a queue filling with work
+ * that can only fail is worse than no feature, because it buries the jobs that
+ * matter under retries of one that never will.
+ */
+export const aiReady = Boolean(env.GROQ_API_KEY);
 
 export const isProd = env.NODE_ENV === 'production';
 export const isTest = env.NODE_ENV === 'test';

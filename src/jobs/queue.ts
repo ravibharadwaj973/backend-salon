@@ -13,6 +13,7 @@ export type JobType =
   | 'appointment.no_show_sweep'
   | 'invoice.post_process'
   | 'customer.rollup'
+  | 'feedback.analyze'
   | 'inventory.consume'
   | 'alerts.generate'
   | 'membership.expiry_sweep'

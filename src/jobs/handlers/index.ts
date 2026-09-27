@@ -18,6 +18,7 @@ import * as gamification from '../../modules/gamification/gamification.service';
 import * as alerts from '../../modules/analytics/alerts.service';
 import { pruneAudit } from '../../modules/audit/audit.service';
 import * as renewals from '../../modules/tenants/renewal.service';
+import { analyseFeedback } from '../../modules/feedback/feedback-ai.service';
 
 export type JobHandler = (payload: Record<string, unknown>, job: Job) => Promise<unknown>;
 
@@ -119,6 +120,21 @@ const handlers: Record<JobType, JobHandler> = {
     }
 
     return { messageId: log?.id ?? null };
+  },
+
+  /**
+   * Reading a customer's comment. Runs in a job because it talks to a third
+   * party over the network, and a feedback form must submit at the speed of a
+   * database write whether or not a model is having a slow afternoon.
+   *
+   * Never throws: analyseFeedback swallows its own failures, so a bad key or a
+   * refusing endpoint cannot turn into a retry loop competing with reminders.
+   */
+  'feedback.analyze': async (payload) => {
+    const feedbackId = payload.feedbackId as string;
+    if (!feedbackId) return { skipped: 'no feedbackId' };
+    await analyseFeedback(feedbackId);
+    return { feedbackId };
   },
 
   'customer.rollup': async (payload) => {
