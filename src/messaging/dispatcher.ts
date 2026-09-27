@@ -17,6 +17,7 @@ import { FEATURES } from '../core/features';
 import { bookingUrl, feedbackUrl, googleReviewUrl } from '../core/public-links';
 import { invoiceUrl } from '../core/public-links';
 import type { TemplateButton } from './whatsapp-template-format';
+import { sendabilityProblem } from './whatsapp-templates';
 import { publicToken } from '../core/ids';
 
 export interface QueueMessageInput {
@@ -626,7 +627,11 @@ export async function queueMessage(input: QueueMessageInput) {
    * member replying inside an open conversation — has no template row and is
    * left alone, because there the plain text payload is the correct one.
    */
-  if (input.channel === 'WHATSAPP' && template && !template.providerTemplateName) {
+  // The whole row satisfies what sendabilityProblem asks for — variables,
+  // metaVariableOrder and rejectedReason are all real columns on it.
+  const templateProblem = input.channel === 'WHATSAPP' && template ? sendabilityProblem(template) : null;
+
+  if (templateProblem && template) {
     logger.warn(
       { templateId: template.id, template: template.name, approvalStatus: template.approvalStatus },
       'message not sent: whatsapp template is not live with Meta',
@@ -648,11 +653,15 @@ export async function queueMessage(input: QueueMessageInput) {
         payload: variables as Prisma.InputJsonValue,
         status: 'SKIPPED',
         errorCode: 'TEMPLATE_NOT_LIVE',
-        errorMessage:
-          `Not sent: the WhatsApp template “${template.name}” has not been approved by Meta yet` +
-          `${template.approvalStatus ? ` (it is ${String(template.approvalStatus).toLowerCase()})` : ''}. ` +
-          'WhatsApp only lets a business start a conversation with an approved template, so there was nothing ' +
-          'valid to send. Submit it under Templates and send this again once Meta approves it.',
+        /**
+         * sendabilityProblem's wording, not a second opinion written here.
+         *
+         * It already distinguishes never-submitted from in-review from
+         * rejected from paused from approved-but-never-synced, and each of
+         * those needs the salon to do something different. A parallel sentence
+         * in this file would drift from it within a month.
+         */
+        errorMessage: `Not sent. ${templateProblem}`,
       },
     });
   }
