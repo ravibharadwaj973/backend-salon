@@ -1,6 +1,6 @@
 import { prisma } from '../../core/prisma';
 import { requireTenantId, runUnscoped } from '../../core/context';
-import { NotFound } from '../../core/errors';
+import { BadRequest, NotFound } from '../../core/errors';
 import { logger } from '../../core/logger';
 import { env, cloudinaryReady } from '../../config/env';
 import { destroyImage, uploadImage } from './cloudinary';
@@ -263,6 +263,53 @@ export async function updatePhoto(
       ...(data.serviceId !== undefined ? { serviceId: data.serviceId } : {}),
     },
   });
+}
+
+/**
+ * PUT THE COLLECTION IN THE ORDER THE SALON DRAGGED IT INTO.
+ *
+ * One call with the whole order rather than a PATCH per photograph, for three
+ * reasons that all bite in practice:
+ *
+ *  - A drag moves ONE tile and changes the position of every tile after it.
+ *    Sending one PATCH per changed row is a dozen requests for one gesture, and
+ *    a salon reordering on hotel wifi would watch them trickle.
+ *  - Half-applied is worse than not applied. If the fourth of twelve requests
+ *    fails, the gallery is in an order nobody chose and the screen and the
+ *    database disagree. A transaction either moves everything or nothing.
+ *  - Two people reordering at once would interleave. The last whole order wins
+ *    here, which is at least an order somebody actually saw.
+ *
+ * Positions are rewritten from zero rather than nudged. The upload path uses
+ * negative sortOrder to put new photographs at the front, so the numbers drift
+ * apart over time; renumbering on every reorder keeps them dense and means the
+ * stored value always reads as the position it is.
+ */
+export async function reorderPhotos(collection: string, ids: string[]) {
+  const tenantId = requireTenantId();
+
+  /**
+   * Every id has to be this salon's, in this collection.
+   *
+   * Without the collection check, a reorder could pull a photograph out of
+   * another tab by including its id — it would be renumbered against a list it
+   * is not in, and appear in the wrong place on the website with nothing to
+   * explain it.
+   */
+  const owned = await prisma.galleryPhoto.findMany({
+    where: { id: { in: ids }, tenantId, collection },
+    select: { id: true },
+  });
+
+  if (owned.length !== ids.length) {
+    throw BadRequest('That list does not match the photographs in this collection. Reload and try again.');
+  }
+
+  await prisma.$transaction(
+    ids.map((id, index) => prisma.galleryPhoto.update({ where: { id }, data: { sortOrder: index } })),
+  );
+
+  return { ordered: ids.length };
 }
 
 /**

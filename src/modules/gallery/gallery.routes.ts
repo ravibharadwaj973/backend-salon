@@ -92,6 +92,33 @@ router.patch(
   asyncHandler(async (req, res) => ok(res, await service.updatePhoto(req.params.id!, req.body as never))),
 );
 
+/**
+ * The whole order of one collection, in one call.
+ *
+ * POST rather than PATCH on each photograph: a drag moves one tile and shifts
+ * every tile after it, and twelve requests for one gesture can half-apply and
+ * leave the gallery in an order nobody chose. See reorderPhotos.
+ */
+router.post(
+  '/reorder',
+  requirePermission(PERMISSIONS.TENANT_MANAGE),
+  validate({
+    body: z.object({
+      collection: collectionSchema,
+      /**
+       * Bounded. A collection with more than 500 photographs is not a gallery
+       * anybody scrolls, and an unbounded array here is an unbounded
+       * transaction.
+       */
+      ids: z.array(idSchema).min(1).max(500),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const body = req.body as { collection: string; ids: string[] };
+    return ok(res, await service.reorderPhotos(body.collection, body.ids));
+  }),
+);
+
 router.delete(
   '/:id',
   requirePermission(PERMISSIONS.TENANT_MANAGE),
