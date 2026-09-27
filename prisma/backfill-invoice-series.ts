@@ -19,7 +19,7 @@
  *   docker run --rm --network salon --env-file .env api:migrate \
  *     npx tsx prisma/backfill-invoice-series.ts
  */
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from '@prisma/client'
 import { financialYear } from '../src/modules/billing/gst';
 import { sequenceOf } from '../src/modules/billing/invoice-export.service';
 import { parseFormat, counterKey } from '../src/modules/billing/invoice-series';
