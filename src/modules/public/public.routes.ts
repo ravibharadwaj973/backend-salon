@@ -695,8 +695,20 @@ router.post(
       comment?: string;
       services?: { serviceId: string; rating: number; comment?: string }[];
     };
+    /**
+     * Whichever key the page resolved, not the raw id from the URL.
+     *
+     * The link carries an appointment id for a booked visit and an invoice id
+     * for a walk-in; the context already worked out which, so passing its
+     * answer keeps that decision in one place rather than repeating the
+     * guess here.
+     */
     const result = await feedback.submitFeedback(
-      { appointmentId: req.params.appointmentId!, ...body },
+      {
+        ...(context.appointmentId ? { appointmentId: context.appointmentId } : {}),
+        ...(context.invoiceId ? { invoiceId: context.invoiceId } : {}),
+        ...body,
+      },
       context.tenantId,
     );
 

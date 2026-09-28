@@ -341,6 +341,38 @@ export async function buildVariables(input: {
     }
   }
 
+  /**
+   * A WALK-IN'S FEEDBACK LINK, KEYED TO THEIR BILL.
+   *
+   * No appointment anywhere — not passed, not on an invoice, not in their
+   * history — means a customer billed at the counter. Until the feedback page
+   * learned to accept an invoice id there was nothing to point at, so these
+   * two variables stayed empty and every review request to a walk-in was
+   * refused. In a salon where walk-ins are most of the trade that was most
+   * customers, and the review pipeline only ever ran for the half that books
+   * ahead.
+   *
+   * Their most recent real bill, for the same reason the appointment fallback
+   * picks the latest visit: it is the one the message is about. Drafts are
+   * skipped — an unfinished bill is not a visit that happened.
+   */
+  if (!appointmentId && input.customerId) {
+    const invoice =
+      (input.invoiceId
+        ? await prisma.invoice.findUnique({ where: { id: input.invoiceId }, select: { id: true } })
+        : null) ??
+      (await prisma.invoice.findFirst({
+        where: { customerId: input.customerId, status: { not: 'DRAFT' } },
+        orderBy: { invoiceDate: 'desc' },
+        select: { id: true },
+      }));
+
+    if (invoice) {
+      vars.feedback_link = feedbackUrl(invoice.id);
+      vars.google_review_link = googleReviewUrl(invoice.id);
+    }
+  }
+
   if (input.invoiceId) {
     const invoice = await prisma.invoice.findUnique({
       where: { id: input.invoiceId },

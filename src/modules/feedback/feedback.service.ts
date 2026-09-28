@@ -17,6 +17,14 @@ import {
 
 export interface FeedbackInput {
   appointmentId?: string;
+  /**
+   * The bill this rating is about, when there was no appointment.
+   *
+   * A walk-in has one and not the other. Exactly one of these is ever set:
+   * the public page resolves which from the id in the link, so nothing
+   * downstream has to guess.
+   */
+  invoiceId?: string;
   customerId?: string;
   staffId?: string;
   branchId?: string;
@@ -88,6 +96,36 @@ export async function submitFeedback(input: FeedbackInput, tenantIdOverride?: st
     if (existing) throw BadRequest('Feedback has already been submitted for this visit');
   }
 
+  /**
+   * THE SAME FACTS, OFF THE BILL.
+   *
+   * A walk-in's rating has to know its branch, its customer and which
+   * services may be rated, exactly as a booked visit does — and the invoice
+   * carries all three. Without this the rating would be refused for want of a
+   * branch, which is the failure this whole change exists to remove.
+   */
+  if (input.invoiceId) {
+    const invoice = await runUnscoped(() =>
+      prisma.invoice.findUnique({
+        where: { id: input.invoiceId },
+        include: { items: { where: { itemType: 'SERVICE' }, select: { refId: true, staffId: true } } },
+      }),
+    );
+    if (!invoice || invoice.tenantId !== tenantId) throw NotFound('Invoice');
+
+    const existingForInvoice = await runUnscoped(() =>
+      prisma.feedback.findUnique({ where: { invoiceId: input.invoiceId } }),
+    );
+    if (existingForInvoice) throw BadRequest('Feedback has already been submitted for this visit');
+
+    branchId = invoice.branchId;
+    customerId = customerId ?? invoice.customerId ?? undefined;
+    staffId = staffId ?? invoice.items.find((item) => item.staffId)?.staffId ?? undefined;
+    onAppointment = invoice.items
+      .map((item) => item.refId)
+      .filter((refId): refId is string => Boolean(refId));
+  }
+
   if (!branchId) throw BadRequest('A branch is required');
   if (input.rating < 1 || input.rating > 5) throw BadRequest('Rating must be between 1 and 5');
 
@@ -109,6 +147,7 @@ export async function submitFeedback(input: FeedbackInput, tenantIdOverride?: st
         tenantId,
         branchId,
         appointmentId: input.appointmentId ?? null,
+        invoiceId: input.invoiceId ?? null,
         customerId: customerId ?? null,
         staffId: staffId ?? null,
         rating: input.rating,
@@ -292,18 +331,32 @@ export async function googleReviewUrlFor(tenantId: string, branchId: string | nu
  * re-checked here: a customer who rated 1–3 is never sent to Google, whatever
  * link they are holding.
  */
+/**
+ * The hand-off to Google, for either kind of visit.
+ *
+ * Takes the same id the feedback page does — an appointment for a booked
+ * visit, an invoice for a walk-in. It had to move with the page: a link that
+ * opens a walk-in's feedback form and then cannot record their tap through to
+ * Google would lose exactly the measurement the routing exists for.
+ */
 export async function recordGoogleReviewClick(
-  appointmentId: string,
+  id: string,
 ): Promise<{ recorded: boolean; googleReviewUrl: string | null }> {
-  const appointment = await runUnscoped(() =>
-    prisma.appointment.findUnique({
-      where: { id: appointmentId },
-      select: { id: true, tenantId: true, branchId: true },
-    }),
+  const [appointment, invoice] = await runUnscoped(() =>
+    Promise.all([
+      prisma.appointment.findUnique({ where: { id }, select: { tenantId: true, branchId: true } }),
+      prisma.invoice.findUnique({ where: { id }, select: { tenantId: true, branchId: true } }),
+    ]),
   );
-  if (!appointment) throw NotFound('Appointment');
 
-  const feedback = await runUnscoped(() => prisma.feedback.findUnique({ where: { appointmentId } }));
+  const visit = appointment ?? invoice;
+  if (!visit) throw NotFound('Visit');
+
+  const feedback = await runUnscoped(() =>
+    prisma.feedback.findUnique(
+      appointment ? { where: { appointmentId: id } } : { where: { invoiceId: id } },
+    ),
+  );
   if (feedback && feedback.rating <= 3) return { recorded: false, googleReviewUrl: null };
 
   if (feedback && !feedback.googleReviewedAt) {
@@ -314,7 +367,7 @@ export async function recordGoogleReviewClick(
 
   return {
     recorded: Boolean(feedback),
-    googleReviewUrl: await googleReviewUrlFor(appointment.tenantId, appointment.branchId),
+    googleReviewUrl: await googleReviewUrlFor(visit.tenantId, visit.branchId),
   };
 }
 
@@ -576,7 +629,77 @@ export async function servicePerformance(input: { from?: Date; to?: Date; branch
     .sort((a, b) => a.average - b.average || b.responses - a.responses);
 }
 
-export async function publicFeedbackContext(appointmentId: string) {
+/**
+ * THE PAGE BEHIND A FEEDBACK LINK, FOR EITHER KIND OF VISIT.
+ *
+ * The id in the URL is an APPOINTMENT id or an INVOICE id. One route rather
+ * than two, because a customer's link should not have to advertise which kind
+ * of salon billed them, and every template already carrying {{feedback_link}}
+ * keeps working untouched.
+ *
+ * Appointments are tried first: a booked visit that was later billed has both,
+ * and the appointment is the richer record — it knows who was rostered on it.
+ */
+export async function publicFeedbackContext(id: string) {
+  const context = (await appointmentContext(id)) ?? (await invoiceContext(id));
+  if (!context) throw NotFound('Visit');
+  return context;
+}
+
+/**
+ * A WALK-IN'S VISIT, READ OFF THEIR BILL.
+ *
+ * Same shape as the appointment version, so neither the page nor the submit
+ * path can tell them apart. The services come from the bill's own SERVICE
+ * lines — exactly what the customer had, because it is what they paid for —
+ * and each keeps its service id, so the per-service star rows work for a
+ * walk-in the same as for a booked visit.
+ */
+async function invoiceContext(invoiceId: string) {
+  const invoice = await runUnscoped(() =>
+    prisma.invoice.findUnique({
+      where: { id: invoiceId },
+      include: {
+        tenant: { select: { name: true, logoUrl: true } },
+        branch: { select: { name: true } },
+        customer: { select: { firstName: true } },
+        items: {
+          where: { itemType: 'SERVICE' },
+          select: { refId: true, name: true, staff: { select: { displayName: true } } },
+        },
+        feedback: { select: { id: true } },
+      },
+    }),
+  );
+
+  if (!invoice) return null;
+
+  return {
+    salonName: invoice.tenant.name,
+    logoUrl: invoice.tenant.logoUrl,
+    branchName: invoice.branch.name,
+    customerName: invoice.customer?.firstName ?? 'there',
+    visitDate: invoice.invoiceDate,
+    /**
+     * Only lines still pointing at a service the salon has. A line whose
+     * service was deleted keeps its name on the bill — that is the bill's job
+     * — but it cannot be rated, because there is nothing to attach a rating to.
+     */
+    services: invoice.items
+      .filter((item): item is typeof item & { refId: string } => Boolean(item.refId))
+      .map((item) => ({ id: item.refId, name: item.name })),
+    staffName: invoice.items.find((item) => item.staff)?.staff?.displayName ?? null,
+    alreadySubmitted: Boolean(invoice.feedback),
+    tenantId: invoice.tenantId,
+    branchId: invoice.branchId,
+    googleReviewUrl: await googleReviewUrlFor(invoice.tenantId, invoice.branchId),
+    /** Which key this page is about, so the submit knows what to write. */
+    invoiceId: invoice.id as string | null,
+    appointmentId: null as string | null,
+  };
+}
+
+async function appointmentContext(appointmentId: string) {
   const appointment = await runUnscoped(() =>
     prisma.appointment.findUnique({
       where: { id: appointmentId },
@@ -589,7 +712,7 @@ export async function publicFeedbackContext(appointmentId: string) {
       },
     }),
   );
-  if (!appointment) throw NotFound('Appointment');
+  if (!appointment) return null;
 
   return {
     salonName: appointment.tenant.name,
@@ -608,5 +731,7 @@ export async function publicFeedbackContext(appointmentId: string) {
     tenantId: appointment.tenantId,
     branchId: appointment.branchId,
     googleReviewUrl: await googleReviewUrlFor(appointment.tenantId, appointment.branchId),
+    invoiceId: null as string | null,
+    appointmentId: appointment.id as string | null,
   };
 }

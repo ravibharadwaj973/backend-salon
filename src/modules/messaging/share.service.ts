@@ -267,6 +267,5 @@ async function resolutionFacts(tenantId: string, customerId?: string): Promise<R
     hasCustomer: Boolean(customerId),
     hasWebsite: Boolean(tenant?.websiteUrl?.trim()),
     hasCompletedVisit: completed > 0 || billed > 0,
-    hasAppointment: completed > 0,
   };
 }

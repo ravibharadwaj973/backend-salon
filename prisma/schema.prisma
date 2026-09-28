@@ -1745,6 +1745,8 @@ model Invoice {
   redemptions    PackageRedemption[]
   stockMovements StockMovement[]
 
+  feedback Feedback?
+
   @@unique([tenantId, invoiceNumber])
   @@index([tenantId, branchId, invoiceDate])
   @@index([tenantId, customerId])
@@ -2674,6 +2676,17 @@ model Feedback {
   tenantId              String
   branchId              String
   appointmentId         String?   @unique
+  /// THE OTHER WAY A VISIT CAN BE IDENTIFIED.
+  ///
+  /// Feedback used to hang off an appointment alone, which quietly excluded
+  /// every walk-in: a customer billed straight through the counter has no
+  /// appointment, so there was no id for the form to key to and the message
+  /// was refused rather than sent to a dead page. In a salon where walk-ins
+  /// are most of the trade, that meant most customers could never be asked
+  /// for feedback — and therefore never asked for a Google review.
+  ///
+  /// Every paying customer has an invoice. One of these two is set, never both.
+  invoiceId             String?   @unique
   customerId            String?
   staffId               String?
   rating                Int
@@ -2736,6 +2749,7 @@ model Feedback {
   topics         FeedbackTopic[]
   serviceRatings FeedbackServiceRating[]
   appointment    Appointment?            @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  invoice        Invoice?                @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
   customer       Customer?               @relation(fields: [customerId], references: [id], onDelete: SetNull)
   staff          Staff?                  @relation(fields: [staffId], references: [id], onDelete: SetNull)
 

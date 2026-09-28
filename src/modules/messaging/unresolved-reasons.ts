@@ -29,15 +29,6 @@ export interface ResolutionFacts {
    * services off their invoice when there is no appointment.
    */
   hasCompletedVisit: boolean;
-  /**
-   * A completed APPOINTMENT specifically. Deliberately separate.
-   *
-   * A feedback form and a review hand-off are keyed to an appointment id, so a
-   * walk-in billed at the counter has a finished visit and still nothing for
-   * those links to point at. One fact serving both would make this file say
-   * the wrong thing about one of them — the exact failure it exists to stop.
-   */
-  hasAppointment: boolean;
 }
 
 /**
@@ -74,10 +65,17 @@ export function explainUnresolved(name: string, facts: ResolutionFacts): string 
     case 'feedback_link':
     case 'google_review_link': {
       if (!facts.hasCustomer) return 'Points at one visit. Choose a customer and it fills itself in.';
-      if (!facts.hasAppointment) {
-        return facts.hasCompletedVisit
-          ? 'Points at one appointment. This customer was billed at the counter without one, so there is nothing for it to open.'
-          : 'Points at one visit, and this customer has no finished appointment to point at.';
+      /**
+       * A bill counts now, so the appointment is no longer required.
+       *
+       * The feedback page accepts an invoice id as readily as an appointment
+       * id, which is what let walk-ins be asked for feedback at all. This
+       * sentence used to say a counter-billed customer had nothing for the
+       * link to open; leaving it would mean telling somebody a feature is
+       * broken at the moment it started working.
+       */
+      if (!facts.hasCompletedVisit) {
+        return 'Points at one visit, and this customer has no finished appointment or bill to point at.';
       }
       return undefined;
     }

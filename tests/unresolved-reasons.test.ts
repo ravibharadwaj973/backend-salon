@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { explainAll, explainUnresolved } from '../src/modules/messaging/unresolved-reasons';
 
-const NOTHING = { hasCustomer: false, hasWebsite: false, hasCompletedVisit: false, hasAppointment: false };
-const EVERYTHING = { hasCustomer: true, hasWebsite: true, hasCompletedVisit: true, hasAppointment: true };
+const NOTHING = { hasCustomer: false, hasWebsite: false, hasCompletedVisit: false };
+const EVERYTHING = { hasCustomer: true, hasWebsite: true, hasCompletedVisit: true };
 
 describe('why an automatic variable is empty', () => {
   it('blames the missing customer first, because it is checked first', () => {
@@ -23,7 +23,7 @@ describe('why an automatic variable is empty', () => {
 
   it('names the missing visit once the website is set', () => {
     expect(
-      explainUnresolved('suggested_service', { hasCustomer: true, hasWebsite: true, hasCompletedVisit: false, hasAppointment: false }),
+      explainUnresolved('suggested_service', { hasCustomer: true, hasWebsite: true, hasCompletedVisit: false }),
     ).toMatch(/no finished visit or bill/);
   });
 
@@ -47,8 +47,8 @@ describe('why an automatic variable is empty', () => {
   });
 
   it('explains a visit link by the visit', () => {
-    expect(explainUnresolved('feedback_link', { ...EVERYTHING, hasCompletedVisit: false, hasAppointment: false })).toMatch(
-      /no finished appointment/,
+    expect(explainUnresolved('feedback_link', { ...EVERYTHING, hasCompletedVisit: false })).toMatch(
+      /no finished appointment or bill/,
     );
     expect(explainUnresolved('google_review_link', NOTHING)).toMatch(/Choose a customer/);
   });
@@ -69,11 +69,12 @@ describe('why an automatic variable is empty', () => {
     expect(explainAll([], NOTHING)).toEqual({});
   });
 
-  it('tells a counter-billed customer apart from a brand new one', () => {
-    // Both have no appointment, and they need different sentences: one was
-    // billed without ever being booked, the other has not been in at all.
+  it('says nothing about a feedback link once there is a bill to open', () => {
+    // The page accepts an invoice id as readily as an appointment id, so a
+    // customer billed at the counter has somewhere for the link to go and
+    // there is no problem left to explain.
     expect(
-      explainUnresolved('feedback_link', { ...EVERYTHING, hasAppointment: false }),
-    ).toMatch(/billed at the counter/);
+      explainUnresolved('feedback_link', { hasCustomer: true, hasWebsite: true, hasCompletedVisit: true }),
+    ).toBeUndefined();
   });
 });
