@@ -6,6 +6,7 @@ import {
   type AnalysisInput,
   analysisPrompt,
   draftPrompt,
+  hasDraftMaterial,
   parseAnalysis,
   parseDraft,
 } from './feedback-ai';
@@ -89,6 +90,33 @@ async function chat(system: string, user: string, timeoutMs?: number): Promise<s
 }
 
 /**
+ * The services to tell the model about, each with the customer's own stars
+ * where they gave any.
+ *
+ * Two sources because a visit and a rating are not the same list: the
+ * appointment knows everything they had, the rating rows know what they
+ * bothered to score. A rated service wins — its score is the useful part —
+ * and a service they had but skipped is named with a null so the prompt's
+ * "say nothing about it" rule applies.
+ */
+function servicesWithRatings(feedback: {
+  appointment?: { services: { service: { name: string } }[] } | null;
+  serviceRatings: { rating: number; service: { name: string } }[];
+}): { name: string; rating?: number | null }[] {
+  const rated = feedback.serviceRatings.map((row) => ({
+    name: row.service.name,
+    rating: row.rating,
+  }));
+  const ratedNames = new Set(rated.map((row) => row.name));
+
+  const unrated = (feedback.appointment?.services ?? [])
+    .map((row) => ({ name: row.service.name, rating: null }))
+    .filter((row) => !ratedNames.has(row.name));
+
+  return [...rated, ...unrated];
+}
+
+/**
  * Analyse one piece of feedback and store what came back.
  *
  * Idempotent by way of the unique index on (feedbackId, topic): running it
@@ -104,6 +132,13 @@ export async function analyseFeedback(feedbackId: string): Promise<void> {
         appointment: {
           include: { services: { include: { service: { select: { name: true } } } } },
         },
+        /**
+         * The stars the customer put against each service, which the draft
+         * writes from. Read from the ratings rather than from the appointment,
+         * because these are the ones they actually answered — a service they
+         * skipped has no row here and must go unmentioned.
+         */
+        serviceRatings: { include: { service: { select: { name: true } } } },
       },
     }),
   );
@@ -132,7 +167,13 @@ export async function analyseFeedback(feedbackId: string): Promise<void> {
     cleanlinessRating: feedback.ambienceRating,
     waitingRating: feedback.waitRating,
     comment,
-    services: (feedback.appointment?.services ?? []).map((row) => ({ name: row.service.name })),
+    /**
+     * The rated ones first, since those carry a score the draft can use. A
+     * service on the visit that the customer did not rate is still named — it
+     * is context for the words they wrote — but with a null score, which the
+     * prompt is told means "say nothing about it".
+     */
+    services: servicesWithRatings(feedback),
   };
 
   const { system, user } = analysisPrompt(input);
@@ -148,16 +189,18 @@ export async function analyseFeedback(feedbackId: string): Promise<void> {
   }
 
   /**
-   * A drafted review only for somebody who might actually post one.
+   * A draft for whoever has something to draft from, whatever it says.
    *
-   * Asked for separately, and only when the reading is positive — not to
-   * filter who is invited to review (everyone is; see feedback.service.ts) but
-   * because rewriting an unhappy customer's complaint into a tidy paragraph
-   * for them to publish is not a favour anyone asked for. An unhappy customer
-   * who wants to post says it in their own words.
+   * It used to be produced only when the reading came back POSITIVE, on the
+   * grounds that tidying an unhappy customer's complaint for publication was
+   * no favour to the salon. That was the wrong call twice over: the Google
+   * link is offered to everyone precisely because choosing who gets help is
+   * gating, and doing it on a MODEL's reading of the words made the filter
+   * both invisible and unaccountable. So the sentiment is recorded and does
+   * not decide this.
    */
   let draft: string | null = null;
-  if (analysis.sentiment === 'POSITIVE') {
+  if (hasDraftMaterial(input)) {
     const draftPrompts = draftPrompt(input);
     const rawDraft = await chat(draftPrompts.system, draftPrompts.user);
     draft = rawDraft ? parseDraft(rawDraft) : null;
@@ -224,17 +267,21 @@ export async function analyseFeedback(feedbackId: string): Promise<void> {
  * or missing, the page simply shows the Google link without a draft, which is
  * what it did before this existed.
  *
- * IT ONLY EVER REARRANGES WHAT THEY WROTE. Nothing is generated from the
- * rating or the service list — a review assembled from a five-star tap and
- * the word "Haircut" would be the salon's words in the customer's mouth,
- * which is what Google's rating-manipulation policy is looking for. No
- * comment, no draft.
+ * IT ONLY EVER SAYS BACK WHAT THEY TOLD US. Their comment when they wrote
+ * one; otherwise the scores they gave — which service, the wait, the person
+ * who served them — put into words, with a low score still reading as a
+ * complaint. What it must never do is improve on them: see the rules in
+ * feedback-ai.ts.
+ *
+ * `hasDraftMaterial` is what stops that from sliding into invention. An
+ * overall rating and nothing else is not material; every draft is anchored to
+ * something the customer actually pointed at.
  */
 const DRAFT_TIMEOUT_MS = 8000;
 
 export async function draftReviewNow(input: AnalysisInput): Promise<string | null> {
   if (!aiReady) return null;
-  if (!input.comment?.trim()) return null;
+  if (!hasDraftMaterial(input)) return null;
 
   const { system, user } = draftPrompt(input);
   const raw = await chat(system, user, DRAFT_TIMEOUT_MS);

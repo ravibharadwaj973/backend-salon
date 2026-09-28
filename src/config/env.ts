@@ -136,6 +136,19 @@ const envSchema = z.object({
    * change rather than a deploy.
    */
   GROQ_API_KEY: z.string().optional().default(''),
+  /**
+   * The name people actually type, accepted as an alias.
+   *
+   * Not a hypothetical: the key was set as GROQ_API on both a laptop and a
+   * production server, and because a missing key is a legitimate state here —
+   * the whole feature is optional — nothing complained. Every analysis, every
+   * drafted review and every sentiment reading was a silent no-op for as long
+   * as that sat there, and there was no way to tell from the outside that the
+   * difference between "off" and "misconfigured" was one word.
+   *
+   * Two spellings cost a line. Finding this one cost considerably more.
+   */
+  GROQ_API: z.string().optional().default(''),
   GROQ_BASE_URL: z.string().default('https://api.groq.com/openai/v1'),
   GROQ_MODEL: z.string().default('llama-3.3-70b-versatile'),
   /**
@@ -184,6 +197,8 @@ const raw = parsed.data;
 const emailApiKey = raw.EMAIL_API_KEY || raw.RESEND_API_KEY;
 export const env = {
   ...raw,
+  /** Either spelling. See the note on GROQ_API above. */
+  GROQ_API_KEY: raw.GROQ_API_KEY || raw.GROQ_API,
   EMAIL_API_KEY: emailApiKey,
   EMAIL_FROM_ADDRESS: raw.EMAIL_FROM_ADDRESS || raw.RESEND_FROM_EMAIL,
   EMAIL_FROM_NAME: raw.EMAIL_FROM_NAME || raw.RESEND_FROM_NAME,

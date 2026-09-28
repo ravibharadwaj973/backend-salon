@@ -254,24 +254,35 @@ export async function submitFeedback(input: FeedbackInput, tenantIdOverride?: st
    * somebody might post a review is the thirty seconds after they press send.
    * Awaited, but on a short leash: a slow model shows the link without a
    * draft rather than holding the thank-you screen.
+   *
+   * ── What it is built from, and why that changed ──────────────────────────
+   *
+   * Their comment when they wrote one, and otherwise the stars they gave: each
+   * service by name, the wait, the person who served them. Most customers type
+   * nothing at all — the box is optional and it is the last thing on the page
+   * — so a draft that required words was a feature that almost never ran. From
+   * the salon's side it looked broken, and from the customer's side the one
+   * screen where they might post a review was a blank Google box again.
+   *
+   * ── Offered to everybody, complaint or not ───────────────────────────────
+   *
+   * This used to stop at `!isComplaint`. But the Google link itself is offered
+   * to everyone, because deciding who is invited to review by how they rated
+   * is the gating Google prohibits — and handing only the happy ones help
+   * composing is that same filter one step further down the page. The draft
+   * carries their criticism instead: a two against the wait comes out as a
+   * sentence about waiting. See the rule in feedback-ai.ts.
    */
-  const reviewDraft =
-    aiReady && !isComplaint && input.comment?.trim()
-      ? await draftReviewNow({
-          overallRating: input.rating,
-          staffRating: input.staffRating ?? null,
-          cleanlinessRating: input.ambienceRating ?? null,
-          waitingRating: input.waitRating ?? null,
-          comment: input.comment,
-          /**
-           * Empty on purpose. draftPrompt never reads the services or the
-           * ratings — it is handed the comment and nothing else, so that what
-           * comes back can only be a rearrangement of what the customer
-           * actually wrote. Passing them would imply otherwise.
-           */
-          services: [],
-        }).catch(() => null)
-      : null;
+  const reviewDraft = aiReady
+    ? await draftReviewNow({
+        overallRating: input.rating,
+        staffRating: input.staffRating ?? null,
+        cleanlinessRating: input.ambienceRating ?? null,
+        waitingRating: input.waitRating ?? null,
+        comment: input.comment ?? null,
+        services: await draftableServices(serviceRatings, onAppointment),
+      }).catch(() => null)
+    : null;
 
   if (reviewDraft) {
     await runUnscoped(() =>
@@ -292,16 +303,58 @@ export async function submitFeedback(input: FeedbackInput, tenantIdOverride?: st
     /** Offered whatever they rated. See the note on this function. */
     googleReviewUrl: await googleReviewUrlFor(tenantId, branchId),
     /**
-     * Their own words, tidied, for them to edit and post if they want to.
+     * What they told us, in sentences, for them to edit and post if they want.
      *
-     * Null whenever there is nothing honest to build it from: no comment, no
-     * key, or a model that did not answer in time. Never assembled from the
-     * rating and the service list — that would be the salon's words in the
-     * customer's mouth, which is the thing Google's policy is written against
-     * and the thing this feature must not become.
+     * Null whenever there is nothing honest to build it from: no key, a model
+     * that did not answer in time, or an overall rating with nothing specific
+     * behind it — no comment and not one service, wait or staff member scored.
+     * That last case is the line this feature lives on: a review has to come
+     * from something the customer actually pointed at, or it is the salon
+     * talking about itself in the customer's voice.
      */
     reviewDraft,
   };
+}
+
+/**
+ * The services to hand the draft, by name, with the customer's stars.
+ *
+ * Names are looked up here rather than carried down from the appointment
+ * because the two paths into this function reach them differently — a booked
+ * visit has AppointmentService rows, a walk-in has invoice lines — and the
+ * draft only needs "Haircut, four stars".
+ *
+ * A service on the visit that the customer did not score is still named, with
+ * a null, because it is context for the words they wrote. The prompt is told
+ * that a null was not asked about and must go unmentioned, so an unrated
+ * service can never turn into a sentence of invented praise.
+ */
+async function draftableServices(
+  rated: SubmittedServiceRating[],
+  onVisit: string[],
+): Promise<{ name: string; rating?: number | null }[]> {
+  const ids = Array.from(new Set([...rated.map((row) => row.serviceId), ...onVisit]));
+  if (ids.length === 0) return [];
+
+  const services = await runUnscoped(() =>
+    prisma.service.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } }),
+  ).catch(() => []);
+
+  const nameOf = new Map(services.map((service) => [service.id, service.name]));
+  const ratingOf = new Map(rated.map((row) => [row.serviceId, row.rating]));
+
+  return ids
+    .map((id) => ({ name: nameOf.get(id), rating: ratingOf.get(id) ?? null }))
+    .filter((row): row is { name: string; rating: number | null } => Boolean(row.name))
+    /**
+     * Rated first, and otherwise left in the order they came.
+     *
+     * Deliberately NOT sorted by score. Putting the fives at the top and the
+     * twos at the bottom of a prompt nudges a model to lead with the praise
+     * and trail off before the complaint, which is the one outcome this
+     * feature must not quietly produce.
+     */
+    .sort((a, b) => (a.rating === null ? 1 : 0) - (b.rating === null ? 1 : 0));
 }
 
 /**
