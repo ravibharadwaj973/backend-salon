@@ -2,6 +2,8 @@ import { prisma } from '../../core/prisma';
 import { runUnscoped, requireTenantId } from '../../core/context';
 import { logger } from '../../core/logger';
 import { interestFrom, interestIsFresh, type InterestSignal } from './engagement';
+import { rollUpInterest } from './gallery-interest';
+import { addDays } from '../../core/dates';
 
 /**
  * WHAT A CUSTOMER HAS BEEN LOOKING AT, ROLLED UP.
@@ -172,4 +174,58 @@ export async function customerActivity(customerId: string, limit = 60) {
       at: event.at,
     })),
   }));
+}
+
+/**
+ * WHAT EVERYBODY LOOKED AT, NOT WHAT ONE PERSON LOOKED AT.
+ *
+ * customerInterests answers "what has Priya been looking at". This answers the
+ * question the salon owner actually asks first: of everybody who opened the
+ * gallery this month, which work did they open, and how many different people
+ * were there.
+ *
+ * It is the number that says what to photograph next. A bridal section opened
+ * by forty people and a nails section opened by four is an instruction about
+ * where to point the camera, and no amount of per-customer detail says it.
+ *
+ * Counted in memory rather than by the database, because "how many different
+ * people" spans two identifiers — a known customer by id, everybody else by
+ * their browser tab — and a GROUP BY cannot dedupe across the two. Bounded by
+ * MAX_EVENTS so a busy year cannot turn one screen into a table scan; the
+ * result says when it hit the ceiling rather than quietly reporting a
+ * fraction as though it were the whole.
+ */
+const MAX_EVENTS = 50_000;
+
+export async function galleryInterest(input: { from?: Date; to?: Date }) {
+  const tenantId = requireTenantId();
+
+  const from = input.from ?? addDays(new Date(), -30);
+  const to = input.to ?? new Date();
+
+  const rows = await prisma.siteVisit.findMany({
+    where: {
+      tenantId,
+      at: { gte: from, lte: to },
+      event: { in: ['gallery_filter', 'service_view'] },
+    },
+    select: { event: true, label: true, metadata: true, customerId: true, sessionId: true },
+    orderBy: { at: 'desc' },
+    take: MAX_EVENTS + 1,
+  });
+
+  const truncated = rows.length > MAX_EVENTS;
+  const rollup = rollUpInterest(truncated ? rows.slice(0, MAX_EVENTS) : rows);
+
+  return {
+    from,
+    to,
+    ...rollup,
+    /**
+     * Said out loud. A report quietly showing the most recent 50,000 events as
+     * though it were the period is worse than one that admits the period was
+     * too big, because nobody can tell by looking.
+     */
+    truncated,
+  };
 }

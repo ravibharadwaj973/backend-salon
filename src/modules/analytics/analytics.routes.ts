@@ -9,6 +9,7 @@ import { idParam, idSchema, paginationQuery } from '../../core/validators';
 import * as analytics from './analytics.service';
 import * as alerts from './alerts.service';
 import * as messaging from './messaging-analytics.service';
+import * as interest from '../engagement/interest.service';
 
 const router = Router();
 router.use(authenticate);
@@ -24,6 +25,22 @@ router.get(
   requirePermission(PERMISSIONS.DASHBOARD_VIEW),
   validate({ query: z.object({ date: z.coerce.date().optional(), branchId: idSchema.optional() }) }),
   asyncHandler(async (req, res) => ok(res, await analytics.dashboard(req.query as never))),
+);
+
+/**
+ * WHICH WORK THE SALON'S WEBSITE VISITORS ACTUALLY OPEN.
+ *
+ * Defaults to the last thirty days rather than demanding a range, because the
+ * question it answers — "what should we photograph next?" — is asked by
+ * somebody opening a screen, not by somebody filling in a form first.
+ */
+router.get(
+  '/gallery-interest',
+  requirePermission(PERMISSIONS.REPORT_VIEW),
+  validate({
+    query: z.object({ from: z.coerce.date().optional(), to: z.coerce.date().optional() }),
+  }),
+  asyncHandler(async (req, res) => ok(res, await interest.galleryInterest(req.query as never))),
 );
 
 router.get(
