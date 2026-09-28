@@ -4,7 +4,7 @@ import helmet from 'helmet';
 import compression from 'compression';
 import cookieParser from 'cookie-parser';
 import pinoHttp from 'pino-http';
-import { corsPolicy, env, isTest } from './config/env';
+import { aiReady, cloudinaryReady, corsPolicy, env, isTest } from './config/env';
 import { describePolicy, isAllowedOrigin, shouldReportRefusal } from './core/cors';
 import { logger } from './core/logger';
 import { redactUrl } from './core/log-redact';
@@ -139,7 +139,29 @@ export function createApp(): Express {
   app.use(contextMiddleware);
 
   app.get('/health', (_req, res) => {
-    res.json({ status: 'ok', service: 'parlon', uptime: process.uptime(), timestamp: new Date().toISOString() });
+    res.json({
+      status: 'ok',
+      service: 'parlon',
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+      /**
+       * WHICH OPTIONAL FEATURES THIS PROCESS ACTUALLY HAS KEYS FOR.
+       *
+       * Both are optional by design, which is what made them dangerous: with
+       * no key the feature is a silent no-op, and silence looks exactly like a
+       * bug. A Groq key was once set under the wrong variable name on a
+       * production server and the only way to find out was to read the source,
+       * because nothing the server exposed could tell you the difference
+       * between "switched off" and "misconfigured".
+       *
+       * Booleans only. Never the key, never the model name, never the base
+       * URL — this endpoint is public because a load balancer has to reach it
+       * without credentials, so it may say WHETHER a feature is on and nothing
+       * whatsoever about how it is wired. "On or off" is already observable by
+       * anyone who uses the app; the configuration is not.
+       */
+      features: { feedbackAi: aiReady, photoUploads: cloudinaryReady },
+    });
   });
 
   app.get('/ready', (_req, res) => {

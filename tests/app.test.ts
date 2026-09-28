@@ -11,6 +11,31 @@ describe('http surface', () => {
     expect(res.body.status).toBe('ok');
   });
 
+  /**
+   * The point of these flags is to tell "switched off" from "misconfigured"
+   * without reading the source — a Groq key once sat on a production server
+   * under the wrong variable name and nothing the server exposed could say so.
+   */
+  it('says which optional features have keys', async () => {
+    const res = await request(app).get('/health');
+    expect(res.body.features).toMatchObject({
+      feedbackAi: expect.any(Boolean),
+      photoUploads: expect.any(Boolean),
+    });
+  });
+
+  it('never exposes how those features are wired', async () => {
+    // Public endpoint: a load balancer reaches it without credentials, so it
+    // may say WHETHER a feature is on and nothing at all about the key, the
+    // model or the endpoint behind it.
+    const res = await request(app).get('/health');
+    const body = JSON.stringify(res.body);
+    for (const leak of ['gsk_', 'GROQ', 'api.groq.com', 'CLOUDINARY', 'cloudinary']) {
+      expect(body).not.toContain(leak);
+    }
+    expect(Object.keys(res.body.features).sort()).toEqual(['feedbackAi', 'photoUploads']);
+  });
+
   it('returns a structured 404 for unknown routes', async () => {
     const res = await request(app).get('/api/v1/does-not-exist');
     expect(res.status).toBe(404);
