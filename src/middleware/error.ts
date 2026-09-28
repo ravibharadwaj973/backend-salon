@@ -31,6 +31,29 @@ function mapPrismaError(err: unknown): AppError | null {
         return new AppError('Record not found', 404, 'NOT_FOUND');
       case 'P2014':
         return new AppError('This change would break a required relation', 409, 'RELATION_VIOLATION');
+      /**
+       * THE DATABASE IS BEHIND THE CODE.
+       *
+       * P2021 is a missing table, P2022 a missing column. Both mean one
+       * thing in practice: a deploy went out without its migrations. These
+       * used to land in the `default` branch below and come back as
+       * "Database request failed", which sounds like a bad request and sent
+       * people looking at the payload — for days, in one case, while the
+       * actual answer was one command.
+       *
+       * 503, not 400. Nothing is wrong with what the client sent, the server
+       * is not correctly deployed, and a retry after the migration runs will
+       * work. The message says so in production too: it names no data and no
+       * schema detail, only the operational fact and the fix.
+       */
+      case 'P2021':
+      case 'P2022':
+        return new AppError(
+          'The database is missing a table or column this version needs — pending migrations have not been run.',
+          503,
+          'SCHEMA_BEHIND_CODE',
+          isProd ? undefined : { prisma: err.message },
+        );
       default:
         // Prisma's own message names the model and the field; outside
         // production it is the only thing that makes this debuggable.

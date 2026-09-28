@@ -2,6 +2,7 @@ import type { Server } from 'node:http';
 import { aiReady, cloudinaryReady, env } from './config/env';
 import { logger } from './core/logger';
 import { connectDatabase, disconnectDatabase } from './core/prisma';
+import { reportPendingMigrations } from './core/migrations';
 import { createApp } from './app';
 import { reclaimStuckJobs, startWorker, stopWorker } from './jobs/worker';
 
@@ -9,6 +10,13 @@ let server: Server | null = null;
 
 async function bootstrap(): Promise<void> {
   await connectDatabase();
+
+  /**
+   * Before anything serves traffic. A database behind the code fails only on
+   * writes, so the app looks healthy while every customer pressing Send gets a
+   * 500 — see the note in core/migrations.ts. Reported, never applied.
+   */
+  await reportPendingMigrations();
 
   const app = createApp();
 

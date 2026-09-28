@@ -13,6 +13,7 @@ import { resolveClick } from './messaging/tracked-links';
 import { applyStatusUpdate } from './messaging/dispatcher';
 import { errorHandler, notFoundHandler } from './middleware/error';
 import { databaseHealthy } from './core/prisma';
+import { pendingMigrationsAtBoot } from './core/migrations';
 import { buildRouter } from './routes';
 
 export function createApp(): Express {
@@ -161,6 +162,16 @@ export function createApp(): Express {
        * anyone who uses the app; the configuration is not.
        */
       features: { feedbackAi: aiReady, photoUploads: cloudinaryReady },
+      /**
+       * How many migrations this database has not run, or null when it cannot
+       * be told. Anything above zero means writes to the new columns are
+       * failing with a 500 while reads carry on, which is the failure mode
+       * that looks like a healthy app.
+       *
+       * The COUNT, never the names — a migration name describes an unreleased
+       * feature. The names go to the startup log, which is not public.
+       */
+      pendingMigrations: pendingMigrationsAtBoot()?.length ?? null,
     });
   });
 
