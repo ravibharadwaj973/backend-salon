@@ -566,7 +566,23 @@ Data model notes: [`docs/DATA-MODEL.md`](docs/DATA-MODEL.md).
 ## Deployment notes
 
 - Set `JWT_ACCESS_SECRET` and `JWT_REFRESH_SECRET` to long random values.
-- Run `npx prisma migrate deploy` on release.
+- Run `./scripts/migrate.sh` on release, **before** the new image serves traffic.
+
+  Not `docker exec salon-api npx prisma migrate deploy` — `prisma` is a
+  devDependency and the runtime image installs with `npm ci --omit=dev`, so the
+  CLI is not in the running container. The script uses the Dockerfile's build
+  stage, which has the CLI, the schema and the migrations at the same versions
+  as the code being released.
+
+  Skipping this does not fail loudly. Reads keep working, because they touch
+  columns that already exist; only writes to the new ones break. The app looks
+  healthy while customers get 500s on the paths that save data. `/health`
+  reports `pendingMigrations`, the server logs every outstanding migration by
+  name at boot, and a missing table or column answers 503 `SCHEMA_BEHIND_CODE`
+  rather than something that reads like a bad request.
+
+- Backfills are separate and run once, after their migration:
+  `./scripts/migrate.sh run prisma/backfill-<name>.ts`.
 - `/health` is a liveness probe; `/ready` also checks the database.
 - The API trusts one proxy hop (`trust proxy = 1`) for correct client IPs in
   rate limiting and audit logs.
