@@ -6,6 +6,7 @@ import { toE164 } from '../../core/ids';
 import { buildVariables, renderTemplate, missingVariables, consentAllows } from '../../messaging/dispatcher';
 import { resolveProvider } from '../../messaging/providers';
 import { meterFor, usageSummary } from '../quotas/quota.service';
+import { type ResolutionFacts, explainAll } from './unresolved-reasons';
 
 /**
  * SHARING WITH ONE CUSTOMER
@@ -78,6 +79,14 @@ export interface SharePreview {
   templateName: string | null;
   /** Variables the template wanted but nothing could fill — shown as gaps. */
   unresolved: string[];
+  /**
+   * For the gaps the APP was supposed to fill: why it could not, and the fix.
+   *
+   * Only the automatic ones appear here. A box the salon was always meant to
+   * type into needs no explanation, and a hint under every box trains people
+   * to stop reading the hints that matter.
+   */
+  unresolvedReasons: Record<string, string>;
   consent: { allowed: boolean; status: string; reason: string | null };
   delivery: { live: boolean; source: string; reason: string | null; simulated: boolean };
   quota: { meter: string | null; available: number | null };
@@ -133,6 +142,16 @@ export async function previewShare(tenantId: string, input: SharePreviewInput): 
   const body = renderTemplate(rawBody, variables);
   const unresolved = missingVariables(rawBody, variables);
 
+  /**
+   * Looked up only when something is actually missing.
+   *
+   * Two small reads to explain a gap are worth it; two small reads on every
+   * preview that had no gap are not.
+   */
+  const unresolvedReasons = unresolved.length
+    ? explainAll(unresolved, await resolutionFacts(tenantId, input.customerId))
+    : {};
+
   const phone = customer?.phone ?? lead?.phone ?? null;
   const emailAddress = customer?.email ?? lead?.email ?? null;
   const to = input.channel === 'EMAIL' ? emailAddress : phone ? toE164(phone) : null;
@@ -167,6 +186,7 @@ export async function previewShare(tenantId: string, input: SharePreviewInput): 
     subject: template?.headerText ?? null,
     templateName: template?.name ?? null,
     unresolved,
+    unresolvedReasons,
     consent: {
       allowed: consentOk,
       status: consentStatus,
@@ -205,5 +225,28 @@ export async function previewShare(tenantId: string, input: SharePreviewInput): 
       { label: 'Feedback form', url: variables.feedback_link },
       { label: 'Google review', url: variables.google_review_link },
     ].filter((link): link is { label: string; url: string } => Boolean(link.url)),
+  };
+}
+
+/**
+ * The three ordinary things that leave an automatic variable empty.
+ *
+ * Read together, and only when there is a gap to explain. Each is cheap on its
+ * own; the point of gathering them here rather than inside the explanation is
+ * that the sentence then names the FIRST cause rather than whichever query
+ * happened to run.
+ */
+async function resolutionFacts(tenantId: string, customerId?: string): Promise<ResolutionFacts> {
+  const [tenant, completed] = await Promise.all([
+    prisma.tenant.findUnique({ where: { id: tenantId }, select: { websiteUrl: true } }),
+    customerId
+      ? prisma.appointment.count({ where: { tenantId, customerId, status: 'COMPLETED' } })
+      : Promise.resolve(0),
+  ]);
+
+  return {
+    hasCustomer: Boolean(customerId),
+    hasWebsite: Boolean(tenant?.websiteUrl?.trim()),
+    hasCompletedVisit: completed > 0,
   };
 }
