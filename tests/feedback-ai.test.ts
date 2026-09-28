@@ -3,6 +3,7 @@ import {
   FEEDBACK_TOPICS,
   MAX_DRAFT_CHARS,
   MAX_TOPICS,
+  advertWordsIn,
   analysisPrompt,
   draftPrompt,
   hasDraftMaterial,
@@ -104,6 +105,24 @@ describe('the drafted review', () => {
     expect(parseDraft('')).toBeNull();
     expect(parseDraft('  ')).toBeNull();
     expect(parseDraft('ok')).toBeNull();
+  });
+
+  it('strips a label the model added despite being told not to', () => {
+    // "Review: Got a trim…" pasted into Google is an obvious tell.
+    expect(parseDraft('Review: Got a trim, came out nice.')).toBe('Got a trim, came out nice.');
+    expect(parseDraft("Here's your review: Got a trim, came out nice.")).toBe(
+      'Got a trim, came out nice.',
+    );
+  });
+
+  it('spots the advertisement words, so drift is countable', () => {
+    // Reported, never rewritten. Editing a customer's review by regex is how
+    // you get "The cut was really good good".
+    expect(advertWordsIn('The service was excellent and I highly recommend it.')).toEqual([
+      'excellent',
+      'highly recommend',
+    ]);
+    expect(advertWordsIn('Got a trim. Came out nice, happy with it.')).toEqual([]);
   });
 });
 
@@ -222,6 +241,37 @@ describe('the draft prompt', () => {
   it('truncates a very long comment before it is sent anywhere', () => {
     const { user } = draftPrompt({ ...unhappyWait, comment: 'x'.repeat(9000) });
     expect(user.length).toBeLessThan(3000);
+  });
+
+  /**
+   * THE VOICE IS A REQUIREMENT, NOT A PREFERENCE.
+   *
+   * A Google page where every review says "excellent service" and "highly
+   * recommend" reads as bought, and costs the salon more than having no
+   * reviews. So the words that give it away are named in the prompt and
+   * guarded here.
+   */
+  it('names the advertisement words the draft may not use', () => {
+    const { system } = draftPrompt(unhappyWait);
+    for (const word of ['excellent', 'highly recommend', 'top-notch', 'impeccable']) {
+      expect(system).toContain(word);
+    }
+  });
+
+  it('asks for plain short sentences, and forbids the review-site opener', () => {
+    const { system } = draftPrompt(unhappyWait);
+    expect(system).toMatch(/ordinary customer types on their phone/);
+    expect(system).toMatch(/A single short sentence is a fine review/);
+    expect(system).toMatch(/I recently visited/);
+    expect(system).toMatch(/no recommendation line/);
+  });
+
+  it('shows examples of the voice, and says not to reuse them', () => {
+    // Rules alone do not move a model off brochure English — it agrees not to
+    // say "excellent" and writes "wonderful and very professional" instead.
+    const { system } = draftPrompt(unhappyWait);
+    expect(system).toMatch(/examples of VOICE ONLY/);
+    expect(system).toMatch(/Never reuse their wording/);
   });
 
   it('never asks for a star count in the review text', () => {

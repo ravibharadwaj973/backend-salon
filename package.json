@@ -19,6 +19,7 @@
     "prisma:studio": "prisma studio",
     "db:push": "prisma db push",
     "seed": "tsx prisma/seed.ts",
+    "ai:try": "tsx scripts/try-review-draft.ts",
     "test": "vitest run",
     "lint": "tsc -p tsconfig.json --noEmit"
   },

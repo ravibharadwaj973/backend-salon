@@ -4,6 +4,7 @@ import { logger } from '../../core/logger';
 import { env, aiReady } from '../../config/env';
 import {
   type AnalysisInput,
+  advertWordsIn,
   analysisPrompt,
   draftPrompt,
   hasDraftMaterial,
@@ -38,12 +39,16 @@ interface ChatResponse {
  * JSON. The caller cannot tell the difference and does not need to: in every
  * case there is nothing to store.
  */
-async function chat(system: string, user: string, timeoutMs?: number): Promise<string | null> {
+async function chat(
+  system: string,
+  user: string,
+  options: { timeoutMs?: number; temperature?: number } = {},
+): Promise<string | null> {
   if (!aiReady) return null;
 
   // AbortSignal.timeout rather than a race: this actually cancels the request,
   // so a slow endpoint stops holding a socket as well as a worker.
-  const signal = AbortSignal.timeout(timeoutMs ?? env.GROQ_TIMEOUT_MS);
+  const signal = AbortSignal.timeout(options.timeoutMs ?? env.GROQ_TIMEOUT_MS);
 
   try {
     const response = await fetch(`${env.GROQ_BASE_URL.replace(/\/$/, '')}/chat/completions`, {
@@ -54,10 +59,22 @@ async function chat(system: string, user: string, timeoutMs?: number): Promise<s
       },
       body: JSON.stringify({
         model: env.GROQ_MODEL,
-        // Labelling is not a creative task. The same comment should come back
-        // with the same topics in March as in September, or the trend lines
-        // measure the model's mood rather than the salon's.
-        temperature: 0,
+        /**
+         * Zero for labelling, warm for writing — and the difference matters
+         * more than it looks.
+         *
+         * Labelling is not creative: the same comment must come back with the
+         * same topics in March as in September, or the trend lines measure the
+         * model's mood rather than the salon's.
+         *
+         * A drafted review is the opposite case. At zero, every customer who
+         * rated a haircut four stars gets the SAME SENTENCE — and twenty
+         * reviews on one Google profile opening the same way is the clearest
+         * signal of astroturfing there is. Real customers do not write in
+         * chorus. The variation is not decoration; it is the thing that keeps
+         * these from being detectable as a batch.
+         */
+        temperature: options.temperature ?? 0,
         max_tokens: 500,
         messages: [
           { role: 'system', content: system },
@@ -202,8 +219,11 @@ export async function analyseFeedback(feedbackId: string): Promise<void> {
   let draft: string | null = null;
   if (hasDraftMaterial(input)) {
     const draftPrompts = draftPrompt(input);
-    const rawDraft = await chat(draftPrompts.system, draftPrompts.user);
+    const rawDraft = await chat(draftPrompts.system, draftPrompts.user, {
+      temperature: DRAFT_TEMPERATURE,
+    });
     draft = rawDraft ? parseDraft(rawDraft) : null;
+    if (draft) noteAdvertDrift(draft);
   }
 
   await runUnscoped(async () => {
@@ -279,11 +299,40 @@ export async function analyseFeedback(feedbackId: string): Promise<void> {
  */
 const DRAFT_TIMEOUT_MS = 8000;
 
+/**
+ * High on purpose. Two customers who rated the same thing the same way must
+ * not get the same sentence — see the note on temperature in `chat`.
+ */
+const DRAFT_TEMPERATURE = 0.9;
+
 export async function draftReviewNow(input: AnalysisInput): Promise<string | null> {
   if (!aiReady) return null;
   if (!hasDraftMaterial(input)) return null;
 
   const { system, user } = draftPrompt(input);
-  const raw = await chat(system, user, DRAFT_TIMEOUT_MS);
-  return raw ? parseDraft(raw) : null;
+  const raw = await chat(system, user, {
+    timeoutMs: DRAFT_TIMEOUT_MS,
+    temperature: DRAFT_TEMPERATURE,
+  });
+  const draft = raw ? parseDraft(raw) : null;
+  if (draft) noteAdvertDrift(draft);
+  return draft;
+}
+
+/**
+ * Count the times the draft came back sounding like a brochure.
+ *
+ * The draft is still shown — it is the customer's to edit, and a wince-worthy
+ * adjective is not worth withholding the whole thing over. But a model drifts
+ * back to marketing English on its own, and harder every time the model name
+ * in the config changes, so the drift has to be visible in a log rather than
+ * discovered by a salon owner reading their own Google page.
+ */
+function noteAdvertDrift(draft: string): void {
+  const words = advertWordsIn(draft);
+  if (words.length === 0) return;
+  logger.warn(
+    { words, model: env.GROQ_MODEL },
+    'drafted review used advertisement words the prompt forbids',
+  );
 }
