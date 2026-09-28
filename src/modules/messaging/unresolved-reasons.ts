@@ -23,8 +23,21 @@ export interface ResolutionFacts {
   hasCustomer: boolean;
   /** The salon has filled in its website address. */
   hasWebsite: boolean;
-  /** That customer has at least one COMPLETED appointment. */
+  /**
+   * A finished visit in any form: a completed appointment, OR a bill with
+   * services on it. What the SUGGESTION needs, because it reads a walk-in's
+   * services off their invoice when there is no appointment.
+   */
   hasCompletedVisit: boolean;
+  /**
+   * A completed APPOINTMENT specifically. Deliberately separate.
+   *
+   * A feedback form and a review hand-off are keyed to an appointment id, so a
+   * walk-in billed at the counter has a finished visit and still nothing for
+   * those links to point at. One fact serving both would make this file say
+   * the wrong thing about one of them — the exact failure it exists to stop.
+   */
+  hasAppointment: boolean;
 }
 
 /**
@@ -45,7 +58,7 @@ export function explainUnresolved(name: string, facts: ResolutionFacts): string 
         return 'Your website address is not set, so there is no gallery to send them to. Settings → Your website.';
       }
       if (!facts.hasCompletedVisit) {
-        return 'This customer has no completed visit yet, so there is nothing to suggest from.';
+        return 'This customer has no finished visit or bill yet, so there is nothing to suggest from.';
       }
       return 'No suggestion yet: nothing in this salon’s history pairs with what they had, and there is no other service in that category.';
     }
@@ -61,8 +74,10 @@ export function explainUnresolved(name: string, facts: ResolutionFacts): string 
     case 'feedback_link':
     case 'google_review_link': {
       if (!facts.hasCustomer) return 'Points at one visit. Choose a customer and it fills itself in.';
-      if (!facts.hasCompletedVisit) {
-        return 'Points at one visit, and this customer has no completed appointment to point at.';
+      if (!facts.hasAppointment) {
+        return facts.hasCompletedVisit
+          ? 'Points at one appointment. This customer was billed at the counter without one, so there is nothing for it to open.'
+          : 'Points at one visit, and this customer has no finished appointment to point at.';
       }
       return undefined;
     }

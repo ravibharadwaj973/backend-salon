@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { explainAll, explainUnresolved } from '../src/modules/messaging/unresolved-reasons';
 
-const NOTHING = { hasCustomer: false, hasWebsite: false, hasCompletedVisit: false };
-const EVERYTHING = { hasCustomer: true, hasWebsite: true, hasCompletedVisit: true };
+const NOTHING = { hasCustomer: false, hasWebsite: false, hasCompletedVisit: false, hasAppointment: false };
+const EVERYTHING = { hasCustomer: true, hasWebsite: true, hasCompletedVisit: true, hasAppointment: true };
 
 describe('why an automatic variable is empty', () => {
   it('blames the missing customer first, because it is checked first', () => {
@@ -23,8 +23,8 @@ describe('why an automatic variable is empty', () => {
 
   it('names the missing visit once the website is set', () => {
     expect(
-      explainUnresolved('suggested_service', { hasCustomer: true, hasWebsite: true, hasCompletedVisit: false }),
-    ).toMatch(/no completed visit/);
+      explainUnresolved('suggested_service', { hasCustomer: true, hasWebsite: true, hasCompletedVisit: false, hasAppointment: false }),
+    ).toMatch(/no finished visit or bill/);
   });
 
   it('admits there is simply nothing to suggest when everything is in place', () => {
@@ -47,8 +47,8 @@ describe('why an automatic variable is empty', () => {
   });
 
   it('explains a visit link by the visit', () => {
-    expect(explainUnresolved('feedback_link', { ...EVERYTHING, hasCompletedVisit: false })).toMatch(
-      /no completed appointment/,
+    expect(explainUnresolved('feedback_link', { ...EVERYTHING, hasCompletedVisit: false, hasAppointment: false })).toMatch(
+      /no finished appointment/,
     );
     expect(explainUnresolved('google_review_link', NOTHING)).toMatch(/Choose a customer/);
   });
@@ -67,5 +67,13 @@ describe('why an automatic variable is empty', () => {
 
   it('returns nothing for an empty list', () => {
     expect(explainAll([], NOTHING)).toEqual({});
+  });
+
+  it('tells a counter-billed customer apart from a brand new one', () => {
+    // Both have no appointment, and they need different sentences: one was
+    // billed without ever being booked, the other has not been in at all.
+    expect(
+      explainUnresolved('feedback_link', { ...EVERYTHING, hasAppointment: false }),
+    ).toMatch(/billed at the counter/);
   });
 });

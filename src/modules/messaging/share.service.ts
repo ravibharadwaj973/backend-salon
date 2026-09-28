@@ -237,16 +237,36 @@ export async function previewShare(tenantId: string, input: SharePreviewInput): 
  * happened to run.
  */
 async function resolutionFacts(tenantId: string, customerId?: string): Promise<ResolutionFacts> {
-  const [tenant, completed] = await Promise.all([
+  const [tenant, completed, billed] = await Promise.all([
     prisma.tenant.findUnique({ where: { id: tenantId }, select: { websiteUrl: true } }),
     customerId
       ? prisma.appointment.count({ where: { tenantId, customerId, status: 'COMPLETED' } })
+      : Promise.resolve(0),
+    /**
+     * Bills count as visits, and they have to.
+     *
+     * suggestForCustomer reads a walk-in's services off their invoice when
+     * there is no appointment to read them from. If this only counted
+     * appointments, a counter-billed customer would be told there is nothing
+     * to suggest from at the very moment the suggestion was working — a
+     * confident sentence pointing at the wrong thing, which is worse than no
+     * sentence at all.
+     */
+    customerId
+      ? prisma.invoiceItem.count({
+          where: {
+            itemType: 'SERVICE',
+            refId: { not: null },
+            invoice: { tenantId, customerId, status: { not: 'DRAFT' } },
+          },
+        })
       : Promise.resolve(0),
   ]);
 
   return {
     hasCustomer: Boolean(customerId),
     hasWebsite: Boolean(tenant?.websiteUrl?.trim()),
-    hasCompletedVisit: completed > 0,
+    hasCompletedVisit: completed > 0 || billed > 0,
+    hasAppointment: completed > 0,
   };
 }
