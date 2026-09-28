@@ -24,6 +24,15 @@ describe('http surface', () => {
     });
   });
 
+  it('separates "a key is configured" from "the model answers"', async () => {
+    // feedbackAi was true for days while every call came back 404, because the
+    // account had no access to the configured model. A key being present and
+    // the thing working are different facts.
+    const res = await request(app).get('/health');
+    expect(res.body.features).toHaveProperty('feedbackAiVerified');
+    expect([true, false, null]).toContain(res.body.features.feedbackAiVerified);
+  });
+
   it('never exposes how those features are wired', async () => {
     // Public endpoint: a load balancer reaches it without credentials, so it
     // may say WHETHER a feature is on and nothing at all about the key, the
@@ -33,7 +42,11 @@ describe('http surface', () => {
     for (const leak of ['gsk_', 'GROQ', 'api.groq.com', 'CLOUDINARY', 'cloudinary']) {
       expect(body).not.toContain(leak);
     }
-    expect(Object.keys(res.body.features).sort()).toEqual(['feedbackAi', 'photoUploads']);
+    expect(Object.keys(res.body.features).sort()).toEqual([
+      'feedbackAi',
+      'feedbackAiVerified',
+      'photoUploads',
+    ]);
   });
 
   it('returns a structured 404 for unknown routes', async () => {

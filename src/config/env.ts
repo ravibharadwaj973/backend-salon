@@ -150,7 +150,29 @@ const envSchema = z.object({
    */
   GROQ_API: z.string().optional().default(''),
   GROQ_BASE_URL: z.string().default('https://api.groq.com/openai/v1'),
-  GROQ_MODEL: z.string().default('llama-3.3-70b-versatile'),
+  /**
+   * A HOSTED MODEL NAME IS NOT A CONSTANT, AND NOT EVERY ACCOUNT HAS THE SAME ONES.
+   *
+   * The default was `llama-3.3-70b-versatile`, which is a current Groq model
+   * and not deprecated — and which this account could not use. Every call came
+   * back 404 "does not exist or you do not have access to it", which reads like
+   * a wrong name and actually means a different catalogue.
+   *
+   * So the default is a model from the widely-available gpt-oss family, and the
+   * real advice is in .env.example: ask the key which models it has rather than
+   * trusting any default, including this one.
+   */
+  GROQ_MODEL: z.string().default('openai/gpt-oss-120b'),
+  /**
+   * gpt-oss and friends think before answering, and those tokens come out of
+   * the same budget as the reply. Labelling feedback and tidying two sentences
+   * need none of it: 'low' keeps the latency inside the eight seconds the
+   * customer is waiting on the thank-you screen.
+   *
+   * Sent only when set, and defaulted per model below, because a model that
+   * does not understand the parameter answers 400 rather than ignoring it.
+   */
+  GROQ_REASONING_EFFORT: z.enum(['low', 'medium', 'high']).optional(),
   /**
    * A feedback analysis nobody is waiting for. Short on purpose: it runs in a
    * job, and a request that hangs holds a worker slot that reminders need.

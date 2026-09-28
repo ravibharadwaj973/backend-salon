@@ -14,6 +14,7 @@ import { applyStatusUpdate } from './messaging/dispatcher';
 import { errorHandler, notFoundHandler } from './middleware/error';
 import { databaseHealthy } from './core/prisma';
 import { pendingMigrationsAtBoot } from './core/migrations';
+import { aiVerified } from './modules/feedback/feedback-ai.service';
 import { buildRouter } from './routes';
 
 export function createApp(): Express {
@@ -161,7 +162,22 @@ export function createApp(): Express {
        * whatsoever about how it is wired. "On or off" is already observable by
        * anyone who uses the app; the configuration is not.
        */
-      features: { feedbackAi: aiReady, photoUploads: cloudinaryReady },
+      features: {
+        /** A key is configured. Says nothing about whether it works. */
+        feedbackAi: aiReady,
+        /**
+         * Whether the model has actually answered — true after one good call,
+         * false once a setting has been rejected, null before anything has been
+         * tried.
+         *
+         * `feedbackAi` was true for days while every request came back 404
+         * because the account had no access to the configured model. "A key is
+         * present" and "this works" turned out to be very different facts, and
+         * only the second one was worth reporting.
+         */
+        feedbackAiVerified: aiVerified(),
+        photoUploads: cloudinaryReady,
+      },
       /**
        * How many migrations this database has not run, or null when it cannot
        * be told. Anything above zero means writes to the new columns are
