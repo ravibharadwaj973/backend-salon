@@ -602,8 +602,8 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     language: 'en',
     headerText: 'How was your visit to {{salon_name}}?',
     bodyText:
-      'Dear {{customer_name}},\n\nWe would love to know how your visit went. It takes a minute and it genuinely helps us:\n\n{{review_link}}\n\nThank you,\n{{salon_name}}',
-    variables: ['customer_name', 'review_link', 'salon_name'],
+      'Dear {{customer_name}},\n\nWe would love to know how your visit went. It takes a minute and it genuinely helps us:\n\n{{feedback_link}}\n\nThank you,\n{{salon_name}}',
+    variables: ['customer_name', 'feedback_link', 'salon_name'],
     approvalStatus: 'APPROVED',
   },
   {

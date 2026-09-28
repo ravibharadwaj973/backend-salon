@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_TEMPLATES } from '../src/modules/messaging/defaults';
 import { templateProblems } from '../src/messaging/whatsapp-template-format';
+import { unfillableVariables } from '../src/messaging/whatsapp-templates';
 
 /**
  * The starter templates every new salon is seeded with.
@@ -143,5 +144,30 @@ describe('the starter templates', () => {
     ).map((t) => t.name);
 
     expect(orphans).toEqual([]);
+  });
+
+  /**
+   * EVERY LINK IN A STARTER MUST BE ONE THE APP BUILDS.
+   *
+   * Variables split into two kinds: ones the app fills (a booking link, an
+   * invoice number) and ones a person types when sending (an offer, a
+   * festival name). A LINK is never the second kind — nobody at a counter
+   * types a tracked URL — so a {{..._link}} the app cannot build is a
+   * template that can never be sent by anybody, on any channel. The
+   * missing-variable gate refuses it, and the only trace is a SKIPPED row in
+   * a log nobody reads.
+   *
+   * The email review_request shipped using {{review_link}}, a name that
+   * appears nowhere else in the codebase, so it had never been sendable. This
+   * is the check that would have said so on the day it was written.
+   */
+  it('builds every link a starter template asks for', () => {
+    const broken = DEFAULT_TEMPLATES.flatMap((t) => {
+      const links = (t.variables ?? []).filter((name) => name.endsWith('_link'));
+      const unbuildable = unfillableVariables(links);
+      return unbuildable.length > 0 ? [`${t.name} (${t.channel}): ${unbuildable.join(', ')}`] : [];
+    });
+
+    expect(broken).toEqual([]);
   });
 });
