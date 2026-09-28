@@ -669,6 +669,47 @@ export async function queueMessage(input: QueueMessageInput) {
   const templateProblem = input.channel === 'WHATSAPP' && template ? sendabilityProblem(template) : null;
 
   if (templateProblem && template) {
+    /**
+     * EMAIL WHILE META MAKES UP ITS MIND.
+     *
+     * A WhatsApp template cannot send until Meta approves it, and approval
+     * takes anything from minutes to days. Every template in this app has a
+     * twin on email, which needs no approval from anybody — so rather than
+     * skip the send and leave the salon with silence, it goes by email.
+     *
+     * This reverses itself. Nothing is remembered: the next send checks the
+     * WhatsApp template again, so the moment Meta approves it the messages
+     * move back to WhatsApp on their own, with no switch to remember to flip.
+     *
+     * Only when there is somewhere to send it. A customer with no email
+     * address falls through to the skip below, which is the honest outcome —
+     * and the recursion is safe because the call comes back on EMAIL, which
+     * this gate does not examine.
+     */
+    const address = customer?.email?.trim() || lead?.email?.trim() || '';
+    if (address) {
+      const twin = await prisma.messageTemplate.findFirst({
+        where: { tenantId: input.tenantId, name: template.name, channel: 'EMAIL' },
+      });
+
+      if (twin) {
+        logger.info(
+          { template: template.name, approvalStatus: template.approvalStatus },
+          'whatsapp template not live with Meta; sending this one by email instead',
+        );
+        return queueMessage({
+          ...input,
+          channel: 'EMAIL',
+          templateId: twin.id,
+          // Cleared so the lookup cannot land back on the WhatsApp row, and so
+          // the email address is resolved from the customer rather than from a
+          // phone number passed in for the other channel.
+          templateName: undefined,
+          toAddress: undefined,
+        });
+      }
+    }
+
     logger.warn(
       { templateId: template.id, template: template.name, approvalStatus: template.approvalStatus },
       'message not sent: whatsapp template is not live with Meta',

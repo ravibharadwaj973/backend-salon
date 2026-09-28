@@ -673,6 +673,99 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     approvalStatus: 'APPROVED',
   },
   {
+    /**
+     * THE EMAIL TWIN, AND WHY IT EXISTS.
+     *
+     * Every template in this app has one on both channels, and this one did
+     * not — which mattered more than it looks. A WhatsApp template cannot send
+     * until Meta approves it, and approval takes anything from minutes to
+     * days. Without a twin, a salon that switched the automation on saw
+     * nothing happen at all and had no way to tell whether the feature worked.
+     *
+     * With it, the send falls back to email while Meta reviews and moves to
+     * WhatsApp by itself the moment the template is approved. See the
+     * not-live gate in dispatcher.ts.
+     *
+     * No approval needed here: email templates are ours, so this ships
+     * APPROVED like the rest of the email set.
+     */
+    name: 'explore_suggested',
+    channel: 'EMAIL',
+    category: 'MARKETING',
+    language: 'en',
+    headerText: 'Something you might like next',
+    bodyText:
+      'Dear {{customer_name}},\n\nWe hope you have been happy with your last visit to {{salon_name}}.\n\nPeople who come in for what you had often try a {{suggested_service}} next. Here is some of that work:\n\n{{explore_link}}\n\nHave a look whenever you have a minute \u2014 and if something catches your eye, bring it with you.\n\nWarm regards,\n{{salon_name}}',
+    variables: ['customer_name', 'salon_name', 'suggested_service', 'explore_link'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    /**
+     * The review ask, by email.
+     *
+     * Its WhatsApp twin cannot send until Meta approves it, and the salon's
+     * whole review pipeline runs through it — so without this, a salon waiting
+     * on approval asks nobody for a review at all.
+     *
+     * Same neutral wording, for the same reason: it asks for an HONEST review
+     * rather than a good one. Steering the content is against Google's policy
+     * whatever channel it travels on.
+     */
+    name: 'google_review_request',
+    channel: 'EMAIL',
+    category: 'UTILITY',
+    language: 'en',
+    headerText: 'A moment, if you have one',
+    bodyText:
+      'Dear {{customer_name}},\n\nThanks for telling us how your visit went.\n\nIf you have a moment, an honest review on Google helps other people find us:\n\n{{google_review_link}}\n\nThank you either way.\n\n{{salon_name}}',
+    variables: ['customer_name', 'salon_name', 'google_review_link'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    name: 'lead_welcome',
+    channel: 'EMAIL',
+    category: 'MARKETING',
+    language: 'en',
+    headerText: 'Thanks for getting in touch',
+    bodyText:
+      'Dear {{lead_name}},\n\nThank you for your interest in {{salon_name}}.\n\nYou can book a time here whenever it suits you:\n\n{{booking_link}}\n\nOr just reply to this email if you would like to ask something first \u2014 we are happy to talk it through.\n\nWarm regards,\n{{salon_name}}',
+    variables: ['lead_name', 'salon_name', 'booking_link'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    name: 'loyalty_points_earned',
+    channel: 'EMAIL',
+    category: 'MARKETING',
+    language: 'en',
+    headerText: 'Your points from today',
+    bodyText:
+      'Dear {{customer_name}},\n\nYou earned {{points_earned}} points at {{salon_name}} today.\n\nYour balance is now {{points_balance}} points, worth {{points_value}} on a future visit.\n\nWarm regards,\n{{salon_name}}',
+    variables: ['customer_name', 'salon_name', 'points_earned', 'points_balance', 'points_value'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    name: 'seasonal_care_tip',
+    channel: 'EMAIL',
+    category: 'MARKETING',
+    language: 'en',
+    headerText: 'A small {{season}} tip',
+    bodyText:
+      'Dear {{customer_name}},\n\nA small {{season}} tip from all of us at {{salon_name}}: {{tip}}\n\nIf your hair is not behaving, come in and we will take a look \u2014 no appointment needed for a quick chat.\n\nWarm regards,\n{{salon_name}}',
+    variables: ['customer_name', 'salon_name', 'season', 'tip'],
+    approvalStatus: 'APPROVED',
+  },
+  {
+    name: 'membership_renewal_offer',
+    channel: 'EMAIL',
+    category: 'MARKETING',
+    language: 'en',
+    headerText: 'Your {{plan_name}} has ended',
+    bodyText:
+      'Dear {{customer_name}},\n\nYour {{plan_name}} at {{salon_name}} ended on {{expiry_date}}.\n\nIf you renew this month, your member pricing carries on without a gap:\n\n{{booking_link}}\n\nOr call us and we will sort it out for you.\n\nWarm regards,\n{{salon_name}}',
+    variables: ['customer_name', 'salon_name', 'plan_name', 'expiry_date', 'booking_link'],
+    approvalStatus: 'APPROVED',
+  },
+  {
     name: 'winback_offer',
     channel: 'EMAIL',
     category: 'MARKETING',

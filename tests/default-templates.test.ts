@@ -108,4 +108,40 @@ describe('the starter templates', () => {
 
     expect(broken).toEqual([]);
   });
+
+  /**
+   * EVERY WHATSAPP STARTER NEEDS AN EMAIL TWIN.
+   *
+   * Not tidiness. A WhatsApp template cannot send until Meta approves it, and
+   * the dispatcher falls back to the same-named EMAIL template while that is
+   * pending — so a WhatsApp starter without a twin is one that sends NOTHING
+   * for however many days Meta takes, with no fallback and nothing on screen
+   * to say why.
+   *
+   * explore_suggested shipped without one and nothing noticed, which is what
+   * this test is for.
+   */
+  it('gives every WhatsApp template an email twin to fall back to', () => {
+    const emails = new Set(
+      DEFAULT_TEMPLATES.filter((t) => t.channel === 'EMAIL').map((t) => t.name),
+    );
+
+    /**
+     * Two are exempt, and the reason is the message rather than the effort.
+     * Both are about to expire when they are sent, and email is not a channel
+     * anybody reads inside the window in which either is true.
+     */
+    const NO_EMAIL_TWIN: Record<string, string> = {
+      appointment_reminder_2h:
+        'Two hours before the appointment. Nobody checks email in that window, and a reminder read the next morning is worse than none.',
+      waitlist_slot_open:
+        'A slot that will be gone in minutes. Offering it by email is unfair to the next person on the list.',
+    };
+
+    const orphans = DEFAULT_TEMPLATES.filter(
+      (t) => t.channel === 'WHATSAPP' && !emails.has(t.name) && !NO_EMAIL_TWIN[t.name],
+    ).map((t) => t.name);
+
+    expect(orphans).toEqual([]);
+  });
 });
