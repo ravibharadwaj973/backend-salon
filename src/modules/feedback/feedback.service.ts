@@ -8,7 +8,7 @@ import { pageParams } from '../../core/http';
 import { pctOf, round2 } from '../../core/money';
 import { enqueueSafe } from '../../jobs/queue';
 import { aiReady } from '../../config/env';
-import { draftReviewNow } from './feedback-ai.service';
+import { draftReviewsNow } from './feedback-ai.service';
 import {
   type SubmittedServiceRating,
   meanServiceRating,
@@ -273,16 +273,23 @@ export async function submitFeedback(input: FeedbackInput, tenantIdOverride?: st
    * carries their criticism instead: a two against the wait comes out as a
    * sentence about waiting. See the rule in feedback-ai.ts.
    */
-  const reviewDraft = aiReady
-    ? await draftReviewNow({
+  const reviewDrafts = aiReady
+    ? await draftReviewsNow({
         overallRating: input.rating,
         staffRating: input.staffRating ?? null,
         cleanlinessRating: input.ambienceRating ?? null,
         waitingRating: input.waitRating ?? null,
         comment: input.comment ?? null,
         services: await draftableServices(serviceRatings, onAppointment),
-      }).catch(() => null)
-    : null;
+      }).catch(() => [])
+    : [];
+
+  /**
+   * The first one goes in the column, because the salon's feedback list shows a
+   * line per rating and has nowhere to put five. The list itself never needs
+   * storing: it exists for the thirty seconds the customer is choosing.
+   */
+  const reviewDraft = reviewDrafts[0] ?? null;
 
   if (reviewDraft) {
     await runUnscoped(() =>
@@ -313,6 +320,16 @@ export async function submitFeedback(input: FeedbackInput, tenantIdOverride?: st
      * talking about itself in the customer's voice.
      */
     reviewDraft,
+    /**
+     * The list the customer chooses from.
+     *
+     * One draft is a sentence to accept or reject, and most people reject it —
+     * it is somebody else's words about their own afternoon. Five is a choice,
+     * and picking one makes it theirs. That editorial judgement belongs to the
+     * customer rather than the model, which is also what keeps this the right
+     * side of writing reviews on their behalf.
+     */
+    reviewDrafts,
   };
 }
 

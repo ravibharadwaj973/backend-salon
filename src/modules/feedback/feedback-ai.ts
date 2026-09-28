@@ -91,6 +91,20 @@ export const MAX_TOPICS = 6;
 export const MAX_DRAFT_CHARS = 600;
 
 /**
+ * HOW MANY SUGGESTIONS TO OFFER.
+ *
+ * One draft is a thing to accept or reject, and most people reject it — it is
+ * somebody else's sentence about their own afternoon. A short list is a thing
+ * to choose from, and choosing makes it theirs: the one they pick is the one
+ * that sounded like them, which is exactly the editorial judgement we want the
+ * customer making rather than the model.
+ *
+ * Five, not ten. Past about five a list stops being a choice and becomes
+ * reading, and the whole point is that this takes fifteen seconds on a phone.
+ */
+export const DRAFT_COUNT = 5;
+
+/**
  * THE WORDS THAT GIVE IT AWAY.
  *
  * Not a style preference. These are the words that appear in a written-up
@@ -317,8 +331,15 @@ export function draftPrompt(input: AnalysisInput): { system: string; user: strin
     '- Mention the wait, the person who served them or the salon itself only where that was scored.',
     '- Do not mention star counts, numbers, or scores out of five.',
     '- No greeting, no hashtags, no emoji.',
-    `- At most ${MAX_DRAFT_CHARS} characters.`,
-    '- Reply with the review text only.',
+    `- At most ${MAX_DRAFT_CHARS} characters each.`,
+    '',
+    `GIVE ${DRAFT_COUNT} SEPARATE OPTIONS, and make them properly different from each other:`,
+    '- Different lengths. At least one of a single short sentence, at least one of three.',
+    '- Different openings. Not all starting with the same word.',
+    '- Different things led with — one may open on the service, another on the wait.',
+    '  All ' + String(DRAFT_COUNT) + ' must still be true to the same scores.',
+    '',
+    `Reply with a JSON array of ${DRAFT_COUNT} strings and nothing else. No prose, no code fence.`,
     '',
     `How to read a score: ${STAR_WORDS}.`,
     'A score given as null was not asked about. Say nothing about it at all.',
@@ -364,13 +385,68 @@ export function draftPrompt(input: AnalysisInput): { system: string; user: strin
   return { system, user };
 }
 
-/** A draft, trimmed and capped — or null when the model returned nothing usable. */
+/**
+ * The list of suggestions, however the model chose to format it.
+ *
+ * A JSON array is asked for and usually given. When it is not, the fallback
+ * reads numbered or bulleted lines, because "1. Got a trim…" is what a model
+ * produces when it forgets — and throwing away five perfectly good sentences
+ * over a formatting slip would show the customer nothing.
+ *
+ * Deduplicated on the way out. At a high temperature two of five sometimes
+ * come back nearly identical, and a list with the same sentence twice makes
+ * the whole thing look automatic, which is the one impression it must not give.
+ */
+export function parseDrafts(raw: string): string[] {
+  const text = stripFence(raw).trim();
+  const candidates: unknown[] = [];
+
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) candidates.push(...parsed);
+  } catch {
+    /**
+     * Not JSON. Read it as a list instead: numbered, bulleted, or one per
+     * line. A blank-line-separated paragraph counts as a line here too.
+     */
+    for (const line of text.split(/\r?\n/)) {
+      const cleaned = line
+        .trim()
+        .replace(/^(?:[-*•]|\d+[.):])\s*/, '')
+        .replace(/^["']|["'],?$/g, '')
+        .trim();
+      if (cleaned) candidates.push(cleaned);
+    }
+  }
+
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const draft = typeof candidate === 'string' ? cleanDraft(candidate) : null;
+    if (!draft) continue;
+    // Compared without punctuation or case, since "Lovely cut." and "Lovely
+    // cut" are the same suggestion offered twice.
+    const key = draft.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(draft);
+    if (out.length >= DRAFT_COUNT) break;
+  }
+  return out;
+}
+
+/** The first suggestion, for the single column the salon's dashboard reads. */
 export function parseDraft(raw: string): string | null {
-  const text = stripFence(raw)
+  return parseDrafts(raw)[0] ?? cleanDraft(stripFence(raw));
+}
+
+/** One suggestion, stripped of the things a model wraps around it. */
+function cleanDraft(raw: string): string | null {
+  const text = raw
     .trim()
     // Models label their answer however plainly they are told to reply with the
     // text only. "Review: Got a trim…" pasted into Google is an obvious tell.
-    .replace(/^(?:review|draft|here(?:'s| is) (?:your|the) review)\s*[:\-—]\s*/i, '')
+    .replace(/^(?:review|draft|option \d+|here(?:'s| is) (?:your|the) review)\s*[:\-—]\s*/i, '')
     .trim()
     .replace(/^["']|["']$/g, '')
     .trim();

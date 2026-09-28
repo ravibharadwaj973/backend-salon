@@ -3,12 +3,14 @@ import {
   FEEDBACK_TOPICS,
   MAX_DRAFT_CHARS,
   MAX_TOPICS,
+  DRAFT_COUNT,
   advertWordsIn,
   analysisPrompt,
   draftPrompt,
   hasDraftMaterial,
   parseAnalysis,
   parseDraft,
+  parseDrafts,
 } from '../src/modules/feedback/feedback-ai';
 
 /**
@@ -193,6 +195,76 @@ describe('whether there is anything to draft from', () => {
     // Unrated services are passed as context for the words. On their own they
     // are the salon's list of what it sold, not the customer's opinion of it.
     expect(hasDraftMaterial({ ...base, services: [{ name: 'Haircut', rating: null }] })).toBe(false);
+  });
+});
+
+/**
+ * FIVE SUGGESTIONS, AND THE WAYS A MODEL HANDS THEM OVER.
+ *
+ * One draft is a sentence to accept or reject, and most people reject somebody
+ * else's words about their own afternoon. A short list is a choice, and the one
+ * they pick is the one that sounded like them — which is the editorial
+ * judgement that has to stay with the customer rather than the model.
+ */
+describe('the list of suggestions', () => {
+  it('reads the JSON array it asked for', () => {
+    const out = parseDrafts('["Got a trim, came out nice.","Happy with the colour, will come back."]');
+    expect(out).toEqual(['Got a trim, came out nice.', 'Happy with the colour, will come back.']);
+  });
+
+  it('unwraps a code fence', () => {
+    expect(parseDrafts('```json\n["Got a trim, came out nice."]\n```')).toEqual([
+      'Got a trim, came out nice.',
+    ]);
+  });
+
+  it('falls back to a numbered list, because models forget', () => {
+    // Five good sentences should not be thrown away over a formatting slip.
+    const out = parseDrafts('1. Got a trim, came out nice.\n2. Waited a while but the cut was good.');
+    expect(out).toEqual(['Got a trim, came out nice.', 'Waited a while but the cut was good.']);
+  });
+
+  it('reads a bulleted list too', () => {
+    expect(parseDrafts('- Got a trim, came out nice.\n• Colour was lovely, happy with it.')).toEqual([
+      'Got a trim, came out nice.',
+      'Colour was lovely, happy with it.',
+    ]);
+  });
+
+  it('drops a repeat, ignoring case and punctuation', () => {
+    // At a high temperature two of five sometimes come back near-identical, and
+    // the same sentence twice makes the whole list look automatic.
+    const out = parseDrafts('["Got a trim, came out nice.","got a trim came out nice","Colour was good."]');
+    expect(out).toEqual(['Got a trim, came out nice.', 'Colour was good.']);
+  });
+
+  it('never returns more than it offers', () => {
+    const many = JSON.stringify(Array.from({ length: 20 }, (_, i) => `Suggestion number ${i} about a haircut.`));
+    expect(parseDrafts(many)).toHaveLength(DRAFT_COUNT);
+  });
+
+  it('drops entries too short to be a review, and non-strings', () => {
+    expect(parseDrafts('["ok","",null,42,"Got a trim, came out nice."]')).toEqual([
+      'Got a trim, came out nice.',
+    ]);
+  });
+
+  it('strips an "Option 1:" label a model adds', () => {
+    expect(parseDrafts('["Option 1: Got a trim, came out nice."]')).toEqual([
+      'Got a trim, came out nice.',
+    ]);
+  });
+
+  it('returns an empty list rather than throwing on nonsense', () => {
+    expect(parseDrafts('')).toEqual([]);
+    expect(parseDrafts('Sorry, I cannot help with that.')).toEqual(['Sorry, I cannot help with that.']);
+    expect(parseDrafts('{"not":"an array"}')).toEqual([]);
+  });
+
+  it('still gives one draft for the column the dashboard reads', () => {
+    expect(parseDraft('["Got a trim, came out nice.","Colour was good."]')).toBe(
+      'Got a trim, came out nice.',
+    );
   });
 });
 

@@ -7,9 +7,10 @@ import {
   advertWordsIn,
   analysisPrompt,
   draftPrompt,
+  DRAFT_COUNT,
   hasDraftMaterial,
   parseAnalysis,
-  parseDraft,
+  parseDrafts,
 } from './feedback-ai';
 
 /**
@@ -80,7 +81,7 @@ function reasoningEffort(): { reasoning_effort: string } | Record<string, never>
 async function chat(
   system: string,
   user: string,
-  options: { timeoutMs?: number; temperature?: number } = {},
+  options: { timeoutMs?: number; temperature?: number; maxTokens?: number } = {},
 ): Promise<string | null> {
   if (!aiReady) return null;
 
@@ -122,7 +123,7 @@ async function chat(
          * that refused. Neither prompt here wants more than a paragraph, so
          * the headroom costs nothing when it is not used.
          */
-        max_tokens: 1200,
+        max_tokens: options.maxTokens ?? 1200,
         /**
          * Only when it will be understood — an unknown parameter is a 400, not
          * a shrug. Overridable because the next family will have its own idea
@@ -301,15 +302,12 @@ export async function analyseFeedback(feedbackId: string): Promise<void> {
    * both invisible and unaccountable. So the sentiment is recorded and does
    * not decide this.
    */
-  let draft: string | null = null;
-  if (hasDraftMaterial(input)) {
-    const draftPrompts = draftPrompt(input);
-    const rawDraft = await chat(draftPrompts.system, draftPrompts.user, {
-      temperature: DRAFT_TEMPERATURE,
-    });
-    draft = rawDraft ? parseDraft(rawDraft) : null;
-    if (draft) noteAdvertDrift(draft);
-  }
+  /**
+   * The first of the suggestions, for the single column. The salon's dashboard
+   * shows one line per piece of feedback and has nowhere to put five; the list
+   * itself is for the customer, on the page, while they are choosing.
+   */
+  const draft = (await draftReviewsNow(input))[0] ?? null;
 
   await runUnscoped(async () => {
     await prisma.$transaction([
@@ -390,18 +388,30 @@ const DRAFT_TIMEOUT_MS = 8000;
  */
 const DRAFT_TEMPERATURE = 0.9;
 
-export async function draftReviewNow(input: AnalysisInput): Promise<string | null> {
-  if (!aiReady) return null;
-  if (!hasDraftMaterial(input)) return null;
+/**
+ * Five suggestions in one request, not five requests.
+ *
+ * One call is cheaper and faster, but the real reason is that a model asked for
+ * five at once can be told to make them DIFFERENT from each other — different
+ * lengths, different openings, leading on different things. Five separate calls
+ * at the same temperature produce five samples from the same distribution, and
+ * about one time in three two of them come back nearly identical, which is the
+ * one impression a list of suggestions must not give.
+ */
+export async function draftReviewsNow(input: AnalysisInput): Promise<string[]> {
+  if (!aiReady) return [];
+  if (!hasDraftMaterial(input)) return [];
 
   const { system, user } = draftPrompt(input);
   const raw = await chat(system, user, {
     timeoutMs: DRAFT_TIMEOUT_MS,
     temperature: DRAFT_TEMPERATURE,
+    // Five short reviews, plus whatever a reasoning model spends thinking.
+    maxTokens: 300 * DRAFT_COUNT,
   });
-  const draft = raw ? parseDraft(raw) : null;
-  if (draft) noteAdvertDrift(draft);
-  return draft;
+  const drafts = raw ? parseDrafts(raw) : [];
+  for (const draft of drafts) noteAdvertDrift(draft);
+  return drafts;
 }
 
 /**
