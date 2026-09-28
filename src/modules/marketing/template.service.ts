@@ -241,6 +241,9 @@ export async function previewTemplate(id: string, sample: { customerId?: string;
     tenantId,
     customerId: sample.customerId ?? null,
     extra: sample.variables,
+    // The preview should show the message that would actually be sent, which
+    // means resolving the variables that are only built when asked for.
+    wants: template.variables,
   });
 
   const merged = {

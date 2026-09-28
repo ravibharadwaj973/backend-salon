@@ -114,6 +114,17 @@ export async function previewShare(tenantId: string, input: SharePreviewInput): 
       leadId: input.leadId,
       invoiceId: input.invoiceId,
       appointmentId: input.appointmentId,
+      /**
+       * So the costly variables resolve HERE too.
+       *
+       * Without this, a staff member picking this template by hand was shown
+       * {{suggested_service}} and {{explore_link}} as empty boxes to fill in —
+       * asking a receptionist to invent a suggestion and paste a URL, when the
+       * app knows both. Worse, a hand-pasted gallery address is not the
+       * customer's tracked link, so the arrival would never be recorded and
+       * the whole point of sending it would be lost.
+       */
+      wants: template?.variables,
     })),
     ...(input.variables ?? {}),
   };
