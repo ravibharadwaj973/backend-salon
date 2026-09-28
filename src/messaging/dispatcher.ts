@@ -18,6 +18,7 @@ import { bookingUrl, feedbackUrl, googleReviewUrl } from '../core/public-links';
 import { invoiceUrl } from '../core/public-links';
 import type { TemplateButton } from './whatsapp-template-format';
 import { sendabilityProblem } from './whatsapp-templates';
+import { suggestForCustomer } from '../modules/marketing/next-service.service';
 import { publicToken } from '../core/ids';
 
 export interface QueueMessageInput {
@@ -141,6 +142,17 @@ export async function buildVariables(input: {
   membershipId?: string | null;
   packagePurchaseId?: string | null;
   extra?: Record<string, string>;
+  /**
+   * The template's own variable names, when the caller knows them.
+   *
+   * Most variables here are a field on a row already being read. A couple are
+   * not — {{suggested_service}} needs a year of the salon's purchases counted
+   * — and this runs once per message, so a campaign to two thousand customers
+   * would run that query two thousand times for a template that never
+   * mentions it. Passing the list means the expensive ones are computed only
+   * when the message actually asks. Omitted, they are simply not built.
+   */
+  wants?: readonly string[];
 }): Promise<Record<string, string>> {
   const vars: Record<string, string> = {};
 
@@ -164,6 +176,29 @@ export async function buildVariables(input: {
     if (tenant.websiteUrl) {
       vars.website_link = tenant.websiteUrl.replace(/\/+$/, '');
       vars.gallery_link = `${vars.website_link}/gallery`;
+    }
+  }
+
+  /**
+   * "YOU HAD A CUT — HERE IS OUR HAIR SPA WORK."
+   *
+   * A follow-up pointing at the whole gallery asks the customer to go and find
+   * something for themselves. One pointing at a particular service's
+   * photographs has already done that work, and the salon learns something
+   * when it is opened: the arrival is recorded as a service_view against that
+   * service, so an interest appears on the customer's own screen in Parlon.
+   *
+   * Both variables or neither. A message that names a service it cannot link
+   * to, or links somewhere it cannot name, is worse than the plain gallery
+   * message it replaced — and leaving them unset means the missing-variable
+   * gate refuses the send loudly rather than posting half a sentence.
+   */
+  const wants = new Set(input.wants ?? []);
+  if (input.customerId && vars.website_link && (wants.has('explore_link') || wants.has('suggested_service'))) {
+    const suggestion = await suggestForCustomer(input.tenantId, input.customerId);
+    if (suggestion) {
+      vars.suggested_service = suggestion.name;
+      vars.explore_link = `${vars.website_link}/gallery?service=${encodeURIComponent(suggestion.serviceId)}`;
     }
   }
 
@@ -545,6 +580,8 @@ export async function queueMessage(input: QueueMessageInput) {
       appointmentId: input.appointmentId,
       membershipId: input.membershipId,
       packagePurchaseId: input.packagePurchaseId,
+      // So the costly variables are built only for a template that names them.
+      wants: template?.variables,
     })),
     ...(input.variables ?? {}),
   };

@@ -397,6 +397,8 @@ export const KNOWN_VARIABLES = [
   'booking_link',
   'website_link',
   'gallery_link',
+  'explore_link',
+  'suggested_service',
   'feedback_link',
   'google_review_link',
 ] as const;

@@ -396,6 +396,30 @@ export const DEFAULT_TEMPLATES: TemplateDefinition[] = [
     approvalStatus: 'DRAFT',
   },
   {
+    /**
+     * THE GALLERY MESSAGE, POINTED AT SOMETHING.
+     *
+     * gallery_update above says "we have put up some work" and links to all of
+     * it, which asks the customer to go and find something for themselves.
+     * This one names the service this salon's customers usually take next
+     * after the one they had, and links to those photographs alone.
+     *
+     * MARKETING, declared rather than discovered. It asks somebody to come
+     * back and try something — a solicitation however politely it is worded,
+     * and Meta would re-file it as marketing anyway. Declaring it means
+     * consent and the allowance are right from the first send rather than
+     * changing under the salon after a sync.
+     */
+    name: 'explore_suggested',
+    channel: 'WHATSAPP',
+    category: 'MARKETING',
+    language: 'en',
+    bodyText:
+      'Hi {{customer_name}}, we hope you have been happy with your last visit to {{salon_name}}. People who come in for what you had often try a {{suggested_service}} next \u2014 here is some of that work: {{explore_link}}\n\nHave a look whenever you have a minute.',
+    variables: ['customer_name', 'salon_name', 'suggested_service', 'explore_link'],
+    approvalStatus: 'DRAFT',
+  },
+  {
     name: 'winback_offer',
     channel: 'WHATSAPP',
     category: 'MARKETING',
@@ -966,6 +990,30 @@ export const DEFAULT_JOURNEYS: JourneyDefinition[] = [
       { actionType: 'SEND_MESSAGE', delayMinutes: 7 * DAY, channel: 'WHATSAPP', templateName: 'review_request' },
       { actionType: 'EXIT_IF_BOOKED', delayMinutes: 30 * DAY },
       { actionType: 'SEND_MESSAGE', delayMinutes: 0, channel: 'WHATSAPP', templateName: 'rebooking_reminder' },
+    ],
+  },
+  {
+    name: 'Show them what to try next',
+    description: 'Three days after a visit, photographs of the service this salon’s customers usually take next.',
+    /**
+     * Three days, and on APPOINTMENT_COMPLETED rather than on the rhythm.
+     *
+     * The rhythm messages fire when somebody is overdue, which is weeks later
+     * and is a different conversation — "you are late" and "have you seen
+     * this" should not arrive together. Three days is past the feedback ask,
+     * late enough not to crowd the visit, and early enough that they still
+     * remember the chair.
+     *
+     * Skips itself when there is nothing honest to suggest: a salon with no
+     * website, or a customer whose last service pairs with nothing this salon
+     * still sells, leaves suggested_service unresolved and the send is refused
+     * by the missing-variable gate rather than going out half-written.
+     */
+    trigger: 'APPOINTMENT_COMPLETED',
+    triggerConfig: {},
+    isActive: false,
+    steps: [
+      { actionType: 'SEND_MESSAGE', delayMinutes: 3 * DAY, channel: 'WHATSAPP', templateName: 'explore_suggested' },
     ],
   },
   {

@@ -67,6 +67,21 @@ const INVOICE = ['invoice_number', 'amount', 'due_amount', 'invoice_link', 'invo
  * invoice — not to pretend here that it is covered.
  */
 const LAST_VISIT_LINKS = ['feedback_link', 'google_review_link'];
+
+/**
+ * The suggestion, and the link to its photographs.
+ *
+ * Needs only a customer: buildVariables finds their last completed service
+ * itself and counts what this salon's customers pair with it. Available to
+ * any trigger that carries a customer id, and only built when the template
+ * names one of them — see `wants` in buildVariables.
+ *
+ * WITH THE SAME KIND OF CAVEAT AS ABOVE: it resolves only for a customer who
+ * has a completed appointment AND a salon whose website address is set. A
+ * salon with no website has no gallery to link to, and the message is skipped
+ * rather than sent pointing at nothing.
+ */
+const SUGGESTION = ['explore_link', 'suggested_service'];
 const MEMBERSHIP = ['plan_name', 'expiry_date', 'days_left'];
 const PACKAGE = ['package_name', 'expiry_date', 'sessions_left'];
 
@@ -78,15 +93,15 @@ const PACKAGE = ['package_name', 'expiry_date', 'sessions_left'];
 const CONTEXT: Record<JourneyTrigger, string[]> = {
   APPOINTMENT_BOOKED: [...TENANT, ...CUSTOMER, ...APPOINTMENT],
   APPOINTMENT_REMINDER: [...TENANT, ...CUSTOMER, ...APPOINTMENT],
-  APPOINTMENT_COMPLETED: [...TENANT, ...CUSTOMER, ...APPOINTMENT],
+  APPOINTMENT_COMPLETED: [...TENANT, ...CUSTOMER, ...APPOINTMENT, ...SUGGESTION],
   APPOINTMENT_CANCELLED: [...TENANT, ...CUSTOMER, ...APPOINTMENT],
   // Billing enqueues these with the invoice and no appointment.
   FIRST_VISIT: [...TENANT, ...CUSTOMER, ...INVOICE, ...LAST_VISIT_LINKS],
   INVOICE_PAID: [...TENANT, ...CUSTOMER, ...INVOICE, ...LAST_VISIT_LINKS],
   // The sweeps carry a customer id and nothing else. This is the row the
   // win-back template was quietly failing against.
-  NO_VISIT_DAYS: [...TENANT, ...CUSTOMER],
-  VISIT_DUE: [...TENANT, ...CUSTOMER],
+  NO_VISIT_DAYS: [...TENANT, ...CUSTOMER, ...SUGGESTION],
+  VISIT_DUE: [...TENANT, ...CUSTOMER, ...SUGGESTION],
   BIRTHDAY: [...TENANT, ...CUSTOMER],
   ANNIVERSARY: [...TENANT, ...CUSTOMER],
   REVIEW_REQUEST: [...TENANT, ...CUSTOMER, ...LAST_VISIT_LINKS],
