@@ -37,12 +37,12 @@ interface ChatResponse {
  * JSON. The caller cannot tell the difference and does not need to: in every
  * case there is nothing to store.
  */
-async function chat(system: string, user: string): Promise<string | null> {
+async function chat(system: string, user: string, timeoutMs?: number): Promise<string | null> {
   if (!aiReady) return null;
 
   // AbortSignal.timeout rather than a race: this actually cancels the request,
   // so a slow endpoint stops holding a socket as well as a worker.
-  const signal = AbortSignal.timeout(env.GROQ_TIMEOUT_MS);
+  const signal = AbortSignal.timeout(timeoutMs ?? env.GROQ_TIMEOUT_MS);
 
   try {
     const response = await fetch(`${env.GROQ_BASE_URL.replace(/\/$/, '')}/chat/completions`, {
@@ -178,7 +178,16 @@ export async function analyseFeedback(feedbackId: string): Promise<void> {
         data: {
           sentiment: analysis.sentiment,
           sentimentScore: analysis.score,
-          reviewDraft: draft,
+          /**
+           * Only ever written, never cleared.
+           *
+           * The submit path may already have drafted one while the customer
+           * was still on the page. If this job then fails to produce its own —
+           * the model was slow, or the reading came back neutral — writing
+           * null here would delete the draft out from under somebody who is
+           * looking at it.
+           */
+          ...(draft ? { reviewDraft: draft } : {}),
           analyzedAt: new Date(),
         },
       }),
@@ -200,4 +209,34 @@ export async function analyseFeedback(feedbackId: string): Promise<void> {
     { feedbackId, sentiment: analysis.sentiment, topics: analysis.topics.length },
     'feedback analysed',
   );
+}
+
+/**
+ * A DRAFT WHILE THE CUSTOMER IS STILL LOOKING AT THE PAGE.
+ *
+ * analyseFeedback runs in a job, minutes later, which is the right place for
+ * sentiment and topics — nobody is waiting for those. It is the wrong place
+ * for the draft: the one moment somebody might post a public review is the
+ * thirty seconds after they pressed send, and a draft that arrives after they
+ * have closed the tab is a draft nobody reads.
+ *
+ * So this one is awaited on submit, with a short leash. If the model is slow
+ * or missing, the page simply shows the Google link without a draft, which is
+ * what it did before this existed.
+ *
+ * IT ONLY EVER REARRANGES WHAT THEY WROTE. Nothing is generated from the
+ * rating or the service list — a review assembled from a five-star tap and
+ * the word "Haircut" would be the salon's words in the customer's mouth,
+ * which is what Google's rating-manipulation policy is looking for. No
+ * comment, no draft.
+ */
+const DRAFT_TIMEOUT_MS = 8000;
+
+export async function draftReviewNow(input: AnalysisInput): Promise<string | null> {
+  if (!aiReady) return null;
+  if (!input.comment?.trim()) return null;
+
+  const { system, user } = draftPrompt(input);
+  const raw = await chat(system, user, DRAFT_TIMEOUT_MS);
+  return raw ? parseDraft(raw) : null;
 }

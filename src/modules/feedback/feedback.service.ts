@@ -8,6 +8,7 @@ import { pageParams } from '../../core/http';
 import { pctOf, round2 } from '../../core/money';
 import { enqueueSafe } from '../../jobs/queue';
 import { aiReady } from '../../config/env';
+import { draftReviewNow } from './feedback-ai.service';
 import {
   type SubmittedServiceRating,
   meanServiceRating,
@@ -209,6 +210,36 @@ export async function submitFeedback(input: FeedbackInput, tenantIdOverride?: st
     }
   }
 
+  /**
+   * Drafted now rather than in the analysis job, because the one moment
+   * somebody might post a review is the thirty seconds after they press send.
+   * Awaited, but on a short leash: a slow model shows the link without a
+   * draft rather than holding the thank-you screen.
+   */
+  const reviewDraft =
+    aiReady && !isComplaint && input.comment?.trim()
+      ? await draftReviewNow({
+          overallRating: input.rating,
+          staffRating: input.staffRating ?? null,
+          cleanlinessRating: input.ambienceRating ?? null,
+          waitingRating: input.waitRating ?? null,
+          comment: input.comment,
+          /**
+           * Empty on purpose. draftPrompt never reads the services or the
+           * ratings — it is handed the comment and nothing else, so that what
+           * comes back can only be a rearrangement of what the customer
+           * actually wrote. Passing them would imply otherwise.
+           */
+          services: [],
+        }).catch(() => null)
+      : null;
+
+  if (reviewDraft) {
+    await runUnscoped(() =>
+      prisma.feedback.update({ where: { id: feedback.id }, data: { reviewDraft } }),
+    ).catch(() => undefined);
+  }
+
   return {
     feedback,
     /**
@@ -221,6 +252,16 @@ export async function submitFeedback(input: FeedbackInput, tenantIdOverride?: st
     nextStep: isComplaint ? ('APOLOGY' as const) : ('GOOGLE_REVIEW' as const),
     /** Offered whatever they rated. See the note on this function. */
     googleReviewUrl: await googleReviewUrlFor(tenantId, branchId),
+    /**
+     * Their own words, tidied, for them to edit and post if they want to.
+     *
+     * Null whenever there is nothing honest to build it from: no comment, no
+     * key, or a model that did not answer in time. Never assembled from the
+     * rating and the service list — that would be the salon's words in the
+     * customer's mouth, which is the thing Google's policy is written against
+     * and the thing this feature must not become.
+     */
+    reviewDraft,
   };
 }
 

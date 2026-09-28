@@ -704,6 +704,8 @@ router.post(
       thankYou: true,
       nextStep: result.nextStep,
       googleReviewUrl: result.googleReviewUrl,
+      /** Their own words, tidied — for them to edit and post, or ignore. */
+      reviewDraft: result.reviewDraft,
       message:
         result.nextStep === 'GOOGLE_REVIEW'
           ? 'Thank you! Would you share that on Google too?'
