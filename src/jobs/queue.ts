@@ -14,6 +14,7 @@ export type JobType =
   | 'invoice.post_process'
   | 'customer.rollup'
   | 'feedback.analyze'
+  | 'booking.notify'
   | 'inventory.consume'
   | 'alerts.generate'
   | 'membership.expiry_sweep'

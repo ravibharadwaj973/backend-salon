@@ -19,6 +19,7 @@ import * as alerts from '../../modules/analytics/alerts.service';
 import { pruneAudit } from '../../modules/audit/audit.service';
 import * as renewals from '../../modules/tenants/renewal.service';
 import { analyseFeedback } from '../../modules/feedback/feedback-ai.service';
+import { noticeOnlineBooking } from '../../modules/appointments/online-booking-notice';
 
 export type JobHandler = (payload: Record<string, unknown>, job: Job) => Promise<unknown>;
 
@@ -130,6 +131,21 @@ const handlers: Record<JobType, JobHandler> = {
    * Never throws: analyseFeedback swallows its own failures, so a bad key or a
    * refusing endpoint cannot turn into a retry loop competing with reminders.
    */
+  /**
+   * Telling the salon about a booking their website just took.
+   *
+   * In a job because it sends an email, and the customer pressing "Book" is
+   * waiting on that response. A slow mail provider must not turn into a slow
+   * booking form -- the one thing that would cost the salon more than a
+   * missed notification is a customer giving up at the last step.
+   */
+  'booking.notify': async (payload) => {
+    const appointmentId = payload.appointmentId as string;
+    if (!appointmentId) return { skipped: 'no appointmentId' };
+    await noticeOnlineBooking(appointmentId);
+    return { appointmentId };
+  },
+
   'feedback.analyze': async (payload) => {
     const feedbackId = payload.feedbackId as string;
     if (!feedbackId) return { skipped: 'no feedbackId' };

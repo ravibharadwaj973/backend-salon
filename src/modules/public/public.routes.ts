@@ -15,6 +15,7 @@ import * as staffService from '../staff/staff.service';
 import * as feedback from '../feedback/feedback.service';
 import * as enquiries from '../tenants/enquiry.service';
 import { bookingUrl, refererHost } from '../../core/public-links';
+import { enqueueSafe } from '../../jobs/queue';
 import type { Gender } from '@prisma/client';
 import { readAsset } from '../tenants/asset.service';
 import * as siteVisits from './site-visit.service';
@@ -438,6 +439,16 @@ router.post(
       force: false,
       sendConfirmation: true,
     });
+
+    /**
+     * Tell the salon. A booking taken at the counter is witnessed by somebody;
+     * one taken by the website at nine at night is witnessed by nobody, and
+     * that silence is why owners stop trusting online booking.
+     *
+     * Enqueued, never awaited: the customer is looking at a spinner, and a
+     * slow mail provider must not become a slow booking form.
+     */
+    enqueueSafe('booking.notify', { appointmentId: appointment.id, tenantId });
 
     return created(res, {
       appointmentId: appointment.id,
