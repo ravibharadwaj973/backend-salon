@@ -25,6 +25,7 @@ import { parseStatusFilter } from './message-filter';
 import { campaignReadiness } from '../../messaging/template-variables';
 import { OBJECTIVES, WINDOW_CHOICES } from './attribution';
 import { campaignAudienceCounts } from './campaign-audiences';
+import * as inbox from '../messaging/inbox.service';
 
 const channelSchema = z.enum(['WHATSAPP', 'SMS', 'EMAIL', 'IN_APP']);
 
@@ -839,6 +840,45 @@ templateRouter.post(
 );
 
 export const messageRouter = Router();
+
+/**
+ * WHAT CUSTOMERS HAVE WRITTEN IN.
+ *
+ * The other half of /messages, which has only ever shown what the salon sent.
+ * Read permission is the campaign one: whoever may see the outbound log may
+ * see the replies to it, and treating a customer's own words as more
+ * restricted than the message that prompted them makes no sense.
+ */
+messageRouter.get(
+  '/inbound',
+  requirePermission(PERMISSIONS.CAMPAIGN_VIEW),
+  validate({
+    query: paginationQuery.extend({
+      customerId: z.string().optional(),
+      unhandledOnly: z.coerce.boolean().optional(),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const q = req.query as unknown as {
+      page?: number;
+      pageSize?: number;
+      customerId?: string;
+      unhandledOnly?: boolean;
+    };
+    const result = await inbox.listInbound(q);
+    return ok(res, result.data, result.meta);
+  }),
+);
+
+messageRouter.post(
+  '/inbound/:id/handled',
+  requirePermission(PERMISSIONS.CAMPAIGN_MANAGE),
+  validate({ params: idParam }),
+  asyncHandler(async (req, res) => {
+    return ok(res, await inbox.markHandled(req.params.id!, req.ctx?.userId ?? 'unknown'));
+  }),
+);
+
 messageRouter.use(authenticate);
 
 messageRouter.get(

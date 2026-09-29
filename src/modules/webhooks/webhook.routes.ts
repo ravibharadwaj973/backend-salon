@@ -28,7 +28,16 @@ interface CloudApiChangeValue {
    */
   metadata?: { display_phone_number?: string; phone_number_id?: string };
   statuses?: CloudApiStatus[];
-  messages?: { from: string; text?: { body: string }; type: string }[];
+  messages?: {
+    /// Meta's own id. The dedupe key — see InboundMessage.providerMessageId.
+    id?: string;
+    from: string;
+    text?: { body: string };
+    /// 'text' | 'image' | 'button' | 'interactive' | 'audio' | …
+    type: string;
+    button?: { text?: string };
+    interactive?: { button_reply?: { title?: string }; list_reply?: { title?: string } };
+  }[];
 }
 
 interface CloudApiWebhook {
@@ -195,7 +204,60 @@ router.post(
       }
 
       for (const message of value.messages ?? []) {
-        const text = message.text?.body?.trim().toUpperCase();
+        const phone = normalizePhone(message.from);
+        const body = readBody(message);
+        const text = body.trim().toUpperCase();
+
+        /**
+         * KEEP WHAT THEY WROTE.
+         *
+         * This is the change the whole inbound half was missing. The handler
+         * used to read the text, compare it against STOP, and move on — so a
+         * customer asking "can I come at 4 tomorrow?" reached this server, was
+         * parsed well enough to check for one word, and was then dropped.
+         * Nobody at the salon ever saw it, and there was no way to find out
+         * that it had happened.
+         *
+         * Stored before anything else in this loop, so a failure further down
+         * — an opt-out that cannot be written, a reply that cannot be credited
+         * — never costs the salon the message itself.
+         *
+         * Skipped silently when the provider gives no id: without one there is
+         * no dedupe key, and Meta retries. Better to lose a message than to
+         * show the salon the same one three times and, later, reply to it
+         * three times.
+         */
+        if (message.id) {
+          const customer = await runUnscoped(() =>
+            prisma.customer.findFirst({
+              where: { tenantId, phone },
+              select: { id: true, branchId: true },
+            }),
+          ).catch(() => null);
+
+          await runUnscoped(() =>
+            prisma.inboundMessage.create({
+              data: {
+                tenantId,
+                customerId: customer?.id ?? null,
+                branchId: customer?.branchId ?? null,
+                channel: 'WHATSAPP',
+                fromAddress: phone,
+                body,
+                messageType: message.type ?? 'text',
+                providerMessageId: message.id,
+              },
+            }),
+          ).catch((err: unknown) => {
+            /**
+             * A duplicate is the constraint doing its job on one of Meta's
+             * retries, and is not worth a line in the log. Anything else is.
+             */
+            const code = (err as { code?: string } | null)?.code;
+            if (code === 'P2002') return;
+            logger.warn({ err, tenantId }, 'inbound message not stored');
+          });
+        }
 
         /**
          * Every inbound message is a reply, not only the ones that say STOP.
@@ -204,13 +266,12 @@ router.post(
          * campaign can produce short of a booking, and until now it vanished:
          * the handler read the text, found it was not STOP, and moved on.
          */
-        await recordReply({ tenantId, phone: normalizePhone(message.from) }).catch((err: unknown) =>
+        await recordReply({ tenantId, phone }).catch((err: unknown) =>
           logger.warn({ err, tenantId }, 'reply not credited to a message'),
         );
 
         if (!text || !['STOP', 'UNSUBSCRIBE', 'OPT OUT', 'OPTOUT'].includes(text)) continue;
 
-        const phone = normalizePhone(message.from);
         const result = await runUnscoped(() =>
           prisma.customer.updateMany({
             where: { tenantId, phone },
@@ -405,3 +466,30 @@ router.post(
     }
   }),
 );
+
+/**
+ * The words the customer sent, whatever shape they arrived in.
+ *
+ * A tap on a quick-reply button is a reply like any other and is the single
+ * most likely thing a customer does with a template — it arrives as
+ * `button.text` or `interactive.button_reply.title`, not as `text.body`.
+ * Reading only `text.body` would have stored an empty string for exactly the
+ * messages a template is designed to produce.
+ *
+ * A photograph or a voice note has no text at all. Those are recorded with an
+ * empty body and their real `type`, so the salon can at least see that
+ * something arrived and open WhatsApp to look at it.
+ */
+function readBody(message: {
+  text?: { body: string };
+  button?: { text?: string };
+  interactive?: { button_reply?: { title?: string }; list_reply?: { title?: string } };
+}): string {
+  return (
+    message.text?.body ??
+    message.button?.text ??
+    message.interactive?.button_reply?.title ??
+    message.interactive?.list_reply?.title ??
+    ''
+  ).slice(0, 4000);
+}

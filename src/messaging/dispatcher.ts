@@ -580,9 +580,29 @@ export async function queueMessage(input: QueueMessageInput) {
   }
 
   // Consent is checked at queue time so opted-out contacts never enter the queue.
-  if (customer && template) {
+  /**
+   * OPT-OUT APPLIES TO A PLAIN REPLY TOO.
+   *
+   * This gate used to be `if (customer && template)`, so a send with no
+   * template — a free-form message inside an open conversation — skipped
+   * consent entirely. A customer who had sent STOP could still be messaged,
+   * as long as the message happened not to use a template.
+   *
+   * Nothing exploited that while the only caller was a staff member typing a
+   * reply by hand: a person who has just been told to stop does not then type
+   * to them. It stops being theoretical the moment anything replies
+   * automatically, and the hole is in the wrong direction to leave open —
+   * ignoring an opt-out is a Meta policy breach and, under India's DPDP Act,
+   * a legal one.
+   *
+   * A reply with no template is treated as UTILITY, matching the category the
+   * meter already assigns it further down. UTILITY reaches anybody who has not
+   * opted out, and nobody who has.
+   */
+  if (customer) {
     const consent = consentForChannel(customer, input.channel);
-    if (!consentAllows(template.category, consent)) {
+    const category = template?.category ?? 'UTILITY';
+    if (!consentAllows(category, consent)) {
       return prisma.messageLog.create({
         data: {
           tenantId: input.tenantId,
@@ -593,11 +613,13 @@ export async function queueMessage(input: QueueMessageInput) {
           leadId: input.leadId ?? null,
           campaignId: input.campaignId ?? null,
           journeyRunId: input.journeyRunId ?? null,
-          templateId: template.id,
+          templateId: template?.id ?? null,
           toAddress,
           status: 'SKIPPED',
           errorCode: 'NO_CONSENT',
-          errorMessage: `Customer has not opted in to ${input.channel.toLowerCase()} ${template.category.toLowerCase()} messages`,
+          errorMessage: template
+            ? `Customer has not opted in to ${input.channel.toLowerCase()} ${template.category.toLowerCase()} messages`
+            : `Customer has opted out of ${input.channel.toLowerCase()} messages, so this reply was not sent`,
           payload: (input.variables ?? {}) as Prisma.InputJsonValue,
         },
       });

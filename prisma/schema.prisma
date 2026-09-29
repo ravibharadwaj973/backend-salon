@@ -863,6 +863,7 @@ model Tenant {
 
   @@index([status])
   @@map("tenants")
+  inboundMessages InboundMessage[]
 }
 
 model TenantSubscription {
@@ -1508,6 +1509,7 @@ model Customer {
   @@index([tenantId, lifecycleStage])
   @@index([tenantId, expectedNextVisitAt])
   @@map("customers")
+  inboundMessages InboundMessage[]
 }
 
 model CustomerNote {
@@ -3302,6 +3304,62 @@ model TenantAsset {
 
   @@index([tenantId, kind])
   @@map("tenant_assets")
+}
+
+/// WHAT THE CUSTOMER ACTUALLY SAID.
+///
+/// Until now, nothing. The webhook read an inbound WhatsApp message, compared
+/// it against STOP, and dropped it — so a customer writing "can I come at 4
+/// tomorrow?" reached the server, was understood well enough to be checked for
+/// one word, and was then discarded. Nobody at the salon ever saw it.
+///
+/// MessageLog could not hold these. It is outbound by construction — toAddress,
+/// renderedBody, providerMessageId, delivery timestamps — with no direction
+/// column and nothing to put a body in that arrived from the other side. Adding
+/// a direction flag would make every existing query mean something slightly
+/// different, which is how a reporting layer starts lying.
+///
+/// So: its own table, and the outbound log is left alone.
+model InboundMessage {
+  id       String @id @default(cuid())
+  tenantId String
+  /// Null when the number belongs to nobody on the book — a stranger messaging
+  /// the salon is still worth showing, and is how some customers arrive.
+  customerId String?
+  branchId   String?
+
+  channel Channel @default(WHATSAPP)
+  /// E.164, normalised the same way outbound addresses are.
+  fromAddress String
+  body        String
+  /// 'text', 'image', 'button', 'interactive' … kept raw: the salon should see
+  /// that a photograph arrived even when nothing here can display it yet.
+  messageType String @default("text")
+
+/// The provider's own id for this message.
+///
+/// Unique, and that is the whole point. Meta retries a webhook until it gets a
+/// 200 and does not care that it already got one — so the same customer
+/// message arrives two or three times. Today that is harmless because the
+/// handler barely acts on it. The moment anything replies automatically, every
+/// retry is another message to a real person, and the constraint is what stops
+/// it rather than anybody remembering to.
+  providerMessageId String? @unique
+
+  /// When the salon (or a person acting for it) dealt with this.
+  handledAt DateTime?
+  handledBy String?
+
+  receivedAt DateTime @default(now())
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, receivedAt])
+  @@index([tenantId, customerId, receivedAt])
+  /// The unhandled queue, which is the only list anybody will actually open.
+  @@index([tenantId, handledAt])
+  @@map("inbound_messages")
 }
 
 model WebhookEvent {
