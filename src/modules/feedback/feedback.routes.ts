@@ -79,6 +79,29 @@ router.get(
 );
 
 /**
+ * WHAT CUSTOMERS KEEP SAYING.
+ *
+ * Counts of the topics the analysis has already been writing against every
+ * piece of feedback — and which, until this route, nothing had ever read back.
+ *
+ * FEEDBACK_VIEW, the same as the summary beside it: this is the same customers'
+ * words counted a different way, and anybody trusted to read a complaint is
+ * trusted to see that eleven people mentioned waiting.
+ */
+router.get(
+  '/insights',
+  requirePermission(PERMISSIONS.FEEDBACK_VIEW),
+  validate({
+    query: z.object({
+      from: z.coerce.date().optional(),
+      to: z.coerce.date().optional(),
+      branchId: idSchema.optional(),
+    }),
+  }),
+  asyncHandler(async (req, res) => ok(res, await service.reviewInsights(req.query as never))),
+);
+
+/**
  * Put one piece of feedback on the salon's own website, or take it down.
  *
  * FEEDBACK_MANAGE rather than FEEDBACK_VIEW: publishing somebody's words under

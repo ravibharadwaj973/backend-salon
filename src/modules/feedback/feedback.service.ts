@@ -1,4 +1,4 @@
-import type { Prisma } from '@prisma/client';
+import type { FeedbackTopicKind, Prisma } from '@prisma/client';
 import { prisma } from '../../core/prisma';
 import { requireTenantId, runUnscoped } from '../../core/context';
 import { branchFilter } from '../../core/scope';
@@ -970,5 +970,98 @@ async function appointmentContext(appointmentId: string) {
     googleReviewUrl: await googleReviewUrlFor(appointment.tenantId, appointment.branchId),
     invoiceId: null as string | null,
     appointmentId: appointment.id as string | null,
+  };
+}
+
+/**
+ * WHAT CUSTOMERS KEEP SAYING — THE DATA THAT WAS ALREADY BEING COLLECTED.
+ *
+ * Every analysed piece of feedback has been classified into topics with a
+ * sentiment each — waiting time, staff, cleanliness, price, result — and stored
+ * in feedback_topics since the day that feature shipped. Nothing ever read it.
+ * Not one screen, not one query. A salon has been told its average is 4.6 and
+ * never told that eleven people mentioned waiting.
+ *
+ * Which is the difference between a score and something a salon can act on. An
+ * average moves slowly and says nothing about what to change on Monday; "staff
+ * friendliness 84 positive, waiting time 18 negative" is a week's worth of
+ * decisions.
+ *
+ * ── Counted, never generated ──────────────────────────────────────────────
+ *
+ * Every number here is a COUNT of rows a model wrote against real feedback. The
+ * model's job was reading one customer's words once; the arithmetic is the
+ * database's. Asking a model to summarise the summaries is how a dashboard ends
+ * up with confident figures nobody can trace to a customer, and a salon owner
+ * making staffing decisions deserves to be able to click through to the eleven
+ * people who actually said it.
+ */
+export interface ReviewInsights {
+  /** Topics people were happy about, commonest first. */
+  praised: { topic: FeedbackTopicKind; count: number }[];
+  /** Topics people complained about, commonest first. */
+  criticised: { topic: FeedbackTopicKind; count: number }[];
+  /** How many analysed pieces of feedback these counts are drawn from. */
+  analysed: number;
+  /**
+   * Feedback with words that has not been read by the analysis yet.
+   *
+   * Surfaced rather than hidden: a salon looking at eleven mentions of waiting
+   * should know whether that is out of forty pieces of feedback or four
+   * hundred, and a backlog quietly excluded from the counts makes the whole
+   * panel untrustworthy.
+   */
+  pending: number;
+}
+
+export async function reviewInsights(input: {
+  from?: Date;
+  to?: Date;
+  branchId?: string;
+}): Promise<ReviewInsights> {
+  const tenantId = requireTenantId();
+
+  const where: Prisma.FeedbackWhereInput = {
+    tenantId,
+    ...branchFilter(input.branchId),
+    ...(input.from || input.to
+      ? { createdAt: { ...(input.from ? { gte: input.from } : {}), ...(input.to ? { lte: input.to } : {}) } }
+      : {}),
+  };
+
+  const [rows, analysed, pending] = await Promise.all([
+    prisma.feedbackTopic.groupBy({
+      by: ['topic', 'sentiment'],
+      where: { tenantId, feedback: where },
+      _count: { _all: true },
+    }),
+    prisma.feedback.count({ where: { ...where, analyzedAt: { not: null } } }),
+    /**
+     * Words nobody has read yet. `comment` is what the analysis needs — a
+     * rating with no comment is complete feedback and is stamped analysed
+     * without producing topics, so counting those as a backlog would show a
+     * queue that never empties.
+     */
+    prisma.feedback.count({
+      where: { ...where, analyzedAt: null, comment: { not: null } },
+    }),
+  ]);
+
+  const byDirection = (want: 'POSITIVE' | 'NEGATIVE') =>
+    rows
+      .filter((row) => row.sentiment === want)
+      .map((row) => ({ topic: row.topic, count: row._count._all }))
+      /**
+       * Commonest first, and ties broken by name rather than left to the
+       * database. An order that reshuffles between two identical requests makes
+       * a salon think something changed when nothing did.
+       */
+      .sort((a, b) => b.count - a.count || a.topic.localeCompare(b.topic));
+
+  return {
+    praised: byDirection('POSITIVE'),
+    criticised: byDirection('NEGATIVE'),
+    analysed,
+    pending,
   };
 }
