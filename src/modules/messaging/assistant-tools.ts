@@ -1,4 +1,6 @@
 import { prisma } from '../../core/prisma';
+import { logger } from '../../core/logger';
+import { AppError } from '../../core/errors';
 import { runAsTenant, runUnscoped } from '../../core/context';
 import { availableSlots } from '../appointments/availability.service';
 import { createAppointment } from '../appointments/appointment.service';
@@ -118,7 +120,7 @@ export async function bookOffer(input: {
   branchId: string;
   customerId: string;
   offer: SlotOffer;
-}): Promise<{ ok: true; appointmentId: string } | { ok: false; reason: string }> {
+}): Promise<{ ok: true; appointmentId: string } | { ok: false; reason: string; taken: boolean }> {
   try {
     const appointment = await runAsTenant(input.tenantId, () =>
       createAppointment({
@@ -135,14 +137,61 @@ export async function bookOffer(input: {
         sourceRef: 'whatsapp-assistant',
       }),
     );
+    logger.info(
+      {
+        tenantId: input.tenantId,
+        branchId: input.branchId,
+        customerId: input.customerId,
+        appointmentId: appointment.id,
+        serviceId: input.offer.serviceId,
+        startAt: input.offer.startAt,
+      },
+      'assistant booked an appointment',
+    );
     return { ok: true, appointmentId: appointment.id };
   } catch (err) {
     /**
-     * The expected failure, not an exceptional one: somebody took the slot
-     * between the offer and the yes. The customer is told honestly and offered
-     * what is still free, which is the only decent answer.
+     * TWO DIFFERENT FAILURES WEARING THE SAME FACE.
+     *
+     * One is expected: somebody took the slot between the offer and the yes.
+     * The customer is told honestly and offered what is still free, which is
+     * the only decent answer.
+     *
+     * The other is a bug — a service that is not bookable, a customer the
+     * booking rules refuse, a branch mismatch, a validation error. Both used to
+     * come back as the same `ok: false`, and the caller says "sorry, that time
+     * has just gone" to either. So every real fault was reported to the customer
+     * as bad luck and to us as nothing at all, and the only symptom anybody
+     * could see was "the assistant never books anything".
+     *
+     * The distinction is drawn from the error itself: a conflict is the
+     * expected race, anything else is ours to fix, and only the second is worth
+     * waking somebody for.
      */
     const message = err instanceof Error ? err.message : 'could not book';
-    return { ok: false, reason: message };
+    const taken =
+      err instanceof AppError ? err.statusCode === 409 : /not available|conflict/i.test(message);
+
+    if (taken) {
+      logger.info(
+        { tenantId: input.tenantId, customerId: input.customerId, startAt: input.offer.startAt },
+        'assistant could not book: the slot went between the offer and the yes',
+      );
+    } else {
+      logger.error(
+        {
+          err,
+          tenantId: input.tenantId,
+          branchId: input.branchId,
+          customerId: input.customerId,
+          serviceId: input.offer.serviceId,
+          startAt: input.offer.startAt,
+        },
+        'assistant could not book and it was NOT a taken slot — the customer was told the ' +
+          'time had gone, which is not what happened',
+      );
+    }
+
+    return { ok: false, reason: message, taken };
   }
 }

@@ -154,12 +154,60 @@ export function branchQuestion(branches: BranchChoice[]): string {
  * breath as the booking ("can I come to Bandra tomorrow at 6") is used without
  * a second round trip.
  */
+/**
+ * THE SHOP THEY ACTUALLY GO TO.
+ *
+ * Asked before the customer is. A salon that has served somebody four times at
+ * Gomti Nagar should not open the fifth conversation by asking them which of its
+ * shops they mean — it is the one question a regular knows we already have the
+ * answer to, and asking it is the app admitting it does not know its own
+ * customers.
+ *
+ * Their record's `branchId` is the first answer and is usually set; this is for
+ * the customer it is not set on, which is most of the ones created from a
+ * walk-in, a QR rating or an imported list. The appointment book knows anyway.
+ *
+ * Only their LAST visit, and only one query. Somebody who went to Bandra once
+ * two years ago and to Gomti Nagar last week means Gomti Nagar, and a tally
+ * across their whole history would have to decide what to do about a tie —
+ * which is a question with no good answer and a customer sitting there waiting.
+ * The most recent visit is both the simplest rule and the right one.
+ *
+ * `customerId` may be null: a message from a number nobody has on file never
+ * reaches this far, but the type says so and a wrong guess here would be a
+ * stranger's branch attached to somebody else's booking.
+ */
+async function branchTheyLastVisited(input: {
+  tenantId: string;
+  customerId: string | null;
+}): Promise<string | null> {
+  if (!input.customerId) return null;
+
+  const last = await runUnscoped(() =>
+    prisma.appointment.findFirst({
+      where: {
+        tenantId: input.tenantId,
+        customerId: input.customerId,
+        // No status filter on purpose. A cancelled booking still says which shop
+        // they chose, and somebody who called off one visit has not changed
+        // where they go.
+      },
+      orderBy: { startAt: 'desc' },
+      select: { branchId: true },
+    }),
+  ).catch(() => null);
+
+  return last?.branchId ?? null;
+}
+
 export async function resolveBranch(input: {
   tenantId: string;
   /** The branch the salon has on the customer's record, if any. */
   customerBranchId: string | null;
   /** The branch the inbound message was attributed to, if any. */
   messageBranchId: string | null;
+  /** Who is asking, so their own history can answer before they are asked. */
+  customerId: string | null;
   said: string | null;
 }): Promise<BranchResolution> {
   /**
@@ -170,7 +218,8 @@ export async function resolveBranch(input: {
    * to visit the other one, they will say so, and a person can move it: that is
    * a better failure than interrogating every regular about their own salon.
    */
-  const known = input.customerBranchId ?? input.messageBranchId;
+  const known =
+    input.customerBranchId ?? input.messageBranchId ?? (await branchTheyLastVisited(input));
   if (known) {
     const branch = await runUnscoped(() =>
       prisma.branch.findFirst({

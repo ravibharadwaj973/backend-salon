@@ -175,9 +175,32 @@ export async function createAppointment(input: CreateAppointmentInput) {
     return created;
   });
 
+  /**
+   * THE BOOKING IS ALREADY MADE. NOTHING AFTER THIS MAY UNMAKE IT.
+   *
+   * These run after the transaction has committed, so a throw here does not
+   * roll the appointment back — it only makes createAppointment report a
+   * failure for a booking that exists. The caller then tells somebody the slot
+   * could not be taken while the diary says it has been.
+   *
+   * On the assistant's path that is the worst version of it: the customer is
+   * told "sorry, that time has just gone", books nothing, and does not turn up
+   * to an appointment the salon is holding for them. At the desk it is a
+   * receptionist pressing save twice.
+   *
+   * A reminder that fails to queue is a reminder that does not go out, which is
+   * worth an error in the log and nothing more. So it is logged loudly and
+   * swallowed: the appointment is the thing that matters, and it is done.
+   */
   await scheduleAppointmentJobs(appointment.id, appointment.startAt, {
     sendConfirmation: input.sendConfirmation !== false,
     customerId: input.customerId ?? null,
+  }).catch((err: unknown) => {
+    logger.error(
+      { err, appointmentId: appointment.id, branchId },
+      'appointment was created but its confirmation and reminders could not be queued — ' +
+        'the booking stands, the messages will not go out',
+    );
   });
 
   logger.info({ appointmentId: appointment.id, branchId }, 'appointment booked');

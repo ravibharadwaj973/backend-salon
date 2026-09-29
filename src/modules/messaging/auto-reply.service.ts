@@ -334,13 +334,40 @@ export async function maybeAutoReply(input: {
 
     await clearOffer(message.customer.id);
 
-    const text = booked.ok
-      ? `Done — ${offerHeld.serviceName} on ${humanWhen(offerHeld.startAt)}${offerHeld.staffName ? ` with ${offerHeld.staffName}` : ''}. See you then.`
-      : `Sorry — that time has just gone. Would another time suit you? You can also see what is free here: ${salon.bookingUrl ?? salon.websiteUrl ?? 'our website'}`;
+    /**
+     * Three outcomes, not two.
+     *
+     * Booked, the slot went, or something else went wrong — and the third used
+     * to be told the second's story. A customer hearing "that time has just
+     * gone" when the real fault was ours goes and finds another time that will
+     * fail in exactly the same way, and the salon never hears about it. If we
+     * cannot book and cannot say why, the honest thing is to hand them to a
+     * person.
+     */
+    if (booked.ok) {
+      await send(
+        input.tenantId,
+        confirmBranchId,
+        message.customer.id,
+        `Done — ${offerHeld.serviceName} on ${humanWhen(offerHeld.startAt)}${offerHeld.staffName ? ` with ${offerHeld.staffName}` : ''}. See you then.`,
+      );
+      await markHandled(message.id);
+      return { sent: true, reason: 'booked' };
+    }
 
-    await send(input.tenantId, confirmBranchId, message.customer.id, text);
-    await markHandled(message.id);
-    return { sent: true, reason: booked.ok ? 'booked' : 'slot taken' };
+    if (booked.taken) {
+      await send(
+        input.tenantId,
+        confirmBranchId,
+        message.customer.id,
+        `Sorry — that time has just gone. Would another time suit you? You can also see what is free here: ${salon.bookingUrl ?? salon.websiteUrl ?? 'our website'}`,
+      );
+      await markHandled(message.id);
+      return { sent: true, reason: 'slot taken' };
+    }
+
+    // Deliberately NOT marked handled: somebody has to finish this booking.
+    return handOver('PERSON', 'booking failed for a reason that is ours — handed to a person');
   }
 
   if (intent.intent === 'DECLINE' && offerHeld) await clearOffer(message.customer.id);
@@ -374,6 +401,7 @@ export async function maybeAutoReply(input: {
             tenantId: input.tenantId,
             customerBranchId: message.customer.branchId,
             messageBranchId: message.branchId,
+            customerId: message.customer.id,
             said: message.body,
           });
 
