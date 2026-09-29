@@ -80,6 +80,36 @@ function mapPrismaError(err: unknown): AppError | null {
   if (err instanceof Prisma.PrismaClientInitializationError) {
     return new AppError('Database unavailable', 503, 'DATABASE_UNAVAILABLE');
   }
+
+  /**
+   * AN ENUM VALUE THE CODE HAS AND THE DATABASE DOES NOT.
+   *
+   * The same fault as a missing column, wearing a different error class.
+   * Postgres rejects the INSERT with `invalid input value for enum`, and
+   * Prisma surfaces that as an UNKNOWN request error rather than a known one —
+   * so it fell past every case above, landed in the unhandled branch, and came
+   * back to the customer as "Something went wrong. Please try again."
+   *
+   * It happened the day FeedbackSource gained QR: the code shipped, the schema
+   * change did not, and every rating from the counter card died on submit with
+   * nothing anywhere saying why. Exactly the failure P2021/P2022 were mapped
+   * for, and exactly as invisible.
+   *
+   * Matched on the message because there is no code to match on. Narrow enough
+   * to be safe — those five words appear in no other Postgres error — and
+   * wrong only in the direction of being unhelpful, never of hiding data.
+   */
+  const message = err instanceof Error ? err.message : '';
+  if (/invalid input value for enum/i.test(message)) {
+    const name = /enum "?([A-Za-z_]+)"?/.exec(message)?.[1];
+    return new AppError(
+      `The database does not have every value this version uses${name ? ` for ${name}` : ''} — pending schema changes have not been applied.`,
+      503,
+      'SCHEMA_BEHIND_CODE',
+      isProd ? undefined : { prisma: message },
+    );
+  }
+
   return null;
 }
 

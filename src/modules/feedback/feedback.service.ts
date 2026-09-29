@@ -305,29 +305,26 @@ export async function submitFeedback(input: FeedbackInput, tenantIdOverride?: st
    * carries their criticism instead: a two against the wait comes out as a
    * sentence about waiting. See the rule in feedback-ai.ts.
    */
-  const reviewDrafts = aiReady
-    ? await draftReviewsNow({
-        overallRating: input.rating,
-        staffRating: input.staffRating ?? null,
-        cleanlinessRating: input.ambienceRating ?? null,
-        waitingRating: input.waitRating ?? null,
-        comment: input.comment ?? null,
-        services: await draftableServices(serviceRatings, onAppointment),
-      }).catch(() => [])
-    : [];
-
   /**
-   * The first one goes in the column, because the salon's feedback list shows a
-   * line per rating and has nowhere to put five. The list itself never needs
-   * storing: it exists for the thirty seconds the customer is choosing.
+   * THE RATING IS SAVED BY HERE. NOTHING AFTER THIS POINT MAY RISK IT.
+   *
+   * The suggestions used to be written on this request: submit, then wait up
+   * to eight seconds while a model composed five reviews, THEN answer. Which
+   * meant the customer's rating — the thing the salon actually needs, the
+   * thing that cannot be asked for twice — was sitting behind a third party's
+   * latency on a serverless function with a hard ceiling. When that ceiling
+   * was hit the function died, the browser got an empty body, and the page
+   * said "Something went wrong" about a rating that had in fact been stored.
+   *
+   * Worse than a bad error message: a customer told it failed tries again,
+   * finds the link already used, and concludes the salon's app is broken.
+   *
+   * So the request answers as soon as the rating is written, and the page
+   * fetches its suggestions separately. If that second call is slow, or times
+   * out, or the model is down, the customer sees the Google link without a
+   * draft — which is what they saw before any of this existed, and nothing is
+   * lost that mattered.
    */
-  const reviewDraft = reviewDrafts[0] ?? null;
-
-  if (reviewDraft) {
-    await runUnscoped(() =>
-      prisma.feedback.update({ where: { id: feedback.id }, data: { reviewDraft } }),
-    ).catch(() => undefined);
-  }
 
   return {
     feedback,
@@ -351,7 +348,6 @@ export async function submitFeedback(input: FeedbackInput, tenantIdOverride?: st
      * from something the customer actually pointed at, or it is the salon
      * talking about itself in the customer's voice.
      */
-    reviewDraft,
     /**
      * The list the customer chooses from.
      *
@@ -361,7 +357,7 @@ export async function submitFeedback(input: FeedbackInput, tenantIdOverride?: st
      * customer rather than the model, which is also what keeps this the right
      * side of writing reviews on their behalf.
      */
-    reviewDrafts,
+    reviewDrafts: [] as string[],
   };
 }
 
@@ -411,6 +407,55 @@ async function draftableServices(
  * has its own listing, and a review on the wrong one is wasted). Falls back to
  * a tenant-wide link for a single-branch salon that set it once.
  */
+/**
+ * Write the suggestions for a rating that has already been stored.
+ *
+ * Called by the thank-you screen on its own request, so nothing here can cost
+ * the customer their rating — by the time this runs, that is safe on disk.
+ *
+ * Idempotent in the way that matters: once a draft has been stored, a second
+ * call reads it back rather than paying a model to write five more. Somebody
+ * refreshing the page should see the same suggestions, not a new set.
+ */
+export async function reviewSuggestions(
+  feedbackId: string,
+): Promise<{ reviewDrafts: string[] }> {
+  const feedback = await runUnscoped(() =>
+    prisma.feedback.findUnique({
+      where: { id: feedbackId },
+      include: { serviceRatings: { include: { service: { select: { name: true } } } } },
+    }),
+  );
+  if (!feedback) throw NotFound('Feedback');
+
+  if (!aiReady) return { reviewDrafts: [] };
+
+  const drafts = await draftReviewsNow({
+    overallRating: feedback.rating,
+    staffRating: feedback.staffRating,
+    cleanlinessRating: feedback.ambienceRating,
+    waitingRating: feedback.waitRating,
+    comment: feedback.comment,
+    services: feedback.serviceRatings.map((row) => ({
+      name: row.service.name,
+      rating: row.rating,
+    })),
+  }).catch(() => [] as string[]);
+
+  /**
+   * The first one is kept on the row, which is all the salon's own feedback
+   * list has room to show. Stored rather than regenerated so the salon sees
+   * the same sentence the customer was offered.
+   */
+  if (drafts[0] && !feedback.reviewDraft) {
+    await runUnscoped(() =>
+      prisma.feedback.update({ where: { id: feedback.id }, data: { reviewDraft: drafts[0] } }),
+    ).catch(() => undefined);
+  }
+
+  return { reviewDrafts: drafts };
+}
+
 export async function googleReviewUrlFor(tenantId: string, branchId: string | null): Promise<string | null> {
   if (branchId) {
     const branch = await runUnscoped(() =>

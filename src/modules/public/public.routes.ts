@@ -659,6 +659,31 @@ router.get(
 );
 
 /**
+ * THE SUGGESTIONS, FETCHED AFTER THE RATING IS SAFE.
+ *
+ * Deliberately its own request. Composing five reviews takes a model several
+ * seconds, and for a while that happened inside the submit — so a customer's
+ * rating was held hostage to a third party's latency, and when the serverless
+ * function in front of the API ran out of time the browser was handed an empty
+ * body and told the customer it had failed. It had not; the rating was stored.
+ * A customer told it failed tries again, finds the link used, and concludes
+ * the salon's app is broken.
+ *
+ * Now the rating is written and answered for immediately, and this runs on its
+ * own. If it is slow, times out, or the model is down, the page shows the
+ * Google link with no draft — exactly what it did before drafts existed.
+ *
+ * Idempotent: a second call re-reads what the first one stored rather than
+ * paying for another generation.
+ */
+router.get(
+  '/feedback/suggestions/:feedbackId',
+  asyncHandler(async (req, res) => {
+    return ok(res, await feedback.reviewSuggestions(req.params.feedbackId!));
+  }),
+);
+
+/**
  * THE COUNTER CARD'S OWN PAIR OF ROUTES.
  *
  * Separate from /feedback/:id rather than a third branch inside it, because
@@ -722,10 +747,7 @@ router.post(
       thankYou: true,
       nextStep: result.nextStep,
       googleReviewUrl: result.googleReviewUrl,
-      /** The feedback's own id: with no visit behind it, this is what the
-       *  Google-tap endpoint has to be given. */
       feedbackId: result.feedback.id,
-      reviewDraft: result.reviewDraft,
       reviewDrafts: result.reviewDrafts,
       message:
         result.nextStep === 'GOOGLE_REVIEW'
@@ -794,7 +816,7 @@ router.post(
       nextStep: result.nextStep,
       googleReviewUrl: result.googleReviewUrl,
       /** Kept for any client still reading a single draft. */
-      reviewDraft: result.reviewDraft,
+      feedbackId: result.feedback.id,
       /** The suggestions to choose between — see submitFeedback. */
       reviewDrafts: result.reviewDrafts,
       message:
