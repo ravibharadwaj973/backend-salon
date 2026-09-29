@@ -16,6 +16,7 @@ import {
   parseReply,
   replyPrompt,
 } from './reply-ai';
+import { BURST_WINDOW_MINUTES, replyCeiling } from './reply-limits';
 import { type ParsedIntent, carryOverContext, intentPrompt, parseIntent } from './assistant-intent';
 import { type SlotOffer, bookOffer, checkAvailability, matchService } from './assistant-tools';
 import {
@@ -46,17 +47,7 @@ const TIMEOUT_MS = 9000;
 /** Warm enough not to sound like a form letter, cool enough to stay on facts. */
 const TEMPERATURE = 0.4;
 
-/**
- * THE STOP ON A LOOP.
- *
- * Every guard below refuses a bad reply. This one refuses a runaway. If
- * anything ever messages this number automatically — another bot, a forwarding
- * rule, a test harness, the salon's own second system — each side answers the
- * other forever, at a cost per message, in the salon's name. A ceiling per
- * customer per day means the worst case is bounded and visible rather than
- * unbounded and discovered on an invoice.
- */
-const MAX_REPLIES_PER_CUSTOMER_PER_DAY = 10;
+/* The ceilings, and why they are shaped the way they are, live in reply-limits. */
 
 export interface AutoReplyDecision {
   sent: boolean;
@@ -143,12 +134,25 @@ export async function maybeAutoReply(input: {
   const salon = await salonContext(input.tenantId, branchId);
   if (!salon) return { sent: false, reason: 'no salon details to answer from' };
 
-  /** One fixed sentence, or null when the salon has given us nothing to point at. */
+  /**
+   * One fixed sentence, or null when the salon has given us nothing to point at.
+   *
+   * DELIBERATELY DOES NOT MARK THE MESSAGE HANDLED.
+   *
+   * A reply that answers the question is handled; a handoff is the opposite of
+   * handled — it is the assistant saying it cannot deal with this and a person
+   * must. Stamping handledAt here would tell the customer "someone will look at
+   * this personally" and, in the same breath, take the message out of the queue
+   * where somebody would have found it.
+   *
+   * Which is worst exactly where it matters most: a burn, a refund, a complaint.
+   * Those take this path by design, and marking them done would have buried the
+   * few messages in the whole system that a human genuinely must read.
+   */
   const handOver = async (reason: HandoffReason, decision: string): Promise<AutoReplyDecision> => {
     const text = handoffReply(salon, reason);
     if (!text) return { sent: false, reason: `${decision} (nothing to hand over to)` };
     await send(input.tenantId, branchId, message.customer!.id, text);
-    await markHandled(message.id);
     return { sent: true, reason: decision };
   };
 
@@ -162,45 +166,49 @@ export async function maybeAutoReply(input: {
     return handOver('PERSON', 'handed to a person: subject needs one');
   }
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const repliesToday = await runUnscoped(() =>
-    prisma.messageLog.count({
-      where: {
-        tenantId: input.tenantId,
-        customerId: message.customer!.id,
-        channel: 'WHATSAPP',
-        purpose: 'OTHER',
-        queuedAt: { gte: today },
-      },
-    }),
-  );
-  if (repliesToday >= MAX_REPLIES_PER_CUSTOMER_PER_DAY) {
-    logger.warn(
-      { tenantId: input.tenantId, customerId: message.customer.id, repliesToday },
-      'auto-reply stopped: daily ceiling for this customer reached',
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const burstSince = new Date(Date.now() - BURST_WINDOW_MINUTES * 60 * 1000);
+
+  const countReplies = (since: Date) =>
+    runUnscoped(() =>
+      prisma.messageLog.count({
+        where: {
+          tenantId: input.tenantId,
+          customerId: message.customer!.id,
+          channel: 'WHATSAPP',
+          // Our own automatic replies, which is what a runaway consists of.
+          // A campaign or a booking confirmation is not part of this count.
+          purpose: 'OTHER',
+          queuedAt: { gte: since },
+        },
+      }),
     );
 
-    /**
-     * SAID ONCE, AT THE CEILING. THEN SILENCE.
-     *
-     * The ceiling exists to bound a runaway loop — two machines answering each
-     * other forever, at a cost per message, in the salon's name. So it cannot
-     * simply send a handoff instead of a reply, or it stops being a ceiling.
-     *
-     * But going abruptly quiet mid-conversation is the failure this whole change
-     * is about. So: exactly at the ceiling, one message saying a person will pick
-     * it up; above it, nothing at all.
-     *
-     * No extra state is needed to make that happen exactly once, because the
-     * handoff is itself a reply and counts towards the same total. The tenth
-     * reply of the day trips this, sends the eleventh message, and every message
-     * after it sees a count above the ceiling and says nothing.
-     */
-    if (repliesToday === MAX_REPLIES_PER_CUSTOMER_PER_DAY) {
-      return handOver('ENOUGH_FOR_TODAY', 'daily ceiling reached — handed to a person');
+  const [repliesInBurst, repliesToday] = await Promise.all([
+    countReplies(burstSince),
+    countReplies(startOfToday),
+  ]);
+
+  const limit = replyCeiling({ inBurst: repliesInBurst, today: repliesToday });
+
+  if (limit) {
+    logger.warn(
+      {
+        tenantId: input.tenantId,
+        customerId: message.customer.id,
+        limit: limit.which,
+        action: limit.action,
+        repliesInBurst,
+        repliesToday,
+      },
+      `auto-reply stopped: ${limit.which} ceiling for this customer reached`,
+    );
+
+    if (limit.action === 'HAND_OVER') {
+      return handOver('ENOUGH_FOR_TODAY', `${limit.which} ceiling reached — handed to a person`);
     }
-    return { sent: false, reason: 'daily reply ceiling reached, already handed over' };
+    return { sent: false, reason: `${limit.which} reply ceiling reached, already handed over` };
   }
 
   /**
