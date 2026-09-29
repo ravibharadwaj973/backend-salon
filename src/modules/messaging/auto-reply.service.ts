@@ -4,11 +4,12 @@ import { runUnscoped } from '../../core/context';
 import { logger } from '../../core/logger';
 import { aiReady } from '../../config/env';
 import { chat } from '../../core/ai';
+import { dateKey } from '../../core/dates';
 import { queueMessage } from '../../messaging/dispatcher';
 import { windowIsOpen } from '../../messaging/service-window';
 import { salonContext } from './salon-context';
 import { MAX_REPLY_CHARS, needsHuman, parseReply, replyPrompt } from './reply-ai';
-import { type ParsedIntent, intentPrompt, parseIntent } from './assistant-intent';
+import { type ParsedIntent, carryOverContext, intentPrompt, parseIntent } from './assistant-intent';
 import { type SlotOffer, bookOffer, checkAvailability, matchService } from './assistant-tools';
 import {
   BRANCH_PENDING,
@@ -183,6 +184,32 @@ export async function maybeAutoReply(input: {
   const resumed = branchPending ? resumeBranchChoice(branchPending, message.body) : null;
   if (resumed) await clearOffer(message.customer.id);
 
+  /**
+   * Their side of the conversation, newest first.
+   *
+   * Read once and used twice — the intent step needs the messages before this
+   * one to make sense of a half-finished request, and the answer path needs the
+   * whole thread including this message.
+   */
+  const thread = await runUnscoped(() =>
+    prisma.inboundMessage.findMany({
+      where: { tenantId: input.tenantId, customerId: message.customer!.id },
+      orderBy: { receivedAt: 'desc' },
+      take: HISTORY,
+      select: { id: true, body: true, receivedAt: true },
+    }),
+  );
+
+  /**
+   * The salon's own day, which is the one "tomorrow" is relative to.
+   *
+   * Was `toISOString().slice(0, 10)`, which is the day in UTC. Between midnight
+   * and 05:30 in India that is yesterday — so a customer messaging at 1am asking
+   * for "tomorrow" was offered today, and one asking for "today" was offered a
+   * day that had already finished.
+   */
+  const salonToday = dateKey(new Date());
+
   let intent: ParsedIntent;
 
   if (resumed) {
@@ -200,8 +227,9 @@ export async function maybeAutoReply(input: {
       message: message.body,
       serviceNames: services.map((s) => s.name),
       staffNames: [],
-      today: new Date().toISOString().slice(0, 10),
+      today: salonToday,
       outstandingOffer: offerHeld ? describeOffer(offerHeld) : null,
+      recent: carryOverContext(thread, message),
     });
 
     const intentRaw = await chat(intentCall.system, intentCall.user, {
@@ -212,7 +240,7 @@ export async function maybeAutoReply(input: {
       maxTokens: 300,
     });
     intent = intentRaw
-      ? parseIntent(intentRaw)
+      ? parseIntent(intentRaw, { today: salonToday })
       : { intent: 'ANSWER', service: null, date: null, time: null, staff: null };
   }
 
@@ -376,19 +404,11 @@ export async function maybeAutoReply(input: {
     }
   }
 
-  /** Their side of it. The salon's outbound copy is not needed to answer. */
-  const history = await runUnscoped(() =>
-    prisma.inboundMessage.findMany({
-      where: { tenantId: input.tenantId, customerId: message.customer!.id },
-      orderBy: { receivedAt: 'desc' },
-      take: HISTORY,
-      select: { body: true },
-    }),
-  );
-
   const { system, user } = replyPrompt({
     salon,
-    conversation: history
+    // Their side of it, oldest first. The salon's outbound copy is not needed to
+    // answer. Already read above, because the intent step needed it too.
+    conversation: [...thread]
       .reverse()
       .filter((row) => row.body.trim())
       .map((row) => ({ from: 'CUSTOMER' as const, body: row.body })),
