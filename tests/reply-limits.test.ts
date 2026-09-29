@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BURST_WINDOW_MINUTES,
   MAX_REPLIES_PER_BURST,
   MAX_REPLIES_PER_DAY,
   replyCeiling,
@@ -31,6 +32,17 @@ describe('an ordinary conversation', () => {
     // Which location → here is a time → done. Three replies for one booking,
     // and the old ceiling of ten was barely three of those.
     expect(replyCeiling({ inBurst: 3, today: 3 })).toBeNull();
+  });
+
+  it('is not stopped by a keen customer working through the whole menu', () => {
+    /**
+     * The case that killed the first two attempts. Hello, what do you offer,
+     * how much, which location, what is free, anything else, yes, thank you —
+     * eight replies from somebody typing quickly. A daily ten stopped it, and so
+     * did eight-in-ten-minutes. Spread over an afternoon, nothing may.
+     */
+    expect(replyCeiling({ inBurst: 2, today: 8 })).toBeNull();
+    expect(replyCeiling({ inBurst: 3, today: 25 })).toBeNull();
   });
 
   it('is not stopped by a customer who has been in touch all day', () => {
@@ -85,11 +97,15 @@ describe('a slow runaway that stays under the burst window', () => {
 });
 
 describe('the numbers themselves', () => {
-  it('leaves the burst window out of a human’s reach and inside a machine’s', () => {
-    // A person types, reads, thinks, puts the phone down. Eight replies inside
-    // ten minutes is not a conversation anybody is having on a phone.
-    expect(MAX_REPLIES_PER_BURST).toBeGreaterThanOrEqual(6);
-    expect(MAX_REPLIES_PER_BURST).toBeLessThanOrEqual(12);
+  it('keeps the burst window short enough that only a machine can fill it', () => {
+    /**
+     * The count matters less than the window it sits in. Six replies in two
+     * minutes means a message every twenty seconds WHILE READING ours; widen the
+     * window and it starts catching people who simply type fast, which is how
+     * the first two versions of this went wrong.
+     */
+    expect(BURST_WINDOW_MINUTES).toBeLessThanOrEqual(3);
+    expect(MAX_REPLIES_PER_BURST).toBeGreaterThanOrEqual(5);
   });
 
   it('keeps the daily figure generous enough that a customer never meets it', () => {

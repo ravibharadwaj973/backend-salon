@@ -34,21 +34,42 @@
  * side speaks only because we did, so the moment this goes quiet, it stops. The
  * daily limit exists for the loop that does not depend on us — something on a
  * schedule, slow enough to stay under the burst window.
+ *
+ * ── Not Meta's 24-hour window, which is a different thing entirely ────────
+ *
+ * That window governs the SHAPE a message may take — free text inside it, an
+ * approved template outside — and lives in service-window.ts. It is not a
+ * message count and nothing here should be read as one. A customer and the
+ * assistant may exchange as many turns as the conversation needs inside it.
+ * These numbers are Parlon's own, and they exist for cost and runaway abuse.
  */
 
-export const BURST_WINDOW_MINUTES = 10;
-
 /**
- * Eight in ten minutes. A loop reaches this in about a minute, having cost eight
- * messages; a customer typing on a phone essentially cannot, and one in the
- * middle of a booking comes nowhere near it.
+ * TWO MINUTES, NOT TEN.
+ *
+ * The first attempt at this was eight replies in ten minutes, and it was the
+ * same mistake as the daily allowance it replaced, one size down. Trace a keen
+ * customer — hello, what do you offer, how much, which location, what is free,
+ * anything else, yes, thank you — and that is eight replies inside ten minutes
+ * from somebody who is simply typing quickly. It would have cut off exactly the
+ * conversation this feature exists to have.
+ *
+ * Tightening the window rather than raising the count fixes both ends at once.
+ * A reply cycle costs a few seconds, so a loop reaches six inside a minute and
+ * is stopped sooner than before. A person would have to send six messages AND
+ * receive six replies within two minutes — a message every twenty seconds while
+ * reading ours — which is not a booking conversation. It is "hello hello hello
+ * hello", which is the thing worth stopping.
  */
-export const MAX_REPLIES_PER_BURST = 8;
+export const BURST_WINDOW_MINUTES = 2;
+
+export const MAX_REPLIES_PER_BURST = 6;
 
 /**
- * Generous on purpose. This is no longer the limit that protects anything in the
- * common case — the burst window does that — so its job is only to bound the
- * slow runaway, and a real customer must never meet it.
+ * Generous on purpose, and deliberately not the limit that protects anything in
+ * the common case — the burst window does that. Its only job is to bound the
+ * slow runaway, so a real customer must never meet it, however long a day they
+ * have had with the salon.
  */
 export const MAX_REPLIES_PER_DAY = 40;
 
