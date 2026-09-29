@@ -480,7 +480,14 @@ journeyRouter.get(
     const q = req.query as unknown as { from?: Date; to?: Date };
     const result = await journeyAnalytics.journeyPerformance(req.params.id!, q);
     if (!result) throw NotFound('Automation');
-    return ok(res, result);
+    /**
+     * Sent with the rest rather than behind its own request, because an
+     * automation page that draws a funnel in two stages shows the salon a
+     * shape and then changes it — which reads as the numbers being unsure of
+     * themselves. Three extra queries, all bounded.
+     */
+    const outcomes = await journeyAnalytics.journeyOutcomes(req.params.id!, q);
+    return ok(res, { ...result, outcomes });
   }),
 );
 

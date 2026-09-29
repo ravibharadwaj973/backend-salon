@@ -4,6 +4,7 @@ import { requireTenantId } from '../../core/context';
 import { pctOf, round2 } from '../../core/money';
 import { dateKey, dayjs, eachDay, endOfDay, startOfDay } from '../../core/dates';
 import { CAPABILITIES } from '../analytics/messaging-analytics.service';
+import { attributeJourney } from './journey-outcomes';
 
 /**
  * AN AUTOMATION IS A CAMPAIGN THAT NEVER STOPS.
@@ -94,6 +95,98 @@ export function readIsMeasurable(channels: Channel[]): boolean {
  * How an automation is doing, and — the part a campaign does not need — how
  * often it is firing at all.
  */
+/** The window an automation's outcomes are judged over, when nobody said. */
+const DEFAULT_WINDOW_DAYS = 14;
+
+/**
+ * What the automation brought back: engaged, booked, came in, spent.
+ *
+ * Three queries regardless of size, not three per message. The bookings and
+ * sales for everyone the automation touched are fetched once across the whole
+ * period and bucketed in memory — the campaign version runs two queries per
+ * recipient, which is survivable for one send to a segment and is not for an
+ * automation that has been running since March.
+ *
+ * The arithmetic itself is in journey-outcomes.ts, where it is pure and
+ * tested, because the thing that matters — one visit counted once however many
+ * messages the sequence sent — is easy to get wrong and impossible to notice.
+ */
+export async function journeyOutcomes(journeyId: string, input: JourneyRange = {}) {
+  const tenantId = requireTenantId();
+  const { from, to } = rangeOf(input);
+  const windowDays = DEFAULT_WINDOW_DAYS;
+
+  const messages = await prisma.messageLog.findMany({
+    where: { tenantId, journeyRun: { journeyId }, queuedAt: { gte: from, lte: to } },
+    select: {
+      journeyRunId: true,
+      customerId: true,
+      status: true,
+      queuedAt: true,
+      sentAt: true,
+      deliveredAt: true,
+      readAt: true,
+      clickedAt: true,
+      repliedAt: true,
+    },
+    take: 50_000,
+  });
+
+  const customerIds = Array.from(
+    new Set(messages.map((m) => m.customerId).filter((id): id is string => Boolean(id))),
+  );
+
+  if (customerIds.length === 0) {
+    return { reached: 0, engaged: 0, booked: 0, visited: 0, revenue: 0, windowDays };
+  }
+
+  /**
+   * Widened by the window, because a message sent on the last day of the
+   * period can still be answered by a visit after it. Cutting at `to` would
+   * quietly under-count every automation's most recent fortnight — the part
+   * somebody is most likely to be looking at.
+   */
+  const until = new Date(to.getTime() + windowDays * 24 * 60 * 60 * 1000);
+
+  const [bookings, sales] = await Promise.all([
+    prisma.appointment.findMany({
+      where: {
+        tenantId,
+        customerId: { in: customerIds },
+        // When they DECIDED to come, which is what a message could have
+        // caused — not when the appointment happens to fall.
+        createdAt: { gte: from, lte: until },
+        status: { not: 'CANCELLED' },
+      },
+      select: { customerId: true, createdAt: true },
+      take: 50_000,
+    }),
+    prisma.invoice.findMany({
+      where: {
+        tenantId,
+        customerId: { in: customerIds },
+        status: { not: 'VOID' },
+        invoiceDate: { gte: from, lte: until },
+      },
+      select: { customerId: true, invoiceDate: true, grandTotal: true },
+      take: 50_000,
+    }),
+  ]);
+
+  const outcomes = attributeJourney({
+    messages: messages.map((m) => ({ ...m, runId: m.journeyRunId })),
+    bookings: bookings
+      .filter((b): b is typeof b & { customerId: string } => Boolean(b.customerId))
+      .map((b) => ({ customerId: b.customerId, decidedAt: b.createdAt })),
+    sales: sales
+      .filter((s): s is typeof s & { customerId: string } => Boolean(s.customerId))
+      .map((s) => ({ customerId: s.customerId, at: s.invoiceDate, amount: Number(s.grandTotal) })),
+    windowDays,
+  });
+
+  return { ...outcomes, windowDays };
+}
+
 export async function journeyPerformance(journeyId: string, input: JourneyRange = {}) {
   const tenantId = requireTenantId();
   const { from, to } = rangeOf(input);
