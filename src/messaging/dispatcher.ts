@@ -18,6 +18,7 @@ import { bookingUrl, feedbackUrl, googleReviewUrl } from '../core/public-links';
 import { invoiceUrl } from '../core/public-links';
 import type { TemplateButton } from './whatsapp-template-format';
 import { sendabilityProblem } from './whatsapp-templates';
+import { hasDuplicates, pickTemplate } from './pick-template';
 import { suggestForCustomer } from '../modules/marketing/next-service.service';
 import { publicToken } from '../core/ids';
 
@@ -455,9 +456,36 @@ export async function queueMessage(input: QueueMessageInput) {
   if (input.templateId) {
     template = await prisma.messageTemplate.findUnique({ where: { id: input.templateId } });
   } else if (input.templateName) {
-    template = await prisma.messageTemplate.findFirst({
+    /**
+     * ALL the rows with this name, then a deliberate choice between them.
+     *
+     * This was `findFirst` with no ordering, which is Postgres's choice, not
+     * ours. One salon had three WhatsApp templates called `review_request` —
+     * one approved and properly named, two drafts — and the lookup kept
+     * landing on a draft. A draft cannot send, so the message fell back to
+     * email, and the salon watched their approved template apparently do
+     * nothing. See pick-template.ts.
+     */
+    const candidates = await prisma.messageTemplate.findMany({
       where: { tenantId: input.tenantId, name: input.templateName, channel: input.channel },
     });
+    template = pickTemplate(candidates);
+
+    if (hasDuplicates(candidates)) {
+      // Not an error — the send is about to go out on the best of them — but
+      // duplicates are how this became a mystery, and they are invisible from
+      // the template list until somebody counts.
+      logger.warn(
+        {
+          template: input.templateName,
+          channel: input.channel,
+          count: candidates.length,
+          chose: template?.id,
+          chosenStatus: template?.approvalStatus,
+        },
+        'several templates share this name; sending with the one most likely to reach the customer',
+      );
+    }
   }
 
   const [customer, lead] = await Promise.all([
@@ -735,9 +763,13 @@ export async function queueMessage(input: QueueMessageInput) {
      */
     const address = customer?.email?.trim() || lead?.email?.trim() || '';
     if (address) {
-      const twin = await prisma.messageTemplate.findFirst({
-        where: { tenantId: input.tenantId, name: template.name, channel: 'EMAIL' },
-      });
+      // Same reasoning as above: a salon with two email rows of one name
+      // should not get a different message depending on the query planner.
+      const twin = pickTemplate(
+        await prisma.messageTemplate.findMany({
+          where: { tenantId: input.tenantId, name: template.name, channel: 'EMAIL' },
+        }),
+      );
 
       if (twin) {
         logger.info(
