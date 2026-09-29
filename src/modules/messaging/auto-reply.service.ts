@@ -22,7 +22,9 @@ import { type ParsedIntent, carryOverContext, intentPrompt, parseIntent } from '
 import { type SlotOffer, bookOffer, checkAvailability, matchService } from './assistant-tools';
 import {
   BRANCH_PENDING,
+  type BranchChoice,
   type PendingBranchChoice,
+  bookableBranches,
   matchBranch,
   pendingBranchPayload,
   readPendingBranch,
@@ -262,6 +264,29 @@ export async function maybeAutoReply(input: {
   if (resumed) await clearOffer(message.customer.id);
 
   /**
+   * "ACTUALLY, THE OTHER ONE."
+   *
+   * A time has been offered at the shop we worked out from their history, and
+   * the customer has answered with a different shop's name. That is not a
+   * question and it is not a yes — it is the same booking, moved, and until now
+   * it fell through to the model and came back as an apology.
+   *
+   * Which made the branch a decision nobody could revisit: chosen silently from
+   * their past, mentioned in passing, and impossible to change without starting
+   * over. Somebody who usually goes to Gomti Nagar may be asking about Saturday
+   * precisely because they will be near the other one.
+   *
+   * Ordinals are refused here, deliberately. With a time already on the table a
+   * bare "2" is far likelier to mean two o'clock than shop number two, and
+   * reading it as a shop would move a booking nobody asked to move.
+   */
+  const switched = !resumed && offerHeld ? await branchSwitch(input.tenantId, offerHeld, message.body) : null;
+  if (switched) await clearOffer(message.customer.id);
+
+  /** Either way: a branch the customer has just named, and the request to redo. */
+  const forced = resumed ?? switched;
+
+  /**
    * Their side of the conversation, newest first.
    *
    * Read once and used twice — the intent step needs the messages before this
@@ -289,8 +314,8 @@ export async function maybeAutoReply(input: {
 
   let intent: ParsedIntent;
 
-  if (resumed) {
-    intent = resumed.intent;
+  if (forced) {
+    intent = forced.intent;
   } else {
     const services = await runUnscoped(() =>
       prisma.service.findMany({
@@ -417,13 +442,14 @@ export async function maybeAutoReply(input: {
        * in the same breath — "can I come to Bandra tomorrow at 6" — is used
        * without a second round trip.
        */
-      const where = resumed
+      const where = forced
         ? ({
             kind: 'RESOLVED',
-            branchId: resumed.branchId,
-            branchName: resumed.branchName,
-            // True by construction: we only ever ask when there are several.
+            branchId: forced.branchId,
+            branchName: forced.branchName,
+            // True by construction: we only ask, or switch, when there are several.
             ofMany: true,
+            others: forced.others,
           } as const)
         : await resolveBranch({
             tenantId: input.tenantId,
@@ -479,6 +505,27 @@ export async function maybeAutoReply(input: {
         const atBranch = where.ofMany ? ` at ${where.branchName}` : '';
         const branchLabel = where.ofMany ? where.branchName : null;
 
+        /**
+         * THE OTHER SHOP, OFFERED RATHER THAN HIDDEN.
+         *
+         * The branch is worked out from the customer's own history, which is
+         * right nearly always and silent when it is wrong. Somebody who usually
+         * comes to one shop may be asking about Saturday precisely because they
+         * will be near the other, and with nothing said they have no way to know
+         * the choice was even made.
+         *
+         * So the alternative is named in the same breath as the time, and saying
+         * it back switches the booking — see branchSwitch. One clause, and the
+         * decision stops being ours alone.
+         *
+         * Capped at two, because a sentence listing six shops is not an offer,
+         * it is a menu, and it buries the time it was supposed to be confirming.
+         */
+        const elsewhere =
+          where.ofMany && where.others.length > 0
+            ? ` We are also at ${where.others.slice(0, 2).map((b) => b.name).join(' and ')} — just say the word if that suits you better.`
+            : '';
+
         const slots = await checkAvailability({
           tenantId: input.tenantId,
           branchId: bookAt,
@@ -492,9 +539,10 @@ export async function maybeAutoReply(input: {
           const offer = slots[0]!;
           await holdOffer(message.customer.id, offer, bookAt, branchLabel);
           const alternatives = slots.slice(1, 4).map((s) => s.label);
-          const text = intent.time
-            ? `Yes — ${offer.serviceName} at ${offer.label} on ${humanWhen(offer.startAt)}${offer.staffName ? ` with ${offer.staffName}` : ''}${atBranch} is free. Shall I book it?`
-            : `For ${offer.serviceName} on ${humanWhen(offer.startAt)}${atBranch} we have ${[offer.label, ...alternatives].join(', ')}. Shall I book ${offer.label}?`;
+          const text =
+            (intent.time
+              ? `Yes — ${offer.serviceName} at ${offer.label} on ${humanWhen(offer.startAt)}${offer.staffName ? ` with ${offer.staffName}` : ''}${atBranch} is free. Shall I book it?`
+              : `For ${offer.serviceName} on ${humanWhen(offer.startAt)}${atBranch} we have ${[offer.label, ...alternatives].join(', ')}. Shall I book ${offer.label}?`) + elsewhere;
           await send(input.tenantId, bookAt, message.customer.id, text, message.conversation.id);
           await markHandled(message.id);
           return { sent: true, reason: 'offered a slot' };
@@ -512,8 +560,10 @@ export async function maybeAutoReply(input: {
           : [];
 
         const text = sameDay.length
-          ? `${intent.time} is taken that day${atBranch}, but we have ${sameDay.slice(0, 3).map((s) => s.label).join(', ')}. Shall I book one of those?`
-          : `We have nothing free for ${service.name} on that day${atBranch}. You can see the other days here: ${salon.bookingUrl ?? salon.websiteUrl ?? 'our website'}`;
+          ? `${intent.time} is taken that day${atBranch}, but we have ${sameDay.slice(0, 3).map((s) => s.label).join(', ')}. Shall I book one of those?${elsewhere}`
+          : // Nothing free HERE is exactly when the other shop is worth knowing
+            // about, so it is offered before the link to look elsewhere in time.
+              `We have nothing free for ${service.name} on that day${atBranch}.${elsewhere} You can also see other days here: ${salon.bookingUrl ?? salon.websiteUrl ?? 'our website'}`;
 
         if (sameDay.length) await holdOffer(message.customer.id, sameDay[0]!, bookAt, branchLabel);
         await send(input.tenantId, bookAt, message.customer.id, text, message.conversation.id);
@@ -643,6 +693,60 @@ function readHeldOffer(raw: unknown, at: Date | null): HeldOffer | null {
 }
 
 /**
+ * A branch the customer has just named, and the booking to redo there.
+ *
+ * Produced two ways — answering "which location?", or naming a different shop
+ * after a time has been offered — and handled identically from then on, because
+ * from the code's point of view they are the same event: this shop, that
+ * request, check it again.
+ */
+interface ForcedBranch {
+  branchId: string;
+  branchName: string;
+  others: BranchChoice[];
+  intent: ParsedIntent;
+}
+
+/**
+ * The same booking, at the shop they just named instead.
+ *
+ * Reads the service, the day and the time back off the outstanding offer rather
+ * than off this message, which contains a place name and nothing else. Returns
+ * null when the message names no shop, or names the one the offer is already
+ * at — a customer confirming "yes, Gomti Nagar" is agreeing, not moving, and
+ * must fall through to CONFIRM.
+ */
+async function branchSwitch(
+  tenantId: string,
+  offer: HeldOffer,
+  body: string,
+): Promise<ForcedBranch | null> {
+  const branches = await bookableBranches(tenantId);
+  if (branches.length < 2) return null;
+
+  const named = matchBranch(branches, body, { ordinals: false });
+  if (!named || named.id === offer.branchId) return null;
+
+  return {
+    branchId: named.id,
+    branchName: named.name,
+    others: branches.filter((row) => row.id !== named.id),
+    /**
+     * BOOK, not CONFIRM. The times at the other shop are a different diary and
+     * nothing has been offered there yet, so this goes back through the same
+     * check-then-offer path and the customer still has to say yes.
+     */
+    intent: {
+      intent: 'BOOK',
+      service: offer.serviceName,
+      date: dateKey(offer.startAt),
+      time: offer.label || null,
+      staff: null,
+    },
+  };
+}
+
+/**
  * A parked branch question turned back into the booking request it came from.
  *
  * Returns null when the message is not an answer to it — the customer may have
@@ -652,13 +756,14 @@ function readHeldOffer(raw: unknown, at: Date | null): HeldOffer | null {
 function resumeBranchChoice(
   pending: PendingBranchChoice,
   body: string,
-): { branchId: string; branchName: string; intent: ParsedIntent } | null {
+): ForcedBranch | null {
   const chosen = matchBranch(pending.branches, body);
   if (!chosen) return null;
 
   return {
     branchId: chosen.id,
     branchName: chosen.name,
+    others: pending.branches.filter((row) => row.id !== chosen.id),
     /**
      * BOOK, not CONFIRM. Naming a shop is not agreeing to a time — the times
      * have not been offered yet. This goes back through the same check-then-offer

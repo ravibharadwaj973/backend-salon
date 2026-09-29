@@ -63,6 +63,28 @@ describe('answering with a number', () => {
   });
 });
 
+describe('a bare number when nothing was numbered', () => {
+  const branches = [ANDHERI, BANDRA];
+
+  it('is refused once a time is already on the table', () => {
+    /**
+     * The switch path. A customer who has been offered 6pm and replies "2" is
+     * far likelier to mean two o'clock than shop number two, and reading it as a
+     * shop would move a booking they never asked to move. The ordinal rule is
+     * only safe directly after a numbered question.
+     */
+    expect(matchBranch(branches, '2', { ordinals: false })).toBeNull();
+    expect(matchBranch(branches, '1', { ordinals: false })).toBeNull();
+  });
+
+  it('still takes a name in that state, which is the whole point', () => {
+    // "actually, Bandra" has to work, or the branch is a decision nobody can
+    // revisit once it has been made for them.
+    expect(matchBranch(branches, 'bandra', { ordinals: false })?.id).toBe('b_ban');
+    expect(matchBranch(branches, 'can we do the Bandra one instead', { ordinals: false })?.id).toBe('b_ban');
+  });
+});
+
 describe('answering with a name', () => {
   const branches = [ANDHERI, BANDRA];
 
@@ -106,6 +128,38 @@ describe('answering with a name', () => {
     expect(matchBranch(branches, '')).toBeNull();
     expect(matchBranch(branches, '   ')).toBeNull();
     expect(matchBranch(branches, null)).toBeNull();
+  });
+});
+
+describe('naming a shop inside a sentence', () => {
+  const branches = [ANDHERI, BANDRA];
+
+  it('finds the area a customer actually says', () => {
+    // "Glow Studio Bandra" is the shop's name; "Bandra" is what people call it.
+    expect(matchBranch(branches, 'can we do the Bandra one instead')?.id).toBe('b_ban');
+    expect(matchBranch(branches, 'is andheri open on sunday')?.id).toBe('b_and');
+  });
+
+  it('refuses the words the shops have in common', () => {
+    /**
+     * The guard that makes the rule safe. These two share two words of three,
+     * so "Glow Studio" identifies nothing — and matching on any word would have
+     * picked whichever came first.
+     */
+    expect(matchBranch(branches, 'the glow studio one please')).toBeNull();
+    expect(matchBranch(branches, 'studio')).toBeNull();
+  });
+
+  it('matches whole words only', () => {
+    // Otherwise a branch called "West" is found inside "westbound".
+    const west: BranchChoice = { id: 'b_w', name: 'West', city: 'Mumbai' };
+    const east: BranchChoice = { id: 'b_e', name: 'East', city: 'Mumbai' };
+    expect(matchBranch([west, east], 'I take the westbound train')).toBeNull();
+    expect(matchBranch([west, east], 'the west one')?.id).toBe('b_w');
+  });
+
+  it('is not fooled by a sentence naming neither', () => {
+    expect(matchBranch(branches, 'what time do you close')).toBeNull();
   });
 });
 

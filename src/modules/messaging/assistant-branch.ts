@@ -61,6 +61,16 @@ export type BranchResolution =
        * is what decides rather than always naming it.
        */
       ofMany: boolean;
+      /**
+       * The salon's OTHER shops, so an offer can name them.
+       *
+       * Working out the likeliest branch from a customer's history is a good
+       * default and a bad decision to make silently: somebody who usually goes
+       * to Gomti Nagar may be asking about Saturday precisely because they will
+       * be near the other one. Offering the alternative costs a clause; not
+       * offering it costs the booking.
+       */
+      others: BranchChoice[];
     }
   /** Ask the customer. `branches` is in the order the question lists them. */
   | { kind: 'ASK'; branches: BranchChoice[]; question: string }
@@ -88,7 +98,22 @@ export async function bookableBranches(tenantId: string): Promise<BranchChoice[]
  * customer answering a numbered list replies "2" and nothing else — which is
  * the single most common answer shape and the reason the order is pinned.
  */
-export function matchBranch(branches: BranchChoice[], said: string | null): BranchChoice | null {
+export function matchBranch(
+  branches: BranchChoice[],
+  said: string | null,
+  options: {
+    /**
+     * Whether a bare number counts as a choice.
+     *
+     * True straight after a numbered question, where "2" is plainly the answer.
+     * FALSE everywhere else, and that difference matters: with a time already
+     * offered, a lone "2" is far likelier to be an hour than a shop, and
+     * reading it as a shop would move a booking the customer never asked to
+     * move.
+     */
+    ordinals?: boolean;
+  } = {},
+): BranchChoice | null {
   if (!said || branches.length === 0) return null;
   const raw = said.trim();
   if (!raw) return null;
@@ -101,7 +126,7 @@ export function matchBranch(branches: BranchChoice[], said: string | null): Bran
    * message has to be the number, optionally with the punctuation people type
    * when copying a list back ("2." or "2)").
    */
-  const ordinal = /^([1-9])\s*[.)]?$/.exec(raw);
+  const ordinal = options.ordinals === false ? null : /^([1-9])\s*[.)]?$/.exec(raw);
   if (ordinal) {
     const index = Number(ordinal[1]) - 1;
     return branches[index] ?? null;
@@ -113,16 +138,85 @@ export function matchBranch(branches: BranchChoice[], said: string | null): Bran
   const only = (matches: BranchChoice[]): BranchChoice | null =>
     matches.length === 1 ? matches[0]! : null;
 
+  /**
+   * WHOLE WORDS, NOT SUBSTRINGS.
+   *
+   * These containment tiers used to be plain `includes`, which is wrong in both
+   * directions and quietly so. "I take the westbound train" contains "west", so
+   * a shop called West was matched by a sentence about a train; and a message
+   * of "and" is contained in "Andheri". A wrong shop here moves somebody's
+   * appointment across the city without anybody typing a shop's name.
+   */
+  const saidAsWords = (phrase: string) => containsWords(wanted, phrase);
+  const nameInMessage = (b: BranchChoice) => saidAsWords(b.name);
+  const cityInMessage = (b: BranchChoice) => Boolean(b.city) && saidAsWords(b.city!);
+
   return (
     only(branches.filter((b) => b.name.toLowerCase() === wanted)) ??
     only(branches.filter((b) => (b.city ?? '').toLowerCase() === wanted)) ??
-    only(branches.filter((b) => b.name.toLowerCase().includes(wanted))) ??
-    only(branches.filter((b) => (b.city ?? '').toLowerCase().includes(wanted))) ??
+    only(branches.filter((b) => containsWords(b.name, raw))) ??
+    only(branches.filter((b) => Boolean(b.city) && containsWords(b.city!, raw))) ??
     // The customer wrote more than the name: "the andheri west one, please".
-    only(branches.filter((b) => wanted.includes(b.name.toLowerCase()))) ??
-    only(branches.filter((b) => Boolean(b.city) && wanted.includes(b.city!.toLowerCase()))) ??
+    only(branches.filter(nameInMessage)) ??
+    only(branches.filter(cityInMessage)) ??
+    /**
+     * THE WORD THAT TELLS THE SHOPS APART, INSIDE A SENTENCE.
+     *
+     * "Can we do the Bandra one instead" names the area and not the shop, which
+     * is how a person actually writes — and every tier above it misses: the
+     * message is too long to be contained by the name, and does not contain the
+     * whole name either.
+     *
+     * Matching on any word would be worse than missing. "Glow Studio Bandra" and
+     * "Glow Studio Andheri West" share two words out of three, so "glow" must
+     * identify nothing. Only the words that are NOT shared can identify a shop,
+     * which is exactly what distinguishes them to a customer as well — nobody
+     * says "the Glow Studio one" when both are.
+     */
+    only(branches.filter((b) => mentionsDistinctly(wanted, b, branches))) ??
     null
   );
+}
+
+/**
+ * Does `haystack` contain `needle` as whole words?
+ *
+ * "andheri west" is found in "the andheri west one please" and not in
+ * "westbound". Case-insensitive, and the needle is escaped because a shop is
+ * perfectly entitled to be called "Glow (Main)".
+ */
+function containsWords(haystack: string, needle: string): boolean {
+  const phrase = needle.trim().toLowerCase();
+  if (!phrase) return false;
+  const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i').test(haystack.toLowerCase());
+}
+
+/** Words worth two characters or more, lowercased. */
+function words(value: string): string[] {
+  return value.toLowerCase().split(/[^a-z0-9]+/i).filter((word) => word.length > 1);
+}
+
+/**
+ * Does this message name something that belongs to THIS shop and no other?
+ *
+ * A word shared with any sibling identifies nothing, so it is discarded before
+ * the message is even looked at. Matched on whole words, so "west" does not hit
+ * inside "westbound".
+ */
+function mentionsDistinctly(message: string, branch: BranchChoice, all: BranchChoice[]): boolean {
+  const siblings = new Set(
+    all.filter((row) => row.id !== branch.id).flatMap((row) => [...words(row.name), ...words(row.city ?? '')]),
+  );
+
+  const distinctive = [...words(branch.name), ...words(branch.city ?? '')].filter(
+    (word) => !siblings.has(word),
+  );
+
+  if (distinctive.length === 0) return false;
+
+  const said = new Set(words(message));
+  return distinctive.some((word) => said.has(word));
 }
 
 /**
@@ -248,6 +342,7 @@ export async function resolveBranch(input: {
     branchId: branch.id,
     branchName: branch.name,
     ofMany,
+    others: branches.filter((row) => row.id !== branch.id),
   });
 
   const known =
