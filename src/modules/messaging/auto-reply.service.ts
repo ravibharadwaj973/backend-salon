@@ -8,7 +8,7 @@ import { dateKey } from '../../core/dates';
 import { queueMessage } from '../../messaging/dispatcher';
 import { windowIsOpen } from '../../messaging/service-window';
 import { salonContext } from './salon-context';
-import { handToHuman, noteOutboundMessage } from './conversation.service';
+import { handToHuman, noteOutboundMessage, recordEvent } from './conversation.service';
 import {
   type HandoffReason,
   MAX_REPLY_CHARS,
@@ -159,6 +159,26 @@ export async function maybeAutoReply(input: {
    * Those take this path by design, and marking them done would have buried the
    * few messages in the whole system that a human genuinely must read.
    */
+  /**
+   * Write down what was just done, against this thread.
+   *
+   * Bound to the tenant and conversation once so the call sites read as what
+   * happened rather than as plumbing — there are several and the plumbing would
+   * otherwise be most of the line.
+   */
+  const note = (
+    kind: Parameters<typeof recordEvent>[0]['kind'],
+    summary: string,
+    detail?: Record<string, unknown>,
+  ) =>
+    recordEvent({
+      tenantId: input.tenantId,
+      conversationId: message.conversation!.id,
+      kind,
+      summary,
+      ...(detail ? { detail } : {}),
+    });
+
   const handOver = async (reason: HandoffReason, decision: string): Promise<AutoReplyDecision> => {
     /**
      * The thread changes hands BEFORE the message goes out, and regardless of
@@ -170,7 +190,11 @@ export async function maybeAutoReply(input: {
      * staff actually open. A salon with no phone number and no website gets no
      * message to send, and the flag still matters more in that case, not less.
      */
-    await handToHuman({ conversationId: message.conversation!.id, reason: decision });
+    await handToHuman({
+      tenantId: input.tenantId,
+      conversationId: message.conversation!.id,
+      reason: decision,
+    });
 
     const text = handoffReply(salon, reason);
     if (!text) return { sent: false, reason: `${decision} (nothing to hand over to)` };
@@ -281,7 +305,16 @@ export async function maybeAutoReply(input: {
    * reading it as a shop would move a booking nobody asked to move.
    */
   const switched = !resumed && offerHeld ? await branchSwitch(input.tenantId, offerHeld, message.body) : null;
-  if (switched) await clearOffer(message.customer.id);
+  if (switched) {
+    await clearOffer(message.customer.id);
+    await recordEvent({
+      tenantId: input.tenantId,
+      conversationId: message.conversation.id,
+      kind: 'BRANCH_SWITCHED',
+      summary: `Moved to ${switched.branchName} at the customer's request`,
+      detail: { from: offerHeld?.branchName ?? null, to: switched.branchName },
+    });
+  }
 
   /** Either way: a branch the customer has just named, and the request to redo. */
   const forced = resumed ?? switched;
@@ -397,6 +430,17 @@ export async function maybeAutoReply(input: {
         `Done — ${offerHeld.serviceName} on ${humanWhen(offerHeld.startAt)}${offerHeld.staffName ? ` with ${offerHeld.staffName}` : ''}${offerHeld.branchName ? ` at ${offerHeld.branchName}` : ''}. See you then.`,
         message.conversation.id,
       );
+      await note(
+        'APPOINTMENT_BOOKED',
+        `Booked ${offerHeld.serviceName} for ${humanWhen(offerHeld.startAt)} at ${offerHeld.label}`,
+        {
+          appointmentId: booked.appointmentId,
+          serviceName: offerHeld.serviceName,
+          startAt: offerHeld.startAt.toISOString(),
+          branchName: offerHeld.branchName,
+          staffName: offerHeld.staffName,
+        },
+      );
       await markHandled(message.id);
       return { sent: true, reason: 'booked' };
     }
@@ -409,10 +453,20 @@ export async function maybeAutoReply(input: {
         `Sorry — that time has just gone. Would another time suit you? You can also see what is free here: ${salon.bookingUrl ?? salon.websiteUrl ?? 'our website'}`,
         message.conversation.id,
       );
+      await note('BOOKING_FAILED', 'The slot went between the offer and the yes', {
+        serviceName: offerHeld.serviceName,
+        startAt: offerHeld.startAt.toISOString(),
+        reason: booked.reason,
+      });
       await markHandled(message.id);
       return { sent: true, reason: 'slot taken' };
     }
 
+    await note('BOOKING_FAILED', 'Could not book, and not because the slot had gone', {
+      serviceName: offerHeld.serviceName,
+      startAt: offerHeld.startAt.toISOString(),
+      reason: booked.reason,
+    });
     // Deliberately NOT marked handled: somebody has to finish this booking.
     return handOver('PERSON', 'booking failed for a reason that is ours — handed to a person');
   }
@@ -477,6 +531,7 @@ export async function maybeAutoReply(input: {
           }),
         );
         await send(input.tenantId, null, message.customer.id, where.question, message.conversation.id);
+        await note('BRANCH_ASKED', `Asked which location — ${where.branches.map((b) => b.name).join(', ')}`);
         await markHandled(message.id);
         return { sent: true, reason: 'asked which location' };
       }
@@ -544,6 +599,16 @@ export async function maybeAutoReply(input: {
               ? `Yes — ${offer.serviceName} at ${offer.label} on ${humanWhen(offer.startAt)}${offer.staffName ? ` with ${offer.staffName}` : ''}${atBranch} is free. Shall I book it?`
               : `For ${offer.serviceName} on ${humanWhen(offer.startAt)}${atBranch} we have ${[offer.label, ...alternatives].join(', ')}. Shall I book ${offer.label}?`) + elsewhere;
           await send(input.tenantId, bookAt, message.customer.id, text, message.conversation.id);
+          await note('AVAILABILITY_CHECKED', `Read the diary for ${service.name} on ${humanWhen(offer.startAt)}${atBranch}`, {
+            serviceName: service.name,
+            date: intent.date,
+            free: slots.length,
+          });
+          await note('SLOT_OFFERED', `Offered ${offer.label} on ${humanWhen(offer.startAt)}${atBranch}`, {
+            serviceName: offer.serviceName,
+            startAt: offer.startAt.toISOString(),
+            staffName: offer.staffName,
+          });
           await markHandled(message.id);
           return { sent: true, reason: 'offered a slot' };
         }

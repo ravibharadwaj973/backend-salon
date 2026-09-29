@@ -39,14 +39,32 @@ async function deliveryFor(channel: Channel, tenantId: string) {
 }
 
 export async function getMessagingSetup(tenantId: string) {
-  const [config, waDelivery, smsDelivery, emailDelivery] = await Promise.all([
+  const [config, tenant, waDelivery, smsDelivery, emailDelivery] = await Promise.all([
     runUnscoped(() => prisma.tenantMessagingConfig.findUnique({ where: { tenantId } })),
+    runUnscoped(() => prisma.tenant.findUnique({ where: { id: tenantId }, select: { settings: true } })),
     deliveryFor('WHATSAPP', tenantId),
     deliveryFor('SMS', tenantId),
     deliveryFor('EMAIL', tenantId),
   ]);
 
+  const assistantDefault =
+    ((tenant?.settings as Record<string, unknown> | null) ?? {}).whatsappAutoReply === true;
+
   return {
+    /**
+     * WHETHER THE ASSISTANT ANSWERS BY DEFAULT.
+     *
+     * Read from the tenant's settings blob, where it has lived since the
+     * assistant shipped — and until now it could only be changed with SQL. A
+     * salon could not switch its own assistant on or off, which made the
+     * feature impossible to hand to anybody.
+     *
+     * The DEFAULT, not the switch: each conversation carries its own mode from
+     * the moment it is created, so changing this does not seize forty threads
+     * a salon's staff are holding, and does not hand back the ones they took
+     * over. It decides what happens to the next new customer who writes in.
+     */
+    assistant: { repliesToNewConversations: assistantDefault },
     whatsapp: {
       delivery: waDelivery,
       status: config?.waStatus ?? 'NOT_CONNECTED',
@@ -76,6 +94,8 @@ export async function getMessagingSetup(tenantId: string) {
 }
 
 export interface MessagingSetupInput {
+  /** Whether the assistant answers conversations that start from now on. */
+  assistant?: { repliesToNewConversations: boolean };
   whatsapp?: { phoneNumberId?: string; businessId?: string; accessToken?: string; displayNumber?: string };
   sms?: { senderId?: string; apiKey?: string; dltEntityId?: string; route?: string };
   email?: { fromName?: string; fromAddress?: string; apiKey?: string; replyTo?: string };
@@ -88,6 +108,30 @@ export interface MessagingSetupInput {
  */
 export async function updateMessagingSetup(tenantId: string, input: MessagingSetupInput) {
   const existing = await runUnscoped(() => prisma.tenantMessagingConfig.findUnique({ where: { tenantId } }));
+
+  /**
+   * Merged into the settings blob rather than replacing it.
+   *
+   * The blob holds every other preference a salon has, and writing this key on
+   * its own would take the rest with it — a switch that silently resets a
+   * salon's other choices is worse than no switch.
+   */
+  if (input.assistant) {
+    const tenant = await runUnscoped(() =>
+      prisma.tenant.findUnique({ where: { id: tenantId }, select: { settings: true } }),
+    );
+    await runUnscoped(() =>
+      prisma.tenant.update({
+        where: { id: tenantId },
+        data: {
+          settings: {
+            ...((tenant?.settings as Record<string, unknown> | null) ?? {}),
+            whatsappAutoReply: input.assistant!.repliesToNewConversations,
+          } as Prisma.InputJsonValue,
+        },
+      }),
+    );
+  }
 
   const data: Prisma.TenantMessagingConfigUncheckedCreateInput = {
     tenantId,

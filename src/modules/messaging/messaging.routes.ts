@@ -171,6 +171,14 @@ const optionalEmail = z.preprocess(
 );
 
 const setupSchema = z.object({
+  /**
+   * The assistant's default for NEW conversations.
+   *
+   * Sent on its own by the toggle, which is why every other key here is
+   * optional and stays that way: a salon flipping the assistant must not have
+   * to resubmit its access tokens to do it.
+   */
+  assistant: z.object({ repliesToNewConversations: z.boolean() }).optional(),
   whatsapp: z
     .object({
       phoneNumberId: z.string().trim().max(60).optional(),
@@ -323,6 +331,7 @@ messagingRouter.post(
   validate({ params: conversationId }),
   asyncHandler(async (req, res) => {
     await conversations.handToHuman({
+      tenantId: req.ctx!.tenantId!,
       conversationId: req.params.id!,
       assignedToId: req.ctx?.userId ?? null,
       reason: 'taken over by staff',
@@ -337,7 +346,7 @@ messagingRouter.post(
   requirePermission(PERMISSIONS.MESSAGE_SEND),
   validate({ params: conversationId }),
   asyncHandler(async (req, res) => {
-    await conversations.resumeAssistant(req.params.id!, req.ctx?.userId ?? null);
+    await conversations.resumeAssistant(req.ctx!.tenantId!, req.params.id!, req.ctx?.userId ?? null);
     audit({ action: 'conversation.resume_assistant', entity: 'Conversation', entityId: req.params.id! });
     return ok(res, { mode: 'AI' });
   }),

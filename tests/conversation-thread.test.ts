@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * THE THREAD, AND WHO IS SPEAKING IN IT.
@@ -30,12 +30,14 @@ const db = {
     journeyRunId: string | null;
     sentByUserId: string | null;
   }[],
+  events: [] as { id: string; kind: string; summary: string; detail: unknown; at: Date }[],
 };
 
 vi.mock('../src/core/prisma', () => ({
   prisma: {
     inboundMessage: { findMany: () => Promise.resolve(db.inbound) },
     messageLog: { findMany: () => Promise.resolve(db.outbound) },
+    conversationEvent: { findMany: () => Promise.resolve(db.events) },
   },
 }));
 vi.mock('../src/core/context', () => ({ runUnscoped: <T>(fn: () => Promise<T>) => fn() }));
@@ -74,7 +76,13 @@ function salonSaid(
   };
 }
 
-describe('the thread, merged from two tables', () => {
+beforeEach(() => {
+  db.inbound = [];
+  db.outbound = [];
+  db.events = [];
+});
+
+describe('the thread, merged from three tables', () => {
   it('interleaves both sides in the order they were said', async () => {
     /**
      * The whole risk of assembling rather than storing. Read as two blocks —
@@ -162,5 +170,77 @@ describe('telling the assistant from a person', () => {
     // Somebody pressing "send campaign" did not type this message to this
     // customer, so the thread must not show it as their words.
     expect(speakerFor({ campaignId: 'camp_1', journeyRunId: null, sentByUserId: 'user_1' })).toBe('SYSTEM');
+  });
+});
+
+
+/**
+ * WHAT THE ASSISTANT DID, AS OPPOSED TO WHAT IT SAID.
+ *
+ * A thread shows the words. It does not show that the diary was read, which shop
+ * was chosen, or that a booking was attempted and refused — and those are the
+ * parts a salon needs when something looks wrong.
+ *
+ * The rule these pin is that an event is NOT a message. Nothing was sent to
+ * anybody, so it must never be drawn as something the customer could have seen,
+ * and it must never reach delivery reports or campaign counts.
+ */
+describe('the assistant\u2019s own actions in the thread', () => {
+  const at = (minute: number) => new Date(Date.UTC(2026, 8, 29, 12, minute, 0));
+
+  it('sits in time order with the words, not in a separate pile', () => {
+    // The point of putting them in the thread at all: "checked the diary" means
+    // something only where it happened, between the ask and the answer.
+    db.inbound = [{ id: 'i1', body: 'hair spa tomorrow at 6?', receivedAt: at(1), messageType: 'text' }];
+    db.events = [
+      { id: 'e1', kind: 'AVAILABILITY_CHECKED', summary: 'Read the diary for Hair Spa', detail: null, at: at(2) },
+    ];
+    db.outbound = [
+      {
+        id: 'o1',
+        renderedBody: '6pm is free. Shall I book it?',
+        queuedAt: at(3),
+        status: 'DELIVERED',
+        errorMessage: null,
+        campaignId: null,
+        journeyRunId: null,
+        sentByUserId: null,
+      },
+    ];
+
+    return threadFor('c1').then((turns) => {
+      expect(turns.map((t) => t.from)).toEqual(['CUSTOMER', 'EVENT', 'AI']);
+    });
+  });
+
+  it('is marked EVENT, never as a message from the salon', async () => {
+    /**
+     * The distinction that matters. Labelling an action as AI would put "read
+     * the diary" in the conversation as something the customer was told, and
+     * make the assistant look like it says things it never said.
+     */
+    db.events = [
+      { id: 'e1', kind: 'APPOINTMENT_BOOKED', summary: 'Booked Hair Spa', detail: { appointmentId: 'apt_1' }, at: at(1) },
+    ];
+
+    const [turn] = await threadFor('c1');
+    expect(turn?.from).toBe('EVENT');
+    expect(turn?.from).not.toBe('AI');
+  });
+
+  it('carries the kind and the particulars, so a screen can show either', async () => {
+    db.events = [
+      { id: 'e1', kind: 'APPOINTMENT_BOOKED', summary: 'Booked Hair Spa', detail: { appointmentId: 'apt_1' }, at: at(1) },
+    ];
+
+    const [turn] = await threadFor('c1');
+    expect(turn?.eventKind).toBe('APPOINTMENT_BOOKED');
+    expect(turn?.detail).toEqual({ appointmentId: 'apt_1' });
+  });
+
+  it('does not stop a thread that has no events from rendering', async () => {
+    db.inbound = [{ id: 'i1', body: 'hello', receivedAt: at(1), messageType: 'text' }];
+    const turns = await threadFor('c1');
+    expect(turns).toHaveLength(1);
   });
 });

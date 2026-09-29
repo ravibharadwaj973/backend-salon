@@ -5,7 +5,7 @@ import { NotFound } from '../../core/errors';
 import { normalizePhone } from '../../core/ids';
 import { allowedShape, minutesLeftInWindow, windowIsOpen } from '../../messaging/service-window';
 import { queueMessage } from '../../messaging/dispatcher';
-import type { Channel, ConversationMode } from '@prisma/client';
+import type { Channel, ConversationEventKind, ConversationMode, Prisma } from '@prisma/client';
 
 /**
  * THE THREAD, AND WHO IS ANSWERING IT.
@@ -37,11 +37,19 @@ import type { Channel, ConversationMode } from '@prisma/client';
 export interface ThreadTurn {
   id: string;
   /**
-   * Who said it. AI and HUMAN are both the salon talking, and a salon looking
-   * at its own thread needs to know which — that is most of why anybody opens
-   * this screen.
+   * Who said it — or, for EVENT, that nobody said anything and the assistant
+   * DID something.
+   *
+   * AI and HUMAN are both the salon talking, and a salon looking at its own
+   * thread needs to know which; that is most of why anybody opens this screen.
+   * EVENT is a third thing entirely: nothing was sent to anybody, so it must
+   * not be drawn as a message the customer could have seen.
    */
-  from: 'CUSTOMER' | 'AI' | 'HUMAN' | 'SYSTEM';
+  from: 'CUSTOMER' | 'AI' | 'HUMAN' | 'SYSTEM' | 'EVENT';
+  /** EVENT only: which kind, so a screen can render the important ones louder. */
+  eventKind?: ConversationEventKind;
+  /** EVENT only: the particulars, for anyone who wants them. */
+  detail?: unknown;
   body: string;
   at: Date;
   /** Outbound only: QUEUED, SENT, DELIVERED, READ, FAILED. */
@@ -194,6 +202,7 @@ export async function noteOutboundMessage(conversationId: string, at: Date): Pro
  * land, and this is the place it lands.
  */
 export async function handToHuman(input: {
+  tenantId: string;
   conversationId: string;
   assignedToId?: string | null;
   reason: string;
@@ -210,6 +219,19 @@ export async function handToHuman(input: {
   ).catch((err: unknown) => logger.warn({ err, ...input }, 'could not hand conversation to a person'));
 
   logger.info({ conversationId: input.conversationId, reason: input.reason }, 'conversation handed to a person');
+
+  /**
+   * In the thread as well as the log, because the log is not where anybody
+   * looks. A salon opening a conversation that stopped being answered should be
+   * able to see that it was handed over, and why, without asking anybody.
+   */
+  await recordEvent({
+    tenantId: input.tenantId,
+    conversationId: input.conversationId,
+    kind: input.assignedToId ? 'TAKEN_OVER' : 'HANDED_OVER',
+    summary: input.assignedToId ? 'Taken over by a person' : `Handed to a person — ${input.reason}`,
+    detail: { reason: input.reason },
+  });
 }
 
 /**
@@ -221,7 +243,11 @@ export async function handToHuman(input: {
  * model picking up a thread mid-apology and cheerfully offering a booking. It
  * takes somebody deciding.
  */
-export async function resumeAssistant(conversationId: string, byUserId: string | null): Promise<void> {
+export async function resumeAssistant(
+  tenantId: string,
+  conversationId: string,
+  byUserId: string | null,
+): Promise<void> {
   await runUnscoped(() =>
     prisma.conversation.update({
       where: { id: conversationId },
@@ -229,6 +255,18 @@ export async function resumeAssistant(conversationId: string, byUserId: string |
     }),
   );
   logger.info({ conversationId, byUserId }, 'assistant resumed on a conversation');
+
+  /**
+   * Recorded because it is the most consequential thing a person can do here.
+   * Whoever handed a complaint back to a machine, and when, is exactly the
+   * question somebody will ask afterwards.
+   */
+  await recordEvent({
+    tenantId,
+    conversationId,
+    kind: 'ASSISTANT_RESUMED',
+    summary: 'Given back to the assistant',
+  });
 }
 
 /**
@@ -262,7 +300,7 @@ export async function threadFor(
   conversationId: string,
   limit = 100,
 ): Promise<ThreadTurn[]> {
-  const [inbound, outbound] = await runUnscoped(() =>
+  const [inbound, outbound, events] = await runUnscoped(() =>
     Promise.all([
       prisma.inboundMessage.findMany({
         where: { conversationId },
@@ -285,6 +323,17 @@ export async function threadFor(
           sentByUserId: true,
         },
       }),
+      /**
+       * Three reads, not two. Same reasoning as the other two: the thread is
+       * assembled rather than duplicated, so a table holding part of the story
+       * is read rather than copied into one holding another part.
+       */
+      prisma.conversationEvent.findMany({
+        where: { conversationId },
+        orderBy: { at: 'desc' },
+        take: limit,
+        select: { id: true, kind: true, summary: true, detail: true, at: true },
+      }),
     ]),
   );
 
@@ -304,9 +353,53 @@ export async function threadFor(
       status: row.status,
       error: row.errorMessage,
     })),
+    ...events.map((row) => ({
+      id: row.id,
+      from: 'EVENT' as const,
+      body: row.summary,
+      at: row.at,
+      eventKind: row.kind,
+      detail: row.detail,
+    })),
   ];
 
   return turns.sort((a, b) => a.at.getTime() - b.at.getTime()).slice(-limit);
+}
+
+/**
+ * WRITE DOWN WHAT WAS JUST DONE.
+ *
+ * Called by the code that did the thing, immediately after doing it — never by
+ * the model, never in advance, never as an intention. That is the whole value:
+ * an event saying an appointment was booked is written after createAppointment
+ * returned an id, by the function holding the id, so it is evidence rather than
+ * a claim.
+ *
+ * Failure is swallowed. A thread that cannot record that it checked the diary
+ * must still be able to answer the customer — losing the audit line is a bad
+ * day, losing the reply is a lost booking.
+ */
+export async function recordEvent(input: {
+  tenantId: string;
+  conversationId: string | null;
+  kind: ConversationEventKind;
+  summary: string;
+  detail?: Record<string, unknown>;
+}): Promise<void> {
+  if (!input.conversationId) return;
+  await runUnscoped(() =>
+    prisma.conversationEvent.create({
+      data: {
+        tenantId: input.tenantId,
+        conversationId: input.conversationId!,
+        kind: input.kind,
+        summary: input.summary.slice(0, 500),
+        ...(input.detail ? { detail: input.detail as Prisma.InputJsonObject } : {}),
+      },
+    }),
+  ).catch((err: unknown) =>
+    logger.warn({ err, conversationId: input.conversationId, kind: input.kind }, 'conversation event not recorded'),
+  );
 }
 
 /**

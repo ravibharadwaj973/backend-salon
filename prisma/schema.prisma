@@ -3512,6 +3512,7 @@ model Conversation {
   assignedTo   User?            @relation(fields: [assignedToId], references: [id], onDelete: SetNull)
   inbound      InboundMessage[]
   outbound     MessageLog[]
+  events       ConversationEvent[]
 
   /// One thread per number per channel. A customer who writes, is answered,
   /// and writes again a week later is in the same conversation — threads are
@@ -3535,4 +3536,68 @@ enum ConversationStatus {
   OPEN
   /// Dealt with. Reopens by itself the moment the customer writes again.
   CLOSED
+}
+
+/// WHAT THE ASSISTANT DID, AS OPPOSED TO WHAT IT SAID.
+///
+/// A thread shows the words. It does not show that the diary was read, which
+/// shop was chosen, that a slot was offered and then taken by somebody else, or
+/// that a booking was attempted and refused. Those are the parts a salon needs
+/// when something looks wrong — and until this table they existed only in a log
+/// file on a server nobody reading the thread can see.
+///
+/// ── Why it is not a message ───────────────────────────────────────────────
+///
+/// Nothing here was sent to anybody. Storing "checked availability" as an
+/// outbound message would put it in delivery reports, in campaign counts and in
+/// the customer's own view of the conversation, none of which is true. It is a
+/// third kind of thing in the thread and is stored as one.
+///
+/// ── The rule that keeps it honest ─────────────────────────────────────────
+///
+/// Written by the code that DID the thing, immediately after doing it, never by
+/// the model and never in advance. An event saying a booking was made is
+/// therefore evidence that one was: it is written after createAppointment
+/// returned an id, in the same function that has the id.
+model ConversationEvent {
+  id             String @id @default(cuid())
+  tenantId       String
+  conversationId String
+
+  kind ConversationEventKind
+  /// One line, already written for a person to read. The detail is below.
+  summary String
+  /// The particulars — service, day, time, shop, appointment id. Json because
+  /// each kind carries different ones, and because a column per particular
+  /// would be a migration every time the assistant learns a new trick.
+  detail Json?
+
+  at DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  /// The thread's own read path.
+  @@index([conversationId, at])
+  @@map("conversation_events")
+}
+
+enum ConversationEventKind {
+  /// The diary was read for a service on a day.
+  AVAILABILITY_CHECKED
+  /// A specific time was put to the customer.
+  SLOT_OFFERED
+  /// An appointment exists, and this carries its id.
+  APPOINTMENT_BOOKED
+  /// A booking was attempted and refused — the slot went, or something broke.
+  BOOKING_FAILED
+  /// The customer was asked which shop.
+  BRANCH_ASKED
+  /// The customer moved the booking to another shop.
+  BRANCH_SWITCHED
+  /// The assistant gave the thread to a person, and why.
+  HANDED_OVER
+  /// A person took it.
+  TAKEN_OVER
+  /// A person gave it back.
+  ASSISTANT_RESUMED
 }
