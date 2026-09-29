@@ -64,3 +64,14 @@ ALTER TABLE "inbound_messages"
 -- Denormalised onto the customer rather than joined from inbound_messages,
 -- because it is read on every outbound WhatsApp send.
 ALTER TABLE "customers" ADD COLUMN "lastInboundAt" TIMESTAMP(3);
+
+-- THE OFFER THE ASSISTANT IS WAITING FOR AN ANSWER TO.
+--
+-- "Shall I book Hair Spa at 6 with Anita?" must survive until the customer
+-- types "yes" — a minute later, or an hour. Held on the customer rather than
+-- re-derived from the conversation, because working out which slot "yes"
+-- refers to from free text is precisely the guess that books the wrong
+-- appointment. One slot, not a list: an assistant holding three open offers
+-- cannot know which one "yes" answers either.
+ALTER TABLE "customers" ADD COLUMN "assistantOffer" JSONB;
+ALTER TABLE "customers" ADD COLUMN "assistantOfferAt" TIMESTAMP(3);

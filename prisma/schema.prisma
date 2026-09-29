@@ -1518,6 +1518,21 @@ model Customer {
   /// without a join on every message.
   lastInboundAt DateTime?
 
+  /// THE OFFER THE ASSISTANT IS WAITING FOR AN ANSWER TO.
+  ///
+  /// "Shall I book Hair Spa at 6 with Anita?" has to survive until the
+  /// customer types "yes", which may be a minute later or an hour. Held here
+  /// rather than re-read from the conversation, because deriving which slot
+  /// "yes" refers to from free text is exactly the guess that books somebody
+  /// the wrong appointment.
+  ///
+  /// Deliberately a single slot, not a list: an assistant holding three open
+  /// offers cannot know which one "yes" answers either.
+  assistantOffer   Json?
+  /// Offers go stale. A yes an hour later must re-check the diary, not book a
+  /// slot somebody else has taken in the meantime.
+  assistantOfferAt DateTime?
+
   inboundMessages InboundMessage[]
 }
 
