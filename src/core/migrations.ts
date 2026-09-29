@@ -68,6 +68,30 @@ export async function checkPendingMigrations(): Promise<string[] | null> {
 
   try {
     /**
+     * ASK WHETHER THE TABLE EXISTS BEFORE READING IT.
+     *
+     * Selecting from a missing table raises 42P01, and Prisma logs that at
+     * ERROR level through its own logger before this function's catch can
+     * swallow it. On a database managed with `db push` there IS no
+     * _prisma_migrations table — a legitimate setup — so every boot printed a
+     * red line about a condition that is fine.
+     *
+     * Which was worse than untidy: it filled the one channel somebody greps
+     * when a real error is being hunted. A check that cries wolf on a healthy
+     * system is a check people learn to scroll past.
+     *
+     * to_regclass returns NULL rather than raising for a name that does not
+     * resolve, so this asks the question without the database objecting.
+     */
+    const [probe] = await prisma.$queryRaw<{ present: string | null }[]>`
+      SELECT to_regclass('public._prisma_migrations')::text AS present
+    `;
+    if (!probe?.present) {
+      lastKnown = null;
+      return null;
+    }
+
+    /**
      * finished_at, not merely present: a row is written when a migration
      * STARTS. One that crashed halfway is in the table and has not been
      * applied, and treating it as done would report a healthy database that

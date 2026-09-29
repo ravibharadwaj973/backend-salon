@@ -22,6 +22,21 @@ import { suggestForCustomer } from '../modules/marketing/next-service.service';
 import { publicToken } from '../core/ids';
 
 export interface QueueMessageInput {
+  /**
+   * SET ONLY BY THE FALLBACK BELOW, NEVER BY A CALLER.
+   *
+   * When a WhatsApp template is not yet approved by Meta, the send is retried
+   * on the email twin — which is right, but it USED to happen in complete
+   * silence. The salon chose WhatsApp, an email went out, and the activity
+   * list showed an email with no explanation. From the owner's side the app
+   * had ignored them; the obvious next conclusion is that WhatsApp is broken,
+   * which it is not.
+   *
+   * So the reason rides along and is written onto the row that results, and
+   * the activity list says it in a sentence. An automatic decision the user
+   * cannot see is indistinguishable from a bug.
+   */
+  switchedFromWhatsApp?: string;
   tenantId: string;
   branchId?: string | null;
   channel: Channel;
@@ -733,6 +748,7 @@ export async function queueMessage(input: QueueMessageInput) {
           ...input,
           channel: 'EMAIL',
           templateId: twin.id,
+          switchedFromWhatsApp: templateProblem,
           // Cleared so the lookup cannot land back on the WhatsApp row, and so
           // the email address is resolved from the customer rather than from a
           // phone number passed in for the other channel.
@@ -830,6 +846,18 @@ export async function queueMessage(input: QueueMessageInput) {
       renderedBody: body,
       payload: variables as Prisma.InputJsonValue,
       status: 'QUEUED',
+      /**
+       * Not a failure — the message is going out — but the only columns this
+       * row has for saying anything, and the ones the activity list already
+       * reads. A switch the salon did not ask for has to be visible somewhere,
+       * and a sentence on the message itself is where somebody will look.
+       */
+      ...(input.switchedFromWhatsApp
+        ? {
+            errorCode: 'SENT_AS_EMAIL',
+            errorMessage: input.switchedFromWhatsApp,
+          }
+        : {}),
       cost: input.cost ?? 0,
       attributionUntil: addDays(new Date(), input.attributionWindowDays ?? 14),
     },
