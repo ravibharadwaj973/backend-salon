@@ -8,7 +8,14 @@ import { dateKey } from '../../core/dates';
 import { queueMessage } from '../../messaging/dispatcher';
 import { windowIsOpen } from '../../messaging/service-window';
 import { salonContext } from './salon-context';
-import { MAX_REPLY_CHARS, needsHuman, parseReply, replyPrompt } from './reply-ai';
+import {
+  type HandoffReason,
+  MAX_REPLY_CHARS,
+  handoffReply,
+  needsHuman,
+  parseReply,
+  replyPrompt,
+} from './reply-ai';
 import { type ParsedIntent, carryOverContext, intentPrompt, parseIntent } from './assistant-intent';
 import { type SlotOffer, bookOffer, checkAvailability, matchService } from './assistant-tools';
 import {
@@ -124,8 +131,35 @@ export async function maybeAutoReply(input: {
     return { sent: false, reason: 'outside the 24-hour service window' };
   }
 
+  const branchId = message.customer.branchId ?? message.branchId;
+
+  /**
+   * Read before the refusals below, not after, because they need it.
+   *
+   * A refusal now sends a short handoff naming the salon's number, and a handoff
+   * that cannot name the number is not one. This was the last thing in the
+   * function that still ended in silence.
+   */
+  const salon = await salonContext(input.tenantId, branchId);
+  if (!salon) return { sent: false, reason: 'no salon details to answer from' };
+
+  /** One fixed sentence, or null when the salon has given us nothing to point at. */
+  const handOver = async (reason: HandoffReason, decision: string): Promise<AutoReplyDecision> => {
+    const text = handoffReply(salon, reason);
+    if (!text) return { sent: false, reason: `${decision} (nothing to hand over to)` };
+    await send(input.tenantId, branchId, message.customer!.id, text);
+    await markHandled(message.id);
+    return { sent: true, reason: decision };
+  };
+
+  /**
+   * A complaint, a burn, a refund. The model is not asked — that was always
+   * right — but the customer is no longer ignored. Being told a person will look
+   * at it is the whole point of handing over; saying nothing is indistinguishable
+   * from the message never arriving.
+   */
   if (needsHuman(message.body)) {
-    return { sent: false, reason: 'subject needs a person' };
+    return handOver('PERSON', 'handed to a person: subject needs one');
   }
 
   const today = new Date();
@@ -146,13 +180,28 @@ export async function maybeAutoReply(input: {
       { tenantId: input.tenantId, customerId: message.customer.id, repliesToday },
       'auto-reply stopped: daily ceiling for this customer reached',
     );
-    return { sent: false, reason: 'daily reply ceiling reached' };
+
+    /**
+     * SAID ONCE, AT THE CEILING. THEN SILENCE.
+     *
+     * The ceiling exists to bound a runaway loop — two machines answering each
+     * other forever, at a cost per message, in the salon's name. So it cannot
+     * simply send a handoff instead of a reply, or it stops being a ceiling.
+     *
+     * But going abruptly quiet mid-conversation is the failure this whole change
+     * is about. So: exactly at the ceiling, one message saying a person will pick
+     * it up; above it, nothing at all.
+     *
+     * No extra state is needed to make that happen exactly once, because the
+     * handoff is itself a reply and counts towards the same total. The tenth
+     * reply of the day trips this, sends the eleventh message, and every message
+     * after it sees a count above the ceiling and says nothing.
+     */
+    if (repliesToday === MAX_REPLIES_PER_CUSTOMER_PER_DAY) {
+      return handOver('ENOUGH_FOR_TODAY', 'daily ceiling reached — handed to a person');
+    }
+    return { sent: false, reason: 'daily reply ceiling reached, already handed over' };
   }
-
-  const salon = await salonContext(input.tenantId, message.customer.branchId ?? message.branchId);
-  if (!salon) return { sent: false, reason: 'no salon details to answer from' };
-
-  const branchId = message.customer.branchId ?? message.branchId;
 
   /**
    * STEP ONE: WHAT DID THEY MEAN?
@@ -245,7 +294,7 @@ export async function maybeAutoReply(input: {
   }
 
   if (intent.intent === 'HUMAN') {
-    return { sent: false, reason: 'intent needs a person' };
+    return handOver('PERSON', 'handed to a person: the model read it as one for a person');
   }
 
   /**
@@ -424,7 +473,18 @@ export async function maybeAutoReply(input: {
   });
 
   const raw = await chat(system, user, { timeoutMs: TIMEOUT_MS, temperature: TEMPERATURE, maxTokens: 800 });
-  if (!raw) return { sent: false, reason: 'model did not answer' };
+
+  /**
+   * The model was unreachable, slow, or said something it was told not to.
+   *
+   * All three used to end here in silence, and from the customer's side the three
+   * are indistinguishable from each other and from the salon ignoring them. The
+   * handoff is fixed text precisely because the thing that generates text is what
+   * just failed.
+   */
+  if (!raw) {
+    return handOver('CANNOT_ANSWER', 'model did not answer — handed over');
+  }
 
   const parsed = parseReply(raw);
   if ('refused' in parsed) {
@@ -432,7 +492,7 @@ export async function maybeAutoReply(input: {
       { tenantId: input.tenantId, reason: parsed.refused },
       'auto-reply discarded: the model broke a rule it was given',
     );
-    return { sent: false, reason: `reply refused: ${parsed.refused}` };
+    return handOver('CANNOT_ANSWER', `reply refused (${parsed.refused}) — handed over`);
   }
 
   await queueMessage({

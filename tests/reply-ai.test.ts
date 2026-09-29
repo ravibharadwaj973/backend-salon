@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_REPLY_CHARS, needsHuman, parseReply, replyPrompt } from '../src/modules/messaging/reply-ai';
+import {
+  MAX_REPLY_CHARS,
+  handoffReply,
+  needsHuman,
+  parseReply,
+  replyPrompt,
+} from '../src/modules/messaging/reply-ai';
 import type { SalonContext } from '../src/modules/messaging/salon-context';
 
 const salon: SalonContext = {
@@ -130,5 +136,101 @@ describe('checking what came back', () => {
     expect(parseReply('   ')).toHaveProperty('refused');
     const long = parseReply('a'.repeat(5000));
     expect('text' in long && long.text.length).toBe(MAX_REPLY_CHARS);
+  });
+});
+
+/**
+ * WHEN THE ASSISTANT WILL NOT ANSWER, IT STILL SAYS SOMETHING.
+ *
+ * Every guard in the reply path used to end in silence, defended on the grounds
+ * that it leaves the customer waiting for a person. It does not — nobody is
+ * watching the inbox — so from the customer's side the salon stopped replying
+ * mid-conversation:
+ *
+ *   "Which services do you provide"  → answered
+ *   "Do you have any offers now?"    → nothing
+ *   "Do you have any"                → nothing
+ *
+ * These pin the sentence that goes out instead, and the one case where silence
+ * is still right.
+ */
+describe('the handoff sent instead of silence', () => {
+  it('gives the customer the number to call', () => {
+    // The whole point: something they can act on in the next ten seconds.
+    for (const reason of ['PERSON', 'CANNOT_ANSWER', 'ENOUGH_FOR_TODAY'] as const) {
+      expect(handoffReply(salon, reason)).toContain('+91 98765 43210');
+    }
+  });
+
+  it('writes the number plainly, not as a link', () => {
+    // WhatsApp makes a bare number tappable; a tel: URL renders as raw text on
+    // some clients, which is a phone number nobody can press.
+    expect(handoffReply(salon, 'CANNOT_ANSWER')).not.toContain('tel:');
+  });
+
+  it('points at the website when answering is what failed', () => {
+    const text = handoffReply(salon, 'CANNOT_ANSWER')!;
+    expect(text).toContain('https://glow.example');
+    expect(text.length).toBeLessThan(200);
+  });
+
+  it('promises a person only for the subjects that need one', () => {
+    expect(handoffReply(salon, 'PERSON')).toMatch(/someone from the salon/i);
+    // And not on the ordinary "I don't know that" path, where nobody is
+    // actually going to look and the promise would simply be broken.
+    expect(handoffReply(salon, 'CANNOT_ANSWER')).not.toMatch(/get back to you/i);
+  });
+
+  it('falls back to the website when the salon has no phone number', () => {
+    const noPhone = { ...salon, phone: '' };
+    const text = handoffReply(noPhone, 'CANNOT_ANSWER');
+    expect(text).toContain('https://glow.example');
+    expect(text).not.toContain('call us on ');
+  });
+
+  it('uses the phone alone when there is no website', () => {
+    const noSite = { ...salon, websiteUrl: null };
+    expect(handoffReply(noSite, 'CANNOT_ANSWER')).toContain('+91 98765 43210');
+  });
+
+  it('SAYS NOTHING when there is nowhere to send them', () => {
+    /**
+     * The one case where silence survives. With no number and no website the
+     * message would read "sorry, I can't help" and stop — which is worse than
+     * saying nothing, and is the salon's own missing details to fix.
+     */
+    expect(handoffReply({ phone: '', websiteUrl: null }, 'CANNOT_ANSWER')).toBeNull();
+    expect(handoffReply({ phone: '', websiteUrl: null }, 'PERSON')).toBeNull();
+  });
+});
+
+describe('what the assistant is told about dead ends', () => {
+  it('forbids sending a bare link', () => {
+    // A customer asked a question and got a URL back. That is not an answer.
+    expect(replyPrompt(base).system).toMatch(/Never send a bare link/);
+  });
+
+  it('tells it to ask which service rather than reciting the price list', () => {
+    // Seventeen services and prices in one paragraph is a wall of text nobody
+    // reads, and it is what the salon's customers were actually getting.
+    expect(replyPrompt(base).system).toMatch(/Do not recite the whole price list/);
+  });
+
+  it('tells it to point at the salon for anything it was not given', () => {
+    const { system } = replyPrompt(base);
+    expect(system).toContain('+91 98765 43210');
+    expect(system).toMatch(/do not have that to hand/i);
+  });
+
+  it('forbids promising that somebody will get back to them', () => {
+    // Nobody may be watching this inbox. A promise the salon does not keep is
+    // worse than an honest "call us".
+    expect(replyPrompt(base).system).toMatch(/Do NOT promise that somebody will get back/);
+  });
+
+  it('without the diary, asks for the missing half rather than promising to check', () => {
+    const { system } = replyPrompt({ ...base, availability: [] });
+    expect(system).toMatch(/do not say you will check and come back/i);
+    expect(system).toMatch(/ask them which service they would like/i);
   });
 });
