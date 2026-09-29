@@ -264,6 +264,11 @@ router.post(
             return null;
           });
 
+          logger.info(
+            { tenantId, providerMessageId: message.id, type: message.type, stored: Boolean(stored) },
+            stored ? 'inbound message stored' : 'inbound message not stored (duplicate or error)',
+          );
+
           if (stored) {
             /**
              * The window is a fact about this customer now. Everything that
@@ -283,8 +288,35 @@ router.post(
              * conversation. Fully guarded: every refusal inside returns rather
              * than throws, so a webhook Meta is timing still returns 200.
              */
-            await maybeAutoReply({ tenantId, inboundMessageId: stored.id }).catch((err: unknown) =>
-              logger.warn({ err, tenantId }, 'auto-reply failed'),
+            /**
+             * EVERY OUTCOME IS LOGGED, INCLUDING THE REFUSALS.
+             *
+             * Each guard inside returns quietly — not a known customer, window
+             * shut, complaint subject, daily ceiling, switch off. That is the
+             * right behaviour and it was the wrong observability: a message
+             * that went unanswered looked identical whichever reason applied,
+             * and identical to nothing having arrived at all.
+             *
+             * Hours went into "no reply" mysteries that a line saying WHY
+             * would have ended in seconds. So the decision is written down
+             * whatever it is, at info, with the reason it already carried.
+             */
+            const decision = await maybeAutoReply({
+              tenantId,
+              inboundMessageId: stored.id,
+            }).catch((err: unknown) => {
+              logger.warn({ err, tenantId }, 'auto-reply failed');
+              return { sent: false, reason: 'threw' };
+            });
+
+            logger.info(
+              {
+                tenantId,
+                inboundMessageId: stored.id,
+                sent: decision.sent,
+                reason: decision.reason,
+              },
+              decision.sent ? 'assistant replied' : 'assistant did not reply',
             );
           }
         }
