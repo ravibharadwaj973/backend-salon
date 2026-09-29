@@ -1509,6 +1509,15 @@ model Customer {
   @@index([tenantId, lifecycleStage])
   @@index([tenantId, expectedNextVisitAt])
   @@map("customers")
+  /// WHEN THIS CUSTOMER LAST WROTE TO US.
+  ///
+  /// WhatsApp allows a free-form reply only within 24 hours of this moment.
+  /// Outside it, only an approved template will send and a plain reply comes
+  /// back 131047 — which a salon experiences as their answer silently never
+  /// arriving. Denormalised onto the customer so the send path can check it
+  /// without a join on every message.
+  lastInboundAt DateTime?
+
   inboundMessages InboundMessage[]
 }
 

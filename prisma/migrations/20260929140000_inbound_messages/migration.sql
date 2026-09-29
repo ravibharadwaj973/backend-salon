@@ -55,3 +55,12 @@ ALTER TABLE "inbound_messages"
 ALTER TABLE "inbound_messages"
   ADD CONSTRAINT "inbound_messages_customerId_fkey"
   FOREIGN KEY ("customerId") REFERENCES "customers"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- THE SERVICE WINDOW, AS A FACT THE SEND PATH CAN CHECK CHEAPLY.
+--
+-- WhatsApp permits a free-form reply only within 24 hours of the customer's
+-- last message. Nothing tracked that, so a reply sent outside it returned
+-- 131047 and the salon experienced their answer as silently never arriving.
+-- Denormalised onto the customer rather than joined from inbound_messages,
+-- because it is read on every outbound WhatsApp send.
+ALTER TABLE "customers" ADD COLUMN "lastInboundAt" TIMESTAMP(3);

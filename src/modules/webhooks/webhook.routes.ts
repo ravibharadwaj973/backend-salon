@@ -10,6 +10,7 @@ import { verifyWhatsAppSignature } from './whatsapp-signature';
 import { verifyResendSignature } from './resend-signature';
 import { parseReports } from './msg91-status';
 import type { Prisma } from '@prisma/client';
+import { maybeAutoReply } from '../messaging/auto-reply.service';
 
 const router = Router();
 
@@ -235,7 +236,7 @@ router.post(
             }),
           ).catch(() => null);
 
-          await runUnscoped(() =>
+          const stored = await runUnscoped(() =>
             prisma.inboundMessage.create({
               data: {
                 tenantId,
@@ -252,11 +253,40 @@ router.post(
             /**
              * A duplicate is the constraint doing its job on one of Meta's
              * retries, and is not worth a line in the log. Anything else is.
+             *
+             * Returning null rather than rethrowing is what makes the retry
+             * safe: a second delivery of the same message stores nothing AND
+             * answers nothing, because the block below only runs on a row that
+             * was genuinely created.
              */
             const code = (err as { code?: string } | null)?.code;
-            if (code === 'P2002') return;
-            logger.warn({ err, tenantId }, 'inbound message not stored');
+            if (code !== 'P2002') logger.warn({ err, tenantId }, 'inbound message not stored');
+            return null;
           });
+
+          if (stored) {
+            /**
+             * The window is a fact about this customer now. Everything that
+             * sends over WhatsApp reads it to decide whether a plain message
+             * will arrive or an approved template is required.
+             */
+            await runUnscoped(() =>
+              prisma.customer.updateMany({
+                where: { tenantId, phone },
+                data: { lastInboundAt: stored.receivedAt },
+              }),
+            ).catch(() => undefined);
+
+            /**
+             * Answered here rather than in a job, because the customer is
+             * waiting and a reply four minutes later has missed the
+             * conversation. Fully guarded: every refusal inside returns rather
+             * than throws, so a webhook Meta is timing still returns 200.
+             */
+            await maybeAutoReply({ tenantId, inboundMessageId: stored.id }).catch((err: unknown) =>
+              logger.warn({ err, tenantId }, 'auto-reply failed'),
+            );
+          }
         }
 
         /**
