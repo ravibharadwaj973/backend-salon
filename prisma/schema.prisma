@@ -2669,6 +2669,13 @@ enum FeedbackSource {
   VISIT
   /// Typed into the public form on the salon's website. Unverified.
   WEBSITE
+  /// Scanned from the card on the counter. The customer was in the salon, but
+  /// nothing ties the rating to a booking or a bill: they chose the services
+  /// themselves from the menu, so the SERVICES are self-declared even though
+  /// the visit is real. Kept apart from VISIT for that reason — the
+  /// per-service performance table is evidence, and evidence that anyone
+  /// passing the counter can add to is not evidence.
+  QR
 }
 
 model Feedback {

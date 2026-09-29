@@ -658,6 +658,83 @@ router.get(
   asyncHandler(async (req, res) => ok(res, await feedback.publicFeedbackContext(req.params.appointmentId!))),
 );
 
+/**
+ * THE COUNTER CARD'S OWN PAIR OF ROUTES.
+ *
+ * Separate from /feedback/:id rather than a third branch inside it, because
+ * the two are different in the one way that matters: that one resolves a
+ * VISIT, this one resolves a BRANCH, and the page it feeds has an extra step
+ * (pick what you had) that the other must never show.
+ *
+ * Both sit behind publicLimiter like the rest of this router — the only thing
+ * standing between an open form and somebody with a script.
+ */
+router.get(
+  '/feedback/qr/:branchId',
+  asyncHandler(async (req, res) => {
+    return ok(res, await feedback.qrFeedbackContext(req.params.branchId!));
+  }),
+);
+
+router.post(
+  '/feedback/qr/:branchId',
+  validate({
+    body: z.object({
+      rating: z.coerce.number().int().min(1).max(5),
+      ambienceRating: z.coerce.number().int().min(1).max(5).optional(),
+      staffRating: z.coerce.number().int().min(1).max(5).optional(),
+      waitRating: z.coerce.number().int().min(1).max(5).optional(),
+      comment: z.string().trim().max(2000).optional(),
+      services: z
+        .array(
+          z.object({
+            serviceId: z.string().min(1),
+            rating: z.coerce.number().int().min(1).max(5),
+            comment: z.string().trim().max(500).optional(),
+          }),
+        )
+        .max(20)
+        .optional(),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const context = await feedback.qrFeedbackContext(req.params.branchId!);
+
+    const result = await feedback.submitFeedback(
+      {
+        ...(req.body as {
+          rating: number;
+          comment?: string;
+          services?: { serviceId: string; rating: number; comment?: string }[];
+        }),
+        branchId: context.branchId,
+        /**
+         * The visit is real — they are standing in the salon — but the
+         * services are the customer's own word, so this must never be filed
+         * as VISIT. See the enum comment in the schema.
+         */
+        source: 'QR',
+      },
+      context.tenantId,
+    );
+
+    return created(res, {
+      thankYou: true,
+      nextStep: result.nextStep,
+      googleReviewUrl: result.googleReviewUrl,
+      /** The feedback's own id: with no visit behind it, this is what the
+       *  Google-tap endpoint has to be given. */
+      feedbackId: result.feedback.id,
+      reviewDraft: result.reviewDraft,
+      reviewDrafts: result.reviewDrafts,
+      message:
+        result.nextStep === 'GOOGLE_REVIEW'
+          ? 'Thank you! Would you share that on Google too?'
+          : 'Thank you for telling us. The salon owner will read this personally.',
+    });
+  }),
+);
+
 router.post(
   '/feedback/:appointmentId',
   validate({

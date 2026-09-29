@@ -1,0 +1,18 @@
+-- A THIRD WAY A RATING CAN ARRIVE: THE CARD ON THE COUNTER.
+--
+-- VISIT means the salon's own message about a specific booking or bill, so the
+-- services on it are the salon's record of what was done. WEBSITE means the
+-- public form, unverified and unconnected to any visit.
+--
+-- QR is neither. The visit is real — the customer is standing in the salon
+-- with their phone — but nothing ties the rating to a booking or a bill, so
+-- the customer ticks their own services off the menu. The visit is trustworthy
+-- and the service list is hearsay, and no existing value says that.
+--
+-- It matters because the per-service performance table is sold to the salon as
+-- evidence: "your Gold Facial is averaging 3.4, look at it." Evidence that
+-- anybody walking past the counter can add rows to is not evidence. That query
+-- filters on source = 'VISIT' and continues to, so these ratings inform the
+-- overall score and the Google review funnel without quietly rewriting the
+-- numbers a salon makes decisions from.
+ALTER TYPE "FeedbackSource" ADD VALUE IF NOT EXISTS 'QR';

@@ -40,6 +40,14 @@ export interface FeedbackInput {
    * services before anything is stored — see service-ratings.ts.
    */
   services?: SubmittedServiceRating[];
+  /**
+   * Where this rating came in from. Absent means VISIT, the schema default —
+   * a rating reached through the salon's own message about a specific visit.
+   *
+   * QR is the card on the counter: a real visit with no appointment and no
+   * bill attached, where the customer picked their own services off the menu.
+   */
+  source?: 'VISIT' | 'WEBSITE' | 'QR';
 }
 
 /**
@@ -126,6 +134,29 @@ export async function submitFeedback(input: FeedbackInput, tenantIdOverride?: st
       .filter((refId): refId is string => Boolean(refId));
   }
 
+  /**
+   * A QR RATING HAS NO VISIT TO CHECK AGAINST, SO THE MENU IS THE CHECK.
+   *
+   * With an appointment or a bill, `onAppointment` is the short list of what
+   * that customer actually had, and anything else submitted is dropped. From
+   * the counter card there is no such list — the customer ticks what they had.
+   *
+   * So the allow-list widens to the salon's own active services, which is the
+   * most this can be narrowed to and still work. It still refuses a serviceId
+   * from another salon, or one that has been retired, which is what stops the
+   * open form being a way to write rows against arbitrary ids.
+   *
+   * What it cannot do is verify that the person actually had the service they
+   * ticked. That is why these are stored as QR rather than VISIT, and why the
+   * per-service performance table keeps ignoring them.
+   */
+  if (!input.appointmentId && !input.invoiceId && branchId) {
+    const catalogue = await runUnscoped(() =>
+      prisma.service.findMany({ where: { tenantId, isActive: true }, select: { id: true } }),
+    );
+    onAppointment = catalogue.map((service) => service.id);
+  }
+
   if (!branchId) throw BadRequest('A branch is required');
   if (input.rating < 1 || input.rating > 5) throw BadRequest('Rating must be between 1 and 5');
 
@@ -163,6 +194,7 @@ export async function submitFeedback(input: FeedbackInput, tenantIdOverride?: st
         waitRating: input.waitRating ?? null,
         npsScore: input.npsScore ?? null,
         comment: input.comment ?? null,
+        ...(input.source ? { source: input.source } : {}),
         isComplaint,
         // Everyone is asked now, so this is true for everyone. It stays as a
         // column rather than becoming a constant because it is the honest
@@ -412,21 +444,33 @@ export async function googleReviewUrlFor(tenantId: string, branchId: string | nu
 export async function recordGoogleReviewClick(
   id: string,
 ): Promise<{ recorded: boolean; googleReviewUrl: string | null }> {
-  const [appointment, invoice] = await runUnscoped(() =>
+  /**
+   * Three kinds of id, because there are three ways in.
+   *
+   * An appointment link and a bill link identify a visit, and the feedback
+   * hangs off it. A QR rating has neither — there is no visit row to look up
+   * — so the page hands back the feedback's OWN id and it is looked up
+   * directly. All three are cuids from different tables; a collision is not a
+   * thing that happens, and a wrong guess simply finds nothing.
+   */
+  const [appointment, invoice, direct] = await runUnscoped(() =>
     Promise.all([
       prisma.appointment.findUnique({ where: { id }, select: { tenantId: true, branchId: true } }),
       prisma.invoice.findUnique({ where: { id }, select: { tenantId: true, branchId: true } }),
+      prisma.feedback.findUnique({ where: { id } }),
     ]),
   );
 
-  const visit = appointment ?? invoice;
+  const visit = appointment ?? invoice ?? direct;
   if (!visit) throw NotFound('Visit');
 
-  const feedback = await runUnscoped(() =>
-    prisma.feedback.findUnique(
-      appointment ? { where: { appointmentId: id } } : { where: { invoiceId: id } },
-    ),
-  );
+  const feedback = direct
+    ? direct
+    : await runUnscoped(() =>
+        prisma.feedback.findUnique(
+          appointment ? { where: { appointmentId: id } } : { where: { invoiceId: id } },
+        ),
+      );
   if (feedback && feedback.rating <= 3) return { recorded: false, googleReviewUrl: null };
 
   if (feedback && !feedback.googleReviewedAt) {
@@ -714,6 +758,84 @@ export async function publicFeedbackContext(id: string) {
   const context = (await appointmentContext(id)) ?? (await invoiceContext(id));
   if (!context) throw NotFound('Visit');
   return context;
+}
+
+/**
+ * THE CARD ON THE COUNTER.
+ *
+ * The third way in, and the only one that knows nothing about the customer.
+ * An appointment link knows the visit; a bill link knows the visit; a QR code
+ * printed and stuck by the till knows only which branch it was printed for.
+ *
+ * ── Why it is worth having anyway ─────────────────────────────────────────
+ *
+ * The other two routes require the salon to have the customer's number and to
+ * have sent them something. Plenty of people pay cash, give no number, and
+ * walk out — and they are exactly as capable of leaving a Google review as
+ * anybody else. This is the only route that reaches them, and it works while
+ * they are still standing in the salon, which is when they are most likely to.
+ *
+ * ── What it gives up ──────────────────────────────────────────────────────
+ *
+ * Everything the other two knew: who they are, what they had, when. So the
+ * page has to ask for the services, and the answer is the customer's word
+ * rather than the salon's record. Stored as QR for that reason — see the
+ * enum comment in the schema.
+ *
+ * `alreadySubmitted` is always false. There is no visit to have answered for,
+ * so nothing to check against; the page keeps its own per-device note instead,
+ * and the rate limiter on the public router is what stops a flood.
+ */
+export async function qrFeedbackContext(branchId: string) {
+  const branch = await runUnscoped(() =>
+    prisma.branch.findUnique({
+      where: { id: branchId },
+      select: {
+        id: true,
+        name: true,
+        isActive: true,
+        tenantId: true,
+        tenant: { select: { name: true, logoUrl: true } },
+      },
+    }),
+  );
+
+  if (!branch || !branch.isActive) throw NotFound('Salon');
+
+  /**
+   * The menu as the customer would read it, not the whole catalogue.
+   *
+   * `onlineBookable` is the salon's own answer to "should a customer see this
+   * without us in the room" — the same judgement the booking page relies on —
+   * so a staff-only or internal line does not appear on a card by the till.
+   */
+  const services = await runUnscoped(() =>
+    prisma.service.findMany({
+      where: { tenantId: branch.tenantId, isActive: true, onlineBookable: true },
+      select: { id: true, name: true, category: { select: { name: true, sortOrder: true } } },
+      orderBy: [{ category: { sortOrder: 'asc' } }, { name: 'asc' }],
+      take: 200,
+    }),
+  );
+
+  return {
+    tenantId: branch.tenantId,
+    branchId: branch.id,
+    salonName: branch.tenant.name,
+    logoUrl: branch.tenant.logoUrl,
+    branchName: branch.name,
+    /** Nobody knows who they are, and the page should not pretend otherwise. */
+    customerName: 'there',
+    visitDate: null,
+    alreadySubmitted: false,
+    /** Chosen by the customer, so the page must show the whole menu. */
+    pickServices: true,
+    services: services.map((service) => ({
+      id: service.id,
+      name: service.name,
+      category: service.category?.name ?? null,
+    })),
+  };
 }
 
 /**
