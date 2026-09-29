@@ -59,7 +59,7 @@ export interface ThreadTurn {
  * not enough and the log records it explicitly. Anything belonging to a
  * campaign or a journey is the system talking, not a person.
  */
-function speakerFor(row: { campaignId: string | null; journeyRunId: string | null; sentByUserId?: string | null }): 'AI' | 'HUMAN' | 'SYSTEM' {
+export function speakerFor(row: { campaignId: string | null; journeyRunId: string | null; sentByUserId?: string | null }): 'AI' | 'HUMAN' | 'SYSTEM' {
   if (row.campaignId || row.journeyRunId) return 'SYSTEM';
   return row.sentByUserId ? 'HUMAN' : 'AI';
 }
