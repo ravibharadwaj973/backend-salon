@@ -46,7 +46,22 @@ export interface BranchChoice {
 }
 
 export type BranchResolution =
-  | { kind: 'RESOLVED'; branchId: string; branchName: string }
+  | {
+      kind: 'RESOLVED';
+      branchId: string;
+      branchName: string;
+      /**
+       * True when the salon has more than one shop, and therefore when the
+       * branch has to be SAID.
+       *
+       * "Done — Hair Spa on Tuesday. See you then." is a complete confirmation
+       * for a salon with one address and a riddle for a salon with two. The
+       * customer is not told where to go, and neither is anybody reading the
+       * thread. A single-shop salon does not need telling which shop, so this
+       * is what decides rather than always naming it.
+       */
+      ofMany: boolean;
+    }
   /** Ask the customer. `branches` is in the order the question lists them. */
   | { kind: 'ASK'; branches: BranchChoice[]; question: string }
   /** The salon has no active branch at all — nothing can be booked anywhere. */
@@ -218,30 +233,54 @@ export async function resolveBranch(input: {
    * to visit the other one, they will say so, and a person can move it: that is
    * a better failure than interrogating every regular about their own salon.
    */
-  const known =
-    input.customerBranchId ?? input.messageBranchId ?? (await branchTheyLastVisited(input));
-  if (known) {
-    const branch = await runUnscoped(() =>
-      prisma.branch.findFirst({
-        where: { id: known, tenantId: input.tenantId, isActive: true },
-        select: { id: true, name: true },
-      }),
-    );
-    if (branch) return { kind: 'RESOLVED', branchId: branch.id, branchName: branch.name };
-    // Recorded against a branch that has since closed. Fall through and ask
-    // rather than booking into a shop that is not open.
-  }
-
+  /**
+   * The shops first, once, and everything else is decided against that list.
+   *
+   * It also answers a question the caller needs either way — whether there is
+   * more than one shop, and so whether the branch has to be named out loud.
+   */
   const branches = await bookableBranches(input.tenantId);
   if (branches.length === 0) return { kind: 'NONE' };
 
-  // No choice to offer, so no question worth asking.
-  if (branches.length === 1) {
-    return { kind: 'RESOLVED', branchId: branches[0]!.id, branchName: branches[0]!.name };
+  const ofMany = branches.length > 1;
+  const resolved = (branch: BranchChoice): BranchResolution => ({
+    kind: 'RESOLVED',
+    branchId: branch.id,
+    branchName: branch.name,
+    ofMany,
+  });
+
+  const known =
+    input.customerBranchId ?? input.messageBranchId ?? (await branchTheyLastVisited(input));
+  if (known) {
+    // Matched against the ACTIVE list, so a branch that has since closed falls
+    // through and is asked about rather than booked into.
+    const listed = branches.find((row) => row.id === known);
+    if (listed) return resolved(listed);
+
+    /**
+     * The list above is capped at what fits in a question somebody will read.
+     * A salon with nine shops therefore has a ninth that is not in it — and a
+     * customer whose own branch is that ninth must not be asked to choose from
+     * eight it is not among. So a known branch that did not make the list is
+     * looked up directly.
+     */
+    if (branches.length >= MAX_LISTED) {
+      const beyond = await runUnscoped(() =>
+        prisma.branch.findFirst({
+          where: { id: known, tenantId: input.tenantId, isActive: true },
+          select: { id: true, name: true, city: true },
+        }),
+      );
+      if (beyond) return resolved(beyond);
+    }
   }
 
+  // No choice to offer, so no question worth asking.
+  if (!ofMany) return resolved(branches[0]!);
+
   const named = matchBranch(branches, input.said);
-  if (named) return { kind: 'RESOLVED', branchId: named.id, branchName: named.name };
+  if (named) return resolved(named);
 
   return { kind: 'ASK', branches, question: branchQuestion(branches) };
 }

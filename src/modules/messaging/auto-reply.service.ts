@@ -369,7 +369,7 @@ export async function maybeAutoReply(input: {
         input.tenantId,
         confirmBranchId,
         message.customer.id,
-        `Done — ${offerHeld.serviceName} on ${humanWhen(offerHeld.startAt)}${offerHeld.staffName ? ` with ${offerHeld.staffName}` : ''}. See you then.`,
+        `Done — ${offerHeld.serviceName} on ${humanWhen(offerHeld.startAt)}${offerHeld.staffName ? ` with ${offerHeld.staffName}` : ''}${offerHeld.branchName ? ` at ${offerHeld.branchName}` : ''}. See you then.`,
         message.conversation.id,
       );
       await markHandled(message.id);
@@ -418,7 +418,13 @@ export async function maybeAutoReply(input: {
        * without a second round trip.
        */
       const where = resumed
-        ? ({ kind: 'RESOLVED', branchId: resumed.branchId, branchName: resumed.branchName } as const)
+        ? ({
+            kind: 'RESOLVED',
+            branchId: resumed.branchId,
+            branchName: resumed.branchName,
+            // True by construction: we only ever ask when there are several.
+            ofMany: true,
+          } as const)
         : await resolveBranch({
             tenantId: input.tenantId,
             customerBranchId: message.customer.branchId,
@@ -461,11 +467,17 @@ export async function maybeAutoReply(input: {
         const bookAt = where.branchId;
 
         /**
-         * Named back to them only when they have just chosen it, which is the
-         * moment it is worth confirming — a customer who answered "2" wants to
-         * see that we heard the right shop before they agree to a time.
+         * NAMED WHENEVER THE SALON HAS MORE THAN ONE SHOP.
+         *
+         * It used to be said only when the customer had just chosen it. That
+         * covered the one case where we asked and left every other case silent
+         * — including the common one, where the branch was worked out from
+         * their history and never mentioned. A two-shop salon was sending
+         * "Done, see you Tuesday" to somebody who had not been told which
+         * address to go to.
          */
-        const atBranch = resumed ? ` at ${where.branchName}` : '';
+        const atBranch = where.ofMany ? ` at ${where.branchName}` : '';
+        const branchLabel = where.ofMany ? where.branchName : null;
 
         const slots = await checkAvailability({
           tenantId: input.tenantId,
@@ -478,7 +490,7 @@ export async function maybeAutoReply(input: {
 
         if (slots.length > 0) {
           const offer = slots[0]!;
-          await holdOffer(message.customer.id, offer, bookAt);
+          await holdOffer(message.customer.id, offer, bookAt, branchLabel);
           const alternatives = slots.slice(1, 4).map((s) => s.label);
           const text = intent.time
             ? `Yes — ${offer.serviceName} at ${offer.label} on ${humanWhen(offer.startAt)}${offer.staffName ? ` with ${offer.staffName}` : ''}${atBranch} is free. Shall I book it?`
@@ -503,7 +515,7 @@ export async function maybeAutoReply(input: {
           ? `${intent.time} is taken that day${atBranch}, but we have ${sameDay.slice(0, 3).map((s) => s.label).join(', ')}. Shall I book one of those?`
           : `We have nothing free for ${service.name} on that day${atBranch}. You can see the other days here: ${salon.bookingUrl ?? salon.websiteUrl ?? 'our website'}`;
 
-        if (sameDay.length) await holdOffer(message.customer.id, sameDay[0]!, bookAt);
+        if (sameDay.length) await holdOffer(message.customer.id, sameDay[0]!, bookAt, branchLabel);
         await send(input.tenantId, bookAt, message.customer.id, text, message.conversation.id);
         await markHandled(message.id);
         return { sent: true, reason: 'offered alternatives' };
@@ -585,13 +597,27 @@ const OFFER_STALE_MINUTES = 60;
  * `branchId` is nullable only because offers held before it existed do not have
  * one; everything written now carries it.
  */
-type HeldOffer = SlotOffer & { branchId: string | null };
+type HeldOffer = SlotOffer & {
+  branchId: string | null;
+  /**
+   * Set only at a salon with more than one shop, which is the only time it
+   * needs saying. Carried on the offer so the confirmation can name the shop
+   * without re-deriving it — and re-deriving it after the customer has agreed
+   * would be the one moment it must not change.
+   */
+  branchName: string | null;
+};
 
 function readHeldOffer(raw: unknown, at: Date | null): HeldOffer | null {
   if (!raw || !at) return null;
   if (Date.now() - at.getTime() > OFFER_STALE_MINUTES * 60 * 1000) return null;
 
-  const row = raw as Partial<SlotOffer> & { startAt?: string; kind?: string; branchId?: string | null };
+  const row = raw as Partial<SlotOffer> & {
+    startAt?: string;
+    kind?: string;
+    branchId?: string | null;
+    branchName?: string | null;
+  };
 
   /**
    * One column, two kinds of held conversation.
@@ -612,6 +638,7 @@ function readHeldOffer(raw: unknown, at: Date | null): HeldOffer | null {
     staffName: row.staffName ?? null,
     label: row.label ?? '',
     branchId: row.branchId ?? null,
+    branchName: row.branchName ?? null,
   };
 }
 
@@ -662,14 +689,19 @@ function humanWhen(at: Date): string {
   });
 }
 
-async function holdOffer(customerId: string, offer: SlotOffer, branchId: string): Promise<void> {
+async function holdOffer(
+  customerId: string,
+  offer: SlotOffer,
+  branchId: string,
+  branchName: string | null,
+): Promise<void> {
   await runUnscoped(() =>
     prisma.customer.update({
       where: { id: customerId },
       data: {
         // The branch travels with the offer so that confirming it cannot land in
         // a different shop than the one the times were read from.
-        assistantOffer: { ...offer, startAt: offer.startAt.toISOString(), branchId },
+        assistantOffer: { ...offer, startAt: offer.startAt.toISOString(), branchId, branchName },
         assistantOfferAt: new Date(),
       },
     }),
