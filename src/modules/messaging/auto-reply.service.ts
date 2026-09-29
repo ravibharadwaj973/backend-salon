@@ -8,8 +8,16 @@ import { queueMessage } from '../../messaging/dispatcher';
 import { windowIsOpen } from '../../messaging/service-window';
 import { salonContext } from './salon-context';
 import { MAX_REPLY_CHARS, needsHuman, parseReply, replyPrompt } from './reply-ai';
-import { intentPrompt, parseIntent } from './assistant-intent';
+import { type ParsedIntent, intentPrompt, parseIntent } from './assistant-intent';
 import { type SlotOffer, bookOffer, checkAvailability, matchService } from './assistant-tools';
+import {
+  BRANCH_PENDING,
+  type PendingBranchChoice,
+  matchBranch,
+  pendingBranchPayload,
+  readPendingBranch,
+  resolveBranch,
+} from './assistant-branch';
 
 /**
  * REPLYING TO A CUSTOMER, WITHOUT A PERSON READING IT FIRST.
@@ -153,31 +161,60 @@ export async function maybeAutoReply(input: {
    * the database or refuses.
    */
   const offerHeld = readHeldOffer(message.customer.assistantOffer, message.customer.assistantOfferAt);
-
-  const services = await runUnscoped(() =>
-    prisma.service.findMany({
-      where: { tenantId: input.tenantId, isActive: true, onlineBookable: true },
-      select: { name: true },
-      take: 80,
-    }),
+  const branchPending = readPendingBranch(
+    message.customer.assistantOffer,
+    message.customer.assistantOfferAt,
+    OFFER_STALE_MINUTES,
   );
 
-  const intentCall = intentPrompt({
-    message: message.body,
-    serviceNames: services.map((s) => s.name),
-    staffNames: [],
-    today: new Date().toISOString().slice(0, 10),
-    outstandingOffer: offerHeld ? describeOffer(offerHeld) : null,
-  });
+  /**
+   * "BANDRA." — THE SHORTEST USEFUL MESSAGE THERE IS.
+   *
+   * If we asked which location and this message names one of them, the customer
+   * has finished a booking request they started in the previous message. The
+   * request itself was parked when we asked, so it is picked up here rather than
+   * re-derived: this message contains one word and no model could recover a
+   * service or a date from it.
+   *
+   * Which is also why this runs BEFORE the model is called at all. Sending "2"
+   * to be classified wastes a call and, worse, invites an answer: a model asked
+   * what "2" means will happily decide it is two o'clock.
+   */
+  const resumed = branchPending ? resumeBranchChoice(branchPending, message.body) : null;
+  if (resumed) await clearOffer(message.customer.id);
 
-  const intentRaw = await chat(intentCall.system, intentCall.user, {
-    timeoutMs: TIMEOUT_MS,
-    // Reading a sentence is not a creative task, and the same message should
-    // mean the same thing twice.
-    temperature: 0,
-    maxTokens: 300,
-  });
-  const intent = intentRaw ? parseIntent(intentRaw) : { intent: 'ANSWER' as const, service: null, date: null, time: null, staff: null };
+  let intent: ParsedIntent;
+
+  if (resumed) {
+    intent = resumed.intent;
+  } else {
+    const services = await runUnscoped(() =>
+      prisma.service.findMany({
+        where: { tenantId: input.tenantId, isActive: true, onlineBookable: true },
+        select: { name: true },
+        take: 80,
+      }),
+    );
+
+    const intentCall = intentPrompt({
+      message: message.body,
+      serviceNames: services.map((s) => s.name),
+      staffNames: [],
+      today: new Date().toISOString().slice(0, 10),
+      outstandingOffer: offerHeld ? describeOffer(offerHeld) : null,
+    });
+
+    const intentRaw = await chat(intentCall.system, intentCall.user, {
+      timeoutMs: TIMEOUT_MS,
+      // Reading a sentence is not a creative task, and the same message should
+      // mean the same thing twice.
+      temperature: 0,
+      maxTokens: 300,
+    });
+    intent = intentRaw
+      ? parseIntent(intentRaw)
+      : { intent: 'ANSWER', service: null, date: null, time: null, staff: null };
+  }
 
   if (intent.intent === 'HUMAN') {
     return { sent: false, reason: 'intent needs a person' };
@@ -191,10 +228,21 @@ export async function maybeAutoReply(input: {
    * conflicts inside its transaction, which is the only check that can settle
    * two customers saying yes to 6pm at the same moment.
    */
-  if (intent.intent === 'CONFIRM' && offerHeld && branchId) {
+  /**
+   * The branch the offer was MADE against, not the one we would pick now.
+   *
+   * A customer with no branch on file was asked which location, answered, and
+   * was offered a time at the shop they chose. Re-deriving the branch here
+   * would lose that answer and book them somewhere else — so it travels with
+   * the offer. `branchId` remains the fallback for offers held before this
+   * existed, which carry no branch of their own.
+   */
+  const confirmBranchId = offerHeld?.branchId ?? branchId;
+
+  if (intent.intent === 'CONFIRM' && offerHeld && confirmBranchId) {
     const booked = await bookOffer({
       tenantId: input.tenantId,
-      branchId,
+      branchId: confirmBranchId,
       customerId: message.customer.id,
       offer: offerHeld,
     });
@@ -205,7 +253,7 @@ export async function maybeAutoReply(input: {
       ? `Done — ${offerHeld.serviceName} on ${humanWhen(offerHeld.startAt)}${offerHeld.staffName ? ` with ${offerHeld.staffName}` : ''}. See you then.`
       : `Sorry — that time has just gone. Would another time suit you? You can also see what is free here: ${salon.bookingUrl ?? salon.websiteUrl ?? 'our website'}`;
 
-    await send(input.tenantId, branchId, message.customer.id, text);
+    await send(input.tenantId, confirmBranchId, message.customer.id, text);
     await markHandled(message.id);
     return { sent: true, reason: booked.ok ? 'booked' : 'slot taken' };
   }
@@ -219,50 +267,112 @@ export async function maybeAutoReply(input: {
    * reading "maybe Tuesday?" as agreement is the failure this shape exists to
    * make impossible.
    */
-  if (intent.intent === 'BOOK' && branchId) {
+  if (intent.intent === 'BOOK') {
     const service = await matchService(input.tenantId, intent.service);
 
     if (service && intent.date) {
-      const slots = await checkAvailability({
-        tenantId: input.tenantId,
-        branchId,
-        serviceId: service.id,
-        serviceName: service.name,
-        date: new Date(`${intent.date}T00:00:00`),
-        time: intent.time,
-      });
+      /**
+       * WHICH SHOP — ASKED HERE, AND ONLY HERE.
+       *
+       * Deliberately after the service and the date are known. Asking "which
+       * location?" of somebody who has not yet said what they want or when is an
+       * interrogation, and it parks a request too vague to resume; by this point
+       * there is a real booking waiting on one word.
+       *
+       * The customer's own message is handed to the resolver so a branch named
+       * in the same breath — "can I come to Bandra tomorrow at 6" — is used
+       * without a second round trip.
+       */
+      const where = resumed
+        ? ({ kind: 'RESOLVED', branchId: resumed.branchId, branchName: resumed.branchName } as const)
+        : await resolveBranch({
+            tenantId: input.tenantId,
+            customerBranchId: message.customer.branchId,
+            messageBranchId: message.branchId,
+            said: message.body,
+          });
 
-      if (slots.length > 0) {
-        const offer = slots[0]!;
-        await holdOffer(message.customer.id, offer);
-        const alternatives = slots.slice(1, 4).map((s) => s.label);
-        const text = intent.time
-          ? `Yes — ${offer.serviceName} at ${offer.label} on ${humanWhen(offer.startAt)}${offer.staffName ? ` with ${offer.staffName}` : ''} is free. Shall I book it?`
-          : `For ${offer.serviceName} on ${humanWhen(offer.startAt)} we have ${[offer.label, ...alternatives].join(', ')}. Shall I book ${offer.label}?`;
-        await send(input.tenantId, branchId, message.customer.id, text);
+      if (where.kind === 'ASK') {
+        /**
+         * The request is parked, not abandoned. Held in the same column an
+         * outstanding slot offer uses — they are the same kind of thing, a
+         * conversation waiting on a reply, and only one can be outstanding at a
+         * time by definition.
+         */
+        await holdPendingBranch(
+          message.customer.id,
+          pendingBranchPayload({
+            branches: where.branches,
+            service: intent.service,
+            date: intent.date,
+            time: intent.time,
+            staff: intent.staff,
+          }),
+        );
+        await send(input.tenantId, null, message.customer.id, where.question);
         await markHandled(message.id);
-        return { sent: true, reason: 'offered a slot' };
+        return { sent: true, reason: 'asked which location' };
       }
 
-      // Asked for a specific time that is taken: say so, and offer the day.
-      const sameDay = intent.time
-        ? await checkAvailability({
-            tenantId: input.tenantId,
-            branchId,
-            serviceId: service.id,
-            serviceName: service.name,
-            date: new Date(`${intent.date}T00:00:00`),
-          })
-        : [];
+      if (where.kind === 'NONE') {
+        // No active branch anywhere: there is nothing to book into and nothing
+        // to ask about. Falls through to the plain answer, which at least does
+        // not promise a time.
+        logger.warn(
+          { tenantId: input.tenantId },
+          'a customer asked to book but this salon has no active branch',
+        );
+      } else {
+        const bookAt = where.branchId;
 
-      const text = sameDay.length
-        ? `${intent.time} is taken that day, but we have ${sameDay.slice(0, 3).map((s) => s.label).join(', ')}. Shall I book one of those?`
-        : `We have nothing free for ${service.name} on that day. You can see the other days here: ${salon.bookingUrl ?? salon.websiteUrl ?? 'our website'}`;
+        /**
+         * Named back to them only when they have just chosen it, which is the
+         * moment it is worth confirming — a customer who answered "2" wants to
+         * see that we heard the right shop before they agree to a time.
+         */
+        const atBranch = resumed ? ` at ${where.branchName}` : '';
 
-      if (sameDay.length) await holdOffer(message.customer.id, sameDay[0]!);
-      await send(input.tenantId, branchId, message.customer.id, text);
-      await markHandled(message.id);
-      return { sent: true, reason: 'offered alternatives' };
+        const slots = await checkAvailability({
+          tenantId: input.tenantId,
+          branchId: bookAt,
+          serviceId: service.id,
+          serviceName: service.name,
+          date: new Date(`${intent.date}T00:00:00`),
+          time: intent.time,
+        });
+
+        if (slots.length > 0) {
+          const offer = slots[0]!;
+          await holdOffer(message.customer.id, offer, bookAt);
+          const alternatives = slots.slice(1, 4).map((s) => s.label);
+          const text = intent.time
+            ? `Yes — ${offer.serviceName} at ${offer.label} on ${humanWhen(offer.startAt)}${offer.staffName ? ` with ${offer.staffName}` : ''}${atBranch} is free. Shall I book it?`
+            : `For ${offer.serviceName} on ${humanWhen(offer.startAt)}${atBranch} we have ${[offer.label, ...alternatives].join(', ')}. Shall I book ${offer.label}?`;
+          await send(input.tenantId, bookAt, message.customer.id, text);
+          await markHandled(message.id);
+          return { sent: true, reason: 'offered a slot' };
+        }
+
+        // Asked for a specific time that is taken: say so, and offer the day.
+        const sameDay = intent.time
+          ? await checkAvailability({
+              tenantId: input.tenantId,
+              branchId: bookAt,
+              serviceId: service.id,
+              serviceName: service.name,
+              date: new Date(`${intent.date}T00:00:00`),
+            })
+          : [];
+
+        const text = sameDay.length
+          ? `${intent.time} is taken that day${atBranch}, but we have ${sameDay.slice(0, 3).map((s) => s.label).join(', ')}. Shall I book one of those?`
+          : `We have nothing free for ${service.name} on that day${atBranch}. You can see the other days here: ${salon.bookingUrl ?? salon.websiteUrl ?? 'our website'}`;
+
+        if (sameDay.length) await holdOffer(message.customer.id, sameDay[0]!, bookAt);
+        await send(input.tenantId, bookAt, message.customer.id, text);
+        await markHandled(message.id);
+        return { sent: true, reason: 'offered alternatives' };
+      }
     }
   }
 
@@ -329,10 +439,30 @@ export async function maybeAutoReply(input: {
 /** An offer older than this must be re-checked, not honoured. */
 const OFFER_STALE_MINUTES = 60;
 
-function readHeldOffer(raw: unknown, at: Date | null): SlotOffer | null {
+/**
+ * An outstanding slot offer, and the shop it was made at.
+ *
+ * `branchId` is nullable only because offers held before it existed do not have
+ * one; everything written now carries it.
+ */
+type HeldOffer = SlotOffer & { branchId: string | null };
+
+function readHeldOffer(raw: unknown, at: Date | null): HeldOffer | null {
   if (!raw || !at) return null;
   if (Date.now() - at.getTime() > OFFER_STALE_MINUTES * 60 * 1000) return null;
-  const row = raw as Partial<SlotOffer> & { startAt?: string };
+
+  const row = raw as Partial<SlotOffer> & { startAt?: string; kind?: string; branchId?: string | null };
+
+  /**
+   * One column, two kinds of held conversation.
+   *
+   * A parked "which location?" question lives here too, and reading it as a slot
+   * offer would let a customer's "yes" confirm an appointment that was never
+   * offered. A slot offer written before the branch question existed has no
+   * `kind` at all, so absence means slot offer and anything else is not ours.
+   */
+  if (row.kind === BRANCH_PENDING) return null;
+
   if (!row.serviceId || !row.serviceName || !row.startAt) return null;
   return {
     serviceId: row.serviceId,
@@ -341,6 +471,40 @@ function readHeldOffer(raw: unknown, at: Date | null): SlotOffer | null {
     staffId: row.staffId ?? null,
     staffName: row.staffName ?? null,
     label: row.label ?? '',
+    branchId: row.branchId ?? null,
+  };
+}
+
+/**
+ * A parked branch question turned back into the booking request it came from.
+ *
+ * Returns null when the message is not an answer to it — the customer may have
+ * changed the subject entirely, and then this message deserves the ordinary
+ * reading rather than being forced into a booking they have moved on from.
+ */
+function resumeBranchChoice(
+  pending: PendingBranchChoice,
+  body: string,
+): { branchId: string; branchName: string; intent: ParsedIntent } | null {
+  const chosen = matchBranch(pending.branches, body);
+  if (!chosen) return null;
+
+  return {
+    branchId: chosen.id,
+    branchName: chosen.name,
+    /**
+     * BOOK, not CONFIRM. Naming a shop is not agreeing to a time — the times
+     * have not been offered yet. This goes back through the same check-then-offer
+     * path any booking request takes, so the slot is read from the diary at this
+     * moment and the customer still has to say yes.
+     */
+    intent: {
+      intent: 'BOOK',
+      service: pending.service,
+      date: pending.date,
+      time: pending.time,
+      staff: pending.staff,
+    },
   };
 }
 
@@ -358,12 +522,33 @@ function humanWhen(at: Date): string {
   });
 }
 
-async function holdOffer(customerId: string, offer: SlotOffer): Promise<void> {
+async function holdOffer(customerId: string, offer: SlotOffer, branchId: string): Promise<void> {
   await runUnscoped(() =>
     prisma.customer.update({
       where: { id: customerId },
       data: {
-        assistantOffer: { ...offer, startAt: offer.startAt.toISOString() },
+        // The branch travels with the offer so that confirming it cannot land in
+        // a different shop than the one the times were read from.
+        assistantOffer: { ...offer, startAt: offer.startAt.toISOString(), branchId },
+        assistantOfferAt: new Date(),
+      },
+    }),
+  ).catch(() => undefined);
+}
+
+/**
+ * Park the "which location?" question with the request that is waiting on it.
+ *
+ * Shares the column and the clock with a slot offer, which is safe because only
+ * one of them can be outstanding: we are either waiting to hear which shop, or
+ * waiting to hear yes to a time at a shop we already know.
+ */
+async function holdPendingBranch(customerId: string, pending: PendingBranchChoice): Promise<void> {
+  await runUnscoped(() =>
+    prisma.customer.update({
+      where: { id: customerId },
+      data: {
+        assistantOffer: pending as unknown as Prisma.InputJsonObject,
         assistantOfferAt: new Date(),
       },
     }),
