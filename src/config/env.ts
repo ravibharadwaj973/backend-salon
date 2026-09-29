@@ -82,6 +82,21 @@ const envSchema = z.object({
   WHATSAPP_WABA_ID: z.string().optional().default(''),
   WHATSAPP_PHONE_NUMBER_ID: z.string().optional().default(''),
   WHATSAPP_ACCESS_TOKEN: z.string().optional().default(''),
+  /**
+   * WHICH SALON OWNS THE NUMBER ABOVE. A slug or an id.
+   *
+   * Only consulted when WhatsApp is configured here rather than per salon under
+   * Settings, and only then because the environment supplies a number without
+   * saying whose it is. Sending does not care; an inbound message does, because
+   * a customer's reply carries nothing but their phone number and is meaningless
+   * until we know which salon they wrote to.
+   *
+   * Unset is correct for a single-salon deployment (there is only one answer)
+   * and for every salon that connected its own account. Unset on a multi-salon
+   * deployment with a number here means inbound replies are dropped, and the log
+   * says so at error level rather than leaving it to be discovered.
+   */
+  WHATSAPP_TENANT_ID: z.string().optional().default(''),
   WHATSAPP_WEBHOOK_VERIFY_TOKEN: z.string().optional().default(''),
   /// The Meta app secret, used to check the X-Hub-Signature-256 header on every
   /// webhook. One value for the whole platform, because every salon's number

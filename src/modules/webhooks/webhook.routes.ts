@@ -6,6 +6,7 @@ import { env } from '../../config/env';
 import { logger } from '../../core/logger';
 import { applyStatusUpdate, recordReply } from '../../messaging/dispatcher';
 import { normalizePhone } from '../../core/ids';
+import { tenantForPhoneNumber } from './webhook-tenant';
 import { verifyWhatsAppSignature } from './whatsapp-signature';
 import { verifyResendSignature } from './resend-signature';
 import { parseReports } from './msg91-status';
@@ -43,25 +44,6 @@ interface CloudApiChangeValue {
 
 interface CloudApiWebhook {
   entry?: { changes?: { value?: CloudApiChangeValue }[] }[];
-}
-
-/**
- * The salon a phone number belongs to.
- *
- * `waPhoneNumberId` is unique, so this is a single indexed lookup. A number we
- * do not recognise is not an error: Meta will keep delivering events for a
- * salon that has since disconnected, and for numbers on the same app that
- * belong to nobody here yet.
- */
-async function tenantForPhoneNumber(phoneNumberId: string | undefined): Promise<string | null> {
-  if (!phoneNumberId) return null;
-  const config = await runUnscoped(() =>
-    prisma.tenantMessagingConfig.findUnique({
-      where: { waPhoneNumberId: phoneNumberId },
-      select: { tenantId: true },
-    }),
-  );
-  return config?.tenantId ?? null;
 }
 
 /** Meta's verification handshake. */
@@ -109,10 +91,10 @@ router.post(
       const tenantId = await tenantForPhoneNumber(phoneNumberId);
 
       if (!tenantId) {
-        // Not ours, a salon that has since disconnected — or, much more often,
-        // a salon whose WhatsApp credentials live in the server environment
-        // rather than in TenantMessagingConfig, so there is no row mapping this
-        // phone number to anybody.
+        // Not ours, or a salon that has since disconnected. An env-configured
+        // deployment no longer lands here — tenantForPhoneNumber resolves the
+        // environment's own number to the salon that owns it — so reaching this
+        // now means the number genuinely maps to nobody.
         //
         // This used to `continue`, which threw away every delivery receipt on
         // an env-configured deployment: messages sent fine (the env supplied
@@ -196,9 +178,20 @@ router.post(
       // reached. So this half genuinely does need the mapping.
       if (!tenantId) {
         if (value.messages?.length) {
-          logger.warn(
+          /**
+           * error, not warn — and that is the whole point of this line.
+           *
+           * A customer wrote to a salon and nobody will ever see it. That is
+           * lost business, not housekeeping. It sat at `warn` for weeks while
+           * the number went unmapped, and `warn` is not the level anybody greps
+           * when they are hunting a silent failure, so the symptom read as "the
+           * webhook isn't firing" when the webhook was firing perfectly.
+           */
+          logger.error(
             { phoneNumberId, replies: value.messages.length },
-            'inbound replies dropped: no salon has this phone number connected. Connect WhatsApp under Settings so replies and opt-outs can be attributed.',
+            'inbound replies dropped: no salon has this phone number connected, so a customer message ' +
+              'cannot be attributed and nobody will see it. Connect WhatsApp under Settings, or set ' +
+              'WHATSAPP_TENANT_ID if the number is configured in the server environment.',
           );
         }
         continue;
