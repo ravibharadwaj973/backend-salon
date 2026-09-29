@@ -842,6 +842,18 @@ templateRouter.post(
 export const messageRouter = Router();
 
 /**
+ * Applied here rather than further down, which is where it used to be.
+ *
+ * Two routes were registered above it — the inbound list and marking one
+ * handled — so they never ran it. They were safe only because requirePermission
+ * refuses a request with no `req.auth`, which is a guard doing a second job by
+ * luck. Anyone adding a route in that gap without a permission check would have
+ * published a customer's messages to the internet, and nothing would have said
+ * so.
+ */
+messageRouter.use(authenticate);
+
+/**
  * WHAT CUSTOMERS HAVE WRITTEN IN.
  *
  * The other half of /messages, which has only ever shown what the salon sent.
@@ -879,7 +891,6 @@ messageRouter.post(
   }),
 );
 
-messageRouter.use(authenticate);
 
 messageRouter.get(
   '/',

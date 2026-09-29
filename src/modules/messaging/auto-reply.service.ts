@@ -8,6 +8,7 @@ import { dateKey } from '../../core/dates';
 import { queueMessage } from '../../messaging/dispatcher';
 import { windowIsOpen } from '../../messaging/service-window';
 import { salonContext } from './salon-context';
+import { handToHuman, noteOutboundMessage } from './conversation.service';
 import {
   type HandoffReason,
   MAX_REPLY_CHARS,
@@ -60,29 +61,11 @@ export async function maybeAutoReply(input: {
 }): Promise<AutoReplyDecision> {
   if (!aiReady) return { sent: false, reason: 'no AI key configured' };
 
-  /**
-   * OFF UNTIL A SALON TURNS IT ON.
-   *
-   * A salon should decide to let a machine answer for them. Discovering that
-   * it already has been — in their name, to their customers, with their prices
-   * — is not a thing that should be possible, however good the answers are.
-   *
-   * Stored on the tenant's settings blob rather than a column, because it is a
-   * preference and not a fact about the business, and because it wants to be
-   * one push away from existing on a database with no migration history.
-   */
-  const tenant = await runUnscoped(() =>
-    prisma.tenant.findUnique({ where: { id: input.tenantId }, select: { settings: true } }),
-  );
-  const settings = (tenant?.settings as Record<string, unknown> | null) ?? {};
-  if (settings.whatsappAutoReply !== true) {
-    return { sent: false, reason: 'auto-reply is off for this salon' };
-  }
-
   const message = await runUnscoped(() =>
     prisma.inboundMessage.findUnique({
       where: { id: input.inboundMessageId },
       include: {
+        conversation: { select: { id: true, mode: true } },
         customer: {
           select: {
             id: true,
@@ -99,6 +82,31 @@ export async function maybeAutoReply(input: {
   );
 
   if (!message) return { sent: false, reason: 'message not found' };
+
+  /**
+   * WHO IS ANSWERING THIS THREAD.
+   *
+   * This used to be one boolean on the tenant, and that was the wrong place for
+   * it. A salon whose customer raised something the assistant should not touch
+   * had exactly one control available: switch the assistant off for every
+   * customer they have. The people most likely to need to take one conversation
+   * in hand were the ones made to choose between that and letting a machine
+   * answer a complaint.
+   *
+   * The salon's setting still decides, but only once — it seeds the mode of a
+   * thread when the thread is created, in openConversation. After that the
+   * conversation owns it, so taking over one customer is taking over one
+   * customer, and handing them back is a click on that thread.
+   *
+   * A message with no conversation cannot be answered automatically. That is
+   * not caution, it is the honest reading: without a thread there is nothing to
+   * hold a mode, nothing for a person to take over, and nothing anybody could
+   * watch it do.
+   */
+  if (!message.conversation) return { sent: false, reason: 'message has no conversation' };
+  if (message.conversation.mode !== 'AI') {
+    return { sent: false, reason: 'a person has this conversation' };
+  }
 
   /**
    * A stranger gets nothing automatic.
@@ -150,9 +158,21 @@ export async function maybeAutoReply(input: {
    * few messages in the whole system that a human genuinely must read.
    */
   const handOver = async (reason: HandoffReason, decision: string): Promise<AutoReplyDecision> => {
+    /**
+     * The thread changes hands BEFORE the message goes out, and regardless of
+     * whether one can be sent at all.
+     *
+     * "Someone will look at this personally" was a promise with nowhere to land
+     * — nothing recorded that anybody should. Now the conversation moves to
+     * HUMAN and is stamped as needing attention, so it appears in the queue
+     * staff actually open. A salon with no phone number and no website gets no
+     * message to send, and the flag still matters more in that case, not less.
+     */
+    await handToHuman({ conversationId: message.conversation!.id, reason: decision });
+
     const text = handoffReply(salon, reason);
     if (!text) return { sent: false, reason: `${decision} (nothing to hand over to)` };
-    await send(input.tenantId, branchId, message.customer!.id, text);
+    await send(input.tenantId, branchId, message.customer!.id, text, message.conversation!.id);
     return { sent: true, reason: decision };
   };
 
@@ -350,6 +370,7 @@ export async function maybeAutoReply(input: {
         confirmBranchId,
         message.customer.id,
         `Done — ${offerHeld.serviceName} on ${humanWhen(offerHeld.startAt)}${offerHeld.staffName ? ` with ${offerHeld.staffName}` : ''}. See you then.`,
+        message.conversation.id,
       );
       await markHandled(message.id);
       return { sent: true, reason: 'booked' };
@@ -361,6 +382,7 @@ export async function maybeAutoReply(input: {
         confirmBranchId,
         message.customer.id,
         `Sorry — that time has just gone. Would another time suit you? You can also see what is free here: ${salon.bookingUrl ?? salon.websiteUrl ?? 'our website'}`,
+        message.conversation.id,
       );
       await markHandled(message.id);
       return { sent: true, reason: 'slot taken' };
@@ -422,7 +444,7 @@ export async function maybeAutoReply(input: {
             staff: intent.staff,
           }),
         );
-        await send(input.tenantId, null, message.customer.id, where.question);
+        await send(input.tenantId, null, message.customer.id, where.question, message.conversation.id);
         await markHandled(message.id);
         return { sent: true, reason: 'asked which location' };
       }
@@ -461,7 +483,7 @@ export async function maybeAutoReply(input: {
           const text = intent.time
             ? `Yes — ${offer.serviceName} at ${offer.label} on ${humanWhen(offer.startAt)}${offer.staffName ? ` with ${offer.staffName}` : ''}${atBranch} is free. Shall I book it?`
             : `For ${offer.serviceName} on ${humanWhen(offer.startAt)}${atBranch} we have ${[offer.label, ...alternatives].join(', ')}. Shall I book ${offer.label}?`;
-          await send(input.tenantId, bookAt, message.customer.id, text);
+          await send(input.tenantId, bookAt, message.customer.id, text, message.conversation.id);
           await markHandled(message.id);
           return { sent: true, reason: 'offered a slot' };
         }
@@ -482,7 +504,7 @@ export async function maybeAutoReply(input: {
           : `We have nothing free for ${service.name} on that day${atBranch}. You can see the other days here: ${salon.bookingUrl ?? salon.websiteUrl ?? 'our website'}`;
 
         if (sameDay.length) await holdOffer(message.customer.id, sameDay[0]!, bookAt);
-        await send(input.tenantId, bookAt, message.customer.id, text);
+        await send(input.tenantId, bookAt, message.customer.id, text, message.conversation.id);
         await markHandled(message.id);
         return { sent: true, reason: 'offered alternatives' };
       }
@@ -539,7 +561,9 @@ export async function maybeAutoReply(input: {
     // No template: a free-form reply, which is exactly what the open window
     // permits and nothing else does.
     body: parsed.text.slice(0, MAX_REPLY_CHARS),
+    conversationId: message.conversation.id,
   });
+  await noteOutboundMessage(message.conversation.id, new Date());
 
   await runUnscoped(() =>
     prisma.inboundMessage.update({
@@ -696,6 +720,7 @@ async function send(
   branchId: string | null,
   customerId: string,
   text: string,
+  conversationId?: string | null,
 ): Promise<void> {
   await queueMessage({
     tenantId,
@@ -703,5 +728,9 @@ async function send(
     customerId,
     channel: 'WHATSAPP',
     body: text.slice(0, MAX_REPLY_CHARS),
+    // No sentByUserId: nobody typed this. That absence is exactly what the
+    // thread reads to label the turn as the assistant rather than a person.
+    ...(conversationId ? { conversationId } : {}),
   });
+  if (conversationId) await noteOutboundMessage(conversationId, new Date());
 }

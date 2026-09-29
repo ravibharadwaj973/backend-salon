@@ -9,6 +9,7 @@ import { audit } from '../../middleware/audit';
 import * as library from './library.service';
 import * as setup from './setup.service';
 import * as share from './share.service';
+import * as conversations from './conversation.service';
 
 export const messagingRouter = Router();
 
@@ -225,3 +226,119 @@ messagingRouter.post(
 );
 
 export default messagingRouter;
+
+// ---------------------------------------------------------- conversations --
+
+/**
+ * THE SHARED THREAD.
+ *
+ * One conversation per customer, which the assistant and the salon's staff both
+ * work in. Everything here is about the same rows the webhook and the dispatcher
+ * already write — nothing on this router copies a message anywhere.
+ *
+ * Reading needs CAMPAIGN_VIEW, the same permission that already governs the
+ * inbound list, because it is the same customer messages. Speaking needs
+ * MESSAGE_SEND, and so does taking a thread over: deciding that a machine stops
+ * answering a customer is the same kind of authority as answering them.
+ */
+const conversationListQuery = z.object({
+  page: z.coerce.number().int().min(1).optional(),
+  pageSize: z.coerce.number().int().min(1).max(100).optional(),
+  /** The queue that actually gets opened: threads waiting for a person. */
+  needsAttentionOnly: z.coerce.boolean().optional(),
+});
+
+messagingRouter.get(
+  '/conversations',
+  requirePermission(PERMISSIONS.CAMPAIGN_VIEW),
+  validate({ query: conversationListQuery }),
+  asyncHandler(async (req, res) => {
+    const q = req.query as unknown as z.infer<typeof conversationListQuery>;
+    const result = await conversations.listConversations({
+      tenantId: req.ctx!.tenantId!,
+      ...q,
+    });
+    return ok(res, result.data, {
+      page: q.page ?? 1,
+      pageSize: q.pageSize ?? 25,
+      total: result.total,
+      totalPages: Math.max(1, Math.ceil(result.total / (q.pageSize ?? 25))),
+      hasMore: (q.page ?? 1) * (q.pageSize ?? 25) < result.total,
+    });
+  }),
+);
+
+const conversationId = z.object({ id: z.string().min(1) });
+
+/**
+ * One thread, with the state a reply box needs.
+ *
+ * `window` travels with the messages deliberately. A screen that draws a
+ * composer without knowing whether Meta will accept free text is a screen that
+ * lets somebody write a paragraph and then discover it cannot be sent.
+ */
+messagingRouter.get(
+  '/conversations/:id',
+  requirePermission(PERMISSIONS.CAMPAIGN_VIEW),
+  validate({ params: conversationId }),
+  asyncHandler(async (req, res) => {
+    return ok(res, await conversations.readConversation(req.ctx!.tenantId!, req.params.id!));
+  }),
+);
+
+messagingRouter.post(
+  '/conversations/:id/messages',
+  requirePermission(PERMISSIONS.MESSAGE_SEND),
+  validate({
+    params: conversationId,
+    body: z.object({ body: z.string().trim().min(1).max(4000) }),
+  }),
+  asyncHandler(async (req, res) => {
+    const result = await conversations.sendStaffReply({
+      tenantId: req.ctx!.tenantId!,
+      conversationId: req.params.id!,
+      userId: req.ctx!.userId!,
+      body: (req.body as { body: string }).body,
+    });
+    audit({
+      action: 'conversation.reply',
+      entity: 'Conversation',
+      entityId: req.params.id!,
+      after: { sent: result.sent },
+    });
+    return created(res, result);
+  }),
+);
+
+/**
+ * Take it over, or give it back.
+ *
+ * Two routes rather than one with a flag, because they are not symmetrical:
+ * taking over is something staff do in a hurry and must always be allowed, and
+ * handing back is a decision that deserves its own name in the audit log.
+ */
+messagingRouter.post(
+  '/conversations/:id/take-over',
+  requirePermission(PERMISSIONS.MESSAGE_SEND),
+  validate({ params: conversationId }),
+  asyncHandler(async (req, res) => {
+    await conversations.handToHuman({
+      conversationId: req.params.id!,
+      assignedToId: req.ctx?.userId ?? null,
+      reason: 'taken over by staff',
+    });
+    audit({ action: 'conversation.take_over', entity: 'Conversation', entityId: req.params.id! });
+    return ok(res, { mode: 'HUMAN' });
+  }),
+);
+
+messagingRouter.post(
+  '/conversations/:id/resume-assistant',
+  requirePermission(PERMISSIONS.MESSAGE_SEND),
+  validate({ params: conversationId }),
+  asyncHandler(async (req, res) => {
+    await conversations.resumeAssistant(req.params.id!, req.ctx?.userId ?? null);
+    audit({ action: 'conversation.resume_assistant', entity: 'Conversation', entityId: req.params.id! });
+    return ok(res, { mode: 'AI' });
+  }),
+);

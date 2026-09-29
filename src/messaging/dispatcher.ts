@@ -83,6 +83,23 @@ export interface QueueMessageInput {
   cost?: number;
   /** Skip the delay and attempt delivery straight away. */
   sendNow?: boolean;
+  /**
+   * The thread this belongs to, when it belongs to one.
+   *
+   * A reply — the assistant's or a person's — is part of a conversation. A
+   * campaign blast to four hundred people is not, and leaves this unset: it
+   * would turn every inbox into a list of marketing sends and bury the six
+   * threads somebody actually has to answer.
+   */
+  conversationId?: string | null;
+  /**
+   * The staff member who typed it, when one did.
+   *
+   * On the wire a staff reply and the assistant's are identical — free-form,
+   * no template, purpose OTHER — so this is the only thing that can tell the
+   * thread which of them spoke.
+   */
+  sentByUserId?: string | null;
 }
 
 
@@ -564,6 +581,8 @@ export async function queueMessage(input: QueueMessageInput) {
         tenantId: input.tenantId,
         branchId: input.branchId ?? null,
         channel: input.channel,
+        conversationId: input.conversationId ?? null,
+        sentByUserId: input.sentByUserId ?? null,
         purpose,
         customerId: input.customerId ?? null,
         leadId: input.leadId ?? null,
@@ -608,6 +627,8 @@ export async function queueMessage(input: QueueMessageInput) {
           tenantId: input.tenantId,
           branchId: input.branchId ?? null,
           channel: input.channel,
+          conversationId: input.conversationId ?? null,
+          sentByUserId: input.sentByUserId ?? null,
           purpose,
           customerId: input.customerId ?? null,
           leadId: input.leadId ?? null,
@@ -653,6 +674,8 @@ export async function queueMessage(input: QueueMessageInput) {
         tenantId: input.tenantId,
         branchId: input.branchId ?? null,
         channel: input.channel,
+        conversationId: input.conversationId ?? null,
+        sentByUserId: input.sentByUserId ?? null,
         purpose,
         customerId: input.customerId ?? null,
         leadId: input.leadId ?? null,
@@ -715,6 +738,8 @@ export async function queueMessage(input: QueueMessageInput) {
         tenantId: input.tenantId,
         branchId: input.branchId ?? null,
         channel: input.channel,
+        conversationId: input.conversationId ?? null,
+        sentByUserId: input.sentByUserId ?? null,
         purpose,
         category: template?.category ?? 'UTILITY',
         customerId: input.customerId ?? null,
@@ -821,6 +846,8 @@ export async function queueMessage(input: QueueMessageInput) {
         tenantId: input.tenantId,
         branchId: input.branchId ?? null,
         channel: input.channel,
+        conversationId: input.conversationId ?? null,
+        sentByUserId: input.sentByUserId ?? null,
         purpose,
         category: template.category,
         customerId: input.customerId ?? null,
@@ -865,6 +892,8 @@ export async function queueMessage(input: QueueMessageInput) {
         tenantId: input.tenantId,
         branchId: input.branchId ?? null,
         channel: input.channel,
+        conversationId: input.conversationId ?? null,
+        sentByUserId: input.sentByUserId ?? null,
         purpose,
         category,
         meter,
@@ -888,6 +917,8 @@ export async function queueMessage(input: QueueMessageInput) {
       tenantId: input.tenantId,
       branchId: input.branchId ?? null,
       channel: input.channel,
+      conversationId: input.conversationId ?? null,
+      sentByUserId: input.sentByUserId ?? null,
       purpose,
       category,
       meter,

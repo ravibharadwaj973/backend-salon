@@ -12,6 +12,7 @@ import { verifyResendSignature } from './resend-signature';
 import { parseReports } from './msg91-status';
 import type { Prisma } from '@prisma/client';
 import { maybeAutoReply } from '../messaging/auto-reply.service';
+import { noteCustomerMessage, openConversation } from '../messaging/conversation.service';
 
 const router = Router();
 
@@ -229,12 +230,35 @@ router.post(
             }),
           ).catch(() => null);
 
+          /**
+           * The thread this belongs to, opened on first contact.
+           *
+           * Before the message is stored, so a row never exists outside a
+           * conversation — a message with no thread is a message no screen can
+           * show, which is the state the whole inbox exists to end.
+           *
+           * A stranger gets one too. They are how some customers arrive, and a
+           * salon should see somebody writing in even when nobody has added
+           * them yet.
+           */
+          const conversation = await openConversation({
+            tenantId,
+            channel: 'WHATSAPP',
+            address: phone,
+            customerId: customer?.id ?? null,
+            branchId: customer?.branchId ?? null,
+          }).catch((err: unknown) => {
+            logger.warn({ err, tenantId }, 'could not open a conversation for an inbound message');
+            return null;
+          });
+
           const stored = await runUnscoped(() =>
             prisma.inboundMessage.create({
               data: {
                 tenantId,
                 customerId: customer?.id ?? null,
                 branchId: customer?.branchId ?? null,
+                conversationId: conversation?.id ?? null,
                 channel: 'WHATSAPP',
                 fromAddress: phone,
                 body,
@@ -274,6 +298,15 @@ router.post(
                 data: { lastInboundAt: stored.receivedAt },
               }),
             ).catch(() => undefined);
+
+            /**
+             * The same fact on the thread, which is where a screen reads it.
+             *
+             * The customer's own last message is what Meta's 24-hour window is
+             * measured from, so this timestamp decides whether the reply box in
+             * the inbox may offer free text or must offer a template.
+             */
+            if (conversation) await noteCustomerMessage(conversation.id, stored.receivedAt);
 
             /**
              * Answered here rather than in a job, because the customer is

@@ -864,6 +864,7 @@ model Tenant {
   @@index([status])
   @@map("tenants")
   inboundMessages InboundMessage[]
+  conversations   Conversation[]
 }
 
 model TenantSubscription {
@@ -1001,6 +1002,8 @@ model User {
   createdAppointments Appointment[]        @relation("AppointmentCreatedBy")
   createdInvoices     Invoice[]            @relation("InvoiceCreatedBy")
   assignedLeads       Lead[]               @relation("LeadAssignee")
+  conversations       Conversation[]
+  sentMessages        MessageLog[]         @relation("MessageSentBy")
 
   @@unique([tenantId, email])
   @@index([tenantId, role])
@@ -1534,6 +1537,7 @@ model Customer {
   assistantOfferAt DateTime?
 
   inboundMessages InboundMessage[]
+  conversations   Conversation[]
 }
 
 model CustomerNote {
@@ -2604,6 +2608,24 @@ model MessageLog {
   trackedLinks TrackedLink[]
   siteVisits   SiteVisit[]
 
+  /// WHO TYPED IT, when a person did.
+  ///
+  /// The one thing that separates a staff reply from the assistant's, because
+  /// on the wire they are identical: both are free-form WhatsApp with no
+  /// template and purpose OTHER. Without this the thread cannot label its own
+  /// turns, and telling AI from human is most of why a salon opens the screen.
+  ///
+  /// Null means the salon's software sent it — the assistant, a campaign or a
+  /// journey — which the thread tells apart by campaignId and journeyRunId.
+  sentByUserId String?
+  sentBy       User?   @relation("MessageSentBy", fields: [sentByUserId], references: [id], onDelete: SetNull)
+
+  /// The thread this was sent in, when it was sent in one. A campaign blast is
+  /// not part of a conversation and leaves this null.
+  conversationId String?
+  conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@index([conversationId, queuedAt])
   @@index([tenantId, status])
   @@index([tenantId, campaignId])
   @@index([tenantId, customerId, queuedAt])
@@ -3376,9 +3398,15 @@ model InboundMessage {
 
   receivedAt DateTime @default(now())
 
-  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  /// The thread this belongs to. Nullable only for the rows that existed
+  /// before conversations did; everything stored now carries one.
+  conversationId String?
 
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer     Customer?     @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@index([conversationId, receivedAt])
   @@index([tenantId, receivedAt])
   @@index([tenantId, customerId, receivedAt])
   /// The unhandled queue, which is the only list anybody will actually open.
@@ -3411,4 +3439,100 @@ model PasswordResetToken {
 
   @@index([userId])
   @@map("password_reset_tokens")
+}
+
+/// ONE THREAD PER CUSTOMER, SHARED BY THE ASSISTANT AND THE SALON.
+///
+/// ── Why this exists at all ────────────────────────────────────────────────
+///
+/// The messages were already all there and no screen could show them, because
+/// what a customer sent lived in `inbound_messages` and what the salon sent
+/// lived in `message_logs`, and nothing joined the two. So a salon could not
+/// read its own conversation — and the assistant was answering customers with
+/// nobody able to watch it do so.
+///
+/// Worse, the only control over it was a switch on the tenant. A customer
+/// raising something the assistant should not touch could be handled in exactly
+/// one way: turn the assistant off for every customer of that salon. That is
+/// the fault this model fixes, and `mode` is the fix.
+///
+/// ── Why the messages were not merged into one table ───────────────────────
+///
+/// The obvious design is a single `messages` table with a sender type. It is a
+/// cleaner model and it was the wrong trade here: `message_logs` carries
+/// delivery status, cost, campaign attribution, tracked links and site visits,
+/// and rewriting it would put every campaign figure the salon has at risk to
+/// gain a tidier join. Both tables simply point here instead, and the thread is
+/// assembled by reading both — which costs one extra query and risks nothing.
+///
+/// ── The thing this model cannot decide ────────────────────────────────────
+///
+/// A conversation is open-ended; Meta's service window is not. It shuts 24
+/// hours after `lastCustomerMessageAt`, and after that NOTHING here may send
+/// free text, staff included — only an approved template. So the window is not
+/// a field on this model: it is a fact computed from that timestamp, in
+/// service-window.ts, and every screen that offers a reply box has to ask.
+model Conversation {
+  id       String @id @default(cuid())
+  tenantId String
+  /// Null for a number nobody has on the book. A stranger still gets a thread:
+  /// it is how some customers arrive, and a salon should see them.
+  customerId String?
+  branchId   String?
+
+  channel Channel @default(WHATSAPP)
+  /// E.164, normalised. The only identifier a stranger's thread has, and the
+  /// reason the unique index below is on the address rather than the customer.
+  customerAddress String
+
+  /// WHO ANSWERS. The whole point of the model.
+  ///
+  /// Seeded from the salon's own default when the thread is created, and then
+  /// belongs to this conversation alone. A salon taking one customer in hand no
+  /// longer has to silence the assistant for all of them.
+  mode ConversationMode @default(HUMAN)
+
+  status ConversationStatus @default(OPEN)
+  /// The staff member who took it over, if anybody has.
+  assignedToId String?
+
+  /// When the CUSTOMER last wrote. The service window is measured from here and
+  /// from nothing else — a reply of ours does not reopen it.
+  lastCustomerMessageAt DateTime?
+  /// When anybody last said anything, which is what the inbox sorts on.
+  lastMessageAt DateTime?
+  /// Set when a person, or the assistant, hands the thread to staff.
+  needsAttentionAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant       Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer     Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  assignedTo   User?            @relation(fields: [assignedToId], references: [id], onDelete: SetNull)
+  inbound      InboundMessage[]
+  outbound     MessageLog[]
+
+  /// One thread per number per channel. A customer who writes, is answered,
+  /// and writes again a week later is in the same conversation — threads are
+  /// not sessions, and a new row per burst would scatter their history.
+  @@unique([tenantId, channel, customerAddress])
+  /// The inbox: newest activity first, within a salon.
+  @@index([tenantId, lastMessageAt])
+  /// The queue that actually gets opened — what is waiting for a person.
+  @@index([tenantId, status, needsAttentionAt])
+  @@map("conversations")
+}
+
+enum ConversationMode {
+  /// The assistant answers, inside every guard it already has.
+  AI
+  /// It does not. A person has this one.
+  HUMAN
+}
+
+enum ConversationStatus {
+  OPEN
+  /// Dealt with. Reopens by itself the moment the customer writes again.
+  CLOSED
 }
