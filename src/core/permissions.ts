@@ -11,6 +11,20 @@ export const PERMISSIONS = {
   BRANCH_MANAGE: 'branch.manage',
   USER_VIEW: 'user.view',
   USER_MANAGE: 'user.manage',
+  /**
+   * Reset a colleague's password — deliberately NOT part of user.manage.
+   *
+   * A manager needs to get a receptionist back into the till at eight in the
+   * morning. They do not need to create accounts, change roles or hand out
+   * permissions, and bundling the three together meant the only way to let them
+   * do the first was to give them all three. Split out, the everyday task stops
+   * requiring the dangerous one.
+   *
+   * Holding it is not authority over everybody: who you may actually reset is
+   * decided per pair in core/user-authority.ts, by comparing what the two of you
+   * can do. This permission only opens the door.
+   */
+  USER_RESET_PASSWORD: 'user.reset_password',
   TENANT_MANAGE: 'tenant.manage',
   SETTINGS_MANAGE: 'settings.manage',
   AUDIT_VIEW: 'audit.view',
@@ -177,6 +191,9 @@ const MANAGER: Permission[] = [
   PERMISSIONS.CUSTOMER_EXPORT,
   PERMISSIONS.REPORT_VIEW,
   PERMISSIONS.USER_VIEW,
+  // Getting somebody back into the till is a shift-manager job, not an owner
+  // job. What they may actually reset is settled separately, per pair.
+  PERMISSIONS.USER_RESET_PASSWORD,
 ];
 
 export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {

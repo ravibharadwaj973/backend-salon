@@ -13,6 +13,15 @@ export interface AuthPayload {
   branchIds: string[] | null;
   staffId: string | null;
   /**
+   * They are signed in with a password somebody else chose for them.
+   *
+   * Carried on the identity rather than looked up per request, because it gates
+   * every request: see middleware/must-change-password.ts. Cleared the moment
+   * they set their own, and the identity cache is invalidated then so the next
+   * request sees it.
+   */
+  mustChangePassword: boolean;
+  /**
    * The salon can look but not touch: its account has been switched off, or
    * cancelled. Every write is refused; every read still works, because the
    * salon's own records are the one thing it should never lose access to.

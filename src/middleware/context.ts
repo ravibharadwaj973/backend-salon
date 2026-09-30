@@ -16,6 +16,8 @@ export const contextMiddleware: RequestHandler = (req, res, next) => {
     role: null,
     branchIds: null,
     activeBranchId: null,
+    platformUserId: null,
+    actorName: null,
     isPlatformAdmin: false,
     bypassTenantScope: false,
     ip: req.ip,

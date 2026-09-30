@@ -239,13 +239,51 @@ export async function buildSession(userId: string): Promise<SessionUser> {
   };
 }
 
-export async function changePassword(userId: string, current: string, next: string): Promise<void> {
+/**
+ * Changing your own password — which means proving you know the current one.
+ *
+ * Two things happen after the change, and both matter more than they look.
+ *
+ * EVERY SESSION ENDS. People change a password because they think somebody else
+ * has it; leaving that person's session alive makes the change cosmetic until
+ * their token happens to expire. So all of them go — and then a fresh pair is
+ * issued to the person standing here, who has just proved who they are, so they
+ * are not thrown out of the app by their own good hygiene. That combination is
+ * the whole reason this returns tokens: without them, somebody finishing a
+ * forced first-time change would be bounced to the login screen by the very
+ * action that was meant to let them in.
+ *
+ * AND THE FLAG CLEARS. `mustChangePassword` gates every endpoint (see
+ * middleware/must-change-password.ts), and it is read from a cached identity, so
+ * the cache is dropped here — `logoutAllSessions` does it. Without that the
+ * person would keep being told to change a password they have just changed,
+ * for as long as the cache lived.
+ */
+export async function changePassword(
+  userId: string,
+  current: string,
+  next: string,
+  meta: { ip?: string; userAgent?: string } = {},
+): Promise<TokenPair> {
   const user = await runUnscoped(() => prisma.user.findUnique({ where: { id: userId } }));
   if (!user) throw NotFound('User');
 
   const valid = await bcrypt.compare(current, user.passwordHash);
   if (!valid) throw BadRequest('Current password is incorrect');
   if (current === next) throw BadRequest('New password must be different from the current one');
+
+  /**
+   * Compared against the hash, not against the string above.
+   *
+   * `current === next` only catches somebody retyping what they just typed. It
+   * misses the case that actually matters on a forced change: a person handed a
+   * temporary password, who signs in, is asked to choose one, and enters the
+   * same temporary password from a different box. That would satisfy the check
+   * above and leave a credential a manager still knows.
+   */
+  if (await bcrypt.compare(next, user.passwordHash)) {
+    throw BadRequest('That is the password you already have. Choose a different one.');
+  }
 
   const passwordHash = await hashPassword(next);
   await runUnscoped(() =>
@@ -254,64 +292,32 @@ export async function changePassword(userId: string, current: string, next: stri
       data: { passwordHash, mustChangePassword: false },
     }),
   );
+
+  /**
+   * Any reset link outstanding for this person stops working.
+   *
+   * Somebody who asks support for a link and then remembers their password has
+   * left a live credential in an inbox. Changing the password is the clearest
+   * possible statement that they do not need it.
+   */
+  await runUnscoped(() =>
+    prisma.passwordResetToken.updateMany({
+      where: { userId, usedAt: null },
+      data: { usedAt: new Date() },
+    }),
+  ).catch(() => undefined);
+
   await logoutAllSessions(userId);
+  return issueTokens({ id: user.id, tenantId: user.tenantId, role: user.role }, meta);
 }
 
 /**
- * Always resolves, whether or not the email exists — otherwise this endpoint
- * becomes an account-enumeration oracle. The reset link is delivered by the
- * messaging worker.
+ * The password-reset flow used to live here: mint a token on request, redeem it
+ * on reset. It has moved to password-reset.service.ts, and it changed shape on
+ * the way — asking no longer issues anything, because in this app the person
+ * who should decide is a colleague who can see the requester's face, not
+ * whoever controls a mailbox. That file explains it in full.
  */
-export async function requestPasswordReset(email: string, tenantSlug?: string): Promise<{ token?: string }> {
-  const users = await runUnscoped(() =>
-    prisma.user.findMany({
-      where: { email, isActive: true, ...(tenantSlug ? { tenant: { slug: tenantSlug } } : {}) },
-      take: 2,
-    }),
-  );
-  if (users.length !== 1) return {};
-
-  const user = users[0]!;
-  const token = randomToken(32);
-  await runUnscoped(() =>
-    prisma.passwordResetToken.create({
-      data: {
-        tenantId: user.tenantId,
-        userId: user.id,
-        tokenHash: sha256(token),
-        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
-      },
-    }),
-  );
-
-  logger.info({ userId: user.id }, 'password reset requested');
-  return { token };
-}
-
-export async function resetPassword(token: string, newPassword: string): Promise<void> {
-  const record = await runUnscoped(() =>
-    prisma.passwordResetToken.findUnique({ where: { tokenHash: sha256(token) } }),
-  );
-  if (!record || record.usedAt || record.expiresAt < new Date() || !record.userId) {
-    throw BadRequest('This reset link is invalid or has expired');
-  }
-
-  const passwordHash = await hashPassword(newPassword);
-  await runUnscoped(() =>
-    prisma.$transaction([
-      prisma.user.update({
-        where: { id: record.userId! },
-        data: { passwordHash, mustChangePassword: false },
-      }),
-      prisma.passwordResetToken.update({ where: { id: record.id }, data: { usedAt: new Date() } }),
-      prisma.refreshToken.updateMany({
-        where: { userId: record.userId!, revokedAt: null },
-        data: { revokedAt: new Date() },
-      }),
-    ]),
-  );
-  invalidateIdentity(record.userId);
-}
 
 export async function platformLogin(
   email: string,

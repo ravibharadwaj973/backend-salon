@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { platformPasswordResetRouter } from './modules/auth/password-reset.routes';
 import { resolveBranch } from './middleware/branch';
 import { apiLimiter } from './middleware/rateLimit';
 
@@ -54,6 +55,7 @@ export function buildRouter(): Router {
   router.use('/platform', platformTenantRouter);
   router.use('/platform', platformQuotaRouter);
   router.use('/platform', platformAuditRouter);
+  router.use('/platform', platformPasswordResetRouter);
 
   // Everything below resolves the active branch from X-Branch-Id / ?branchId.
   router.use(resolveBranch);

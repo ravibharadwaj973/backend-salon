@@ -13,6 +13,18 @@ export interface RequestContext {
   /** Branch the client selected for this request (X-Branch-Id), if any. */
   activeBranchId: string | null;
   isPlatformAdmin: boolean;
+  /**
+   * WHO ACTED, WHEN THE ACTOR WORKS FOR US RATHER THAN FOR THE SALON.
+   *
+   * `userId` is a salon user and nothing else, so a platform admin acting inside
+   * a tenant left `userId` null and the audit row read as if a background job
+   * had done it. Carried here, beside the tenant identity rather than only on
+   * the request, because the audit writer reads this context and not the
+   * request — and the name is copied in so the trail still answers "who" after
+   * the account is gone.
+   */
+  platformUserId: string | null;
+  actorName: string | null;
   /** Set by system jobs / platform routes to disable automatic tenant filtering. */
   bypassTenantScope: boolean;
   ip?: string;
@@ -65,6 +77,8 @@ export function systemContext(tenantId: string | null, requestId = 'system'): Re
     role: null,
     branchIds: null,
     activeBranchId: null,
+    platformUserId: null,
+    actorName: null,
     isPlatformAdmin: false,
     bypassTenantScope: tenantId === null,
   };

@@ -7,6 +7,8 @@ import { pageParams } from '../../core/http';
 import { hashPassword } from '../auth/auth.service';
 import { invalidateIdentity } from '../../middleware/auth';
 import { resolvePermissions } from '../../core/permissions';
+import { canResetPasswordOf, resetIsHandledByPlatform, temporaryPassword } from '../../core/user-authority';
+import { closeOpenRequest } from '../auth/password-reset.service';
 import { assertStaffAllowed } from '../quotas/limits.service';
 
 const SELECT = {
@@ -196,20 +198,115 @@ export async function updateUser(id: string, input: Partial<CreateUserInput> & {
   return updated;
 }
 
-export async function resetUserPassword(id: string, newPassword: string, mustChangePassword = true) {
-  const user = await prisma.user.findUnique({ where: { id } });
-  if (!user) throw NotFound('User');
-  if (user.role === 'OWNER' && getContext()?.role !== 'OWNER') {
-    throw Forbidden('Only an owner can reset an owner password');
+/**
+ * RESETTING A COLLEAGUE, AND WHY THE PASSWORD IS NOT A PARAMETER ANY MORE.
+ *
+ * Two changes, both of which close something real.
+ *
+ * ── The caller no longer chooses the password ───────────────────────────
+ *
+ * It used to take `newPassword` from the request body. Left to choose, a busy
+ * manager types the same thing every time — the salon name and a year, usually —
+ * and within a month every temporary password in the business is the same
+ * string, known to everyone who has ever been reset. Generating it server-side
+ * costs the manager nothing (they read it off the screen either way) and makes
+ * that impossible. `mustChangePassword` is likewise forced on rather than
+ * optional: a temporary password that is allowed to become permanent is not
+ * temporary.
+ *
+ * ── The check is what the two people can DO, not what they are called ──
+ *
+ * The old guard was one line: only an owner may reset an owner. Everything else
+ * was open to anybody holding `user.manage`. But resetting somebody hands you
+ * their account, so the only safe rule is that you may already do everything
+ * they can — which is not the same as outranking them. A manager sits above an
+ * accountant by title and cannot see payroll; under the old rule they could
+ * reset the accountant and read every salary in the salon by signing in as them.
+ *
+ * That comparison lives in core/user-authority.ts, along with the reason equal
+ * reach is only enough between owners.
+ */
+export async function resetUserPassword(id: string) {
+  const tenantId = requireTenantId();
+  const actorContext = getContext();
+
+  const target = await prisma.user.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      role: true,
+      isActive: true,
+      overrides: { select: { permission: true, allow: true } },
+    },
+  });
+  if (!target) throw NotFound('User');
+  if (!target.isActive) throw BadRequest('That login is switched off. Switch it back on first.');
+
+  if (!actorContext?.userId || !actorContext.role) throw Forbidden('Sign in again to do this');
+
+  /**
+   * The actor's OWN overrides are read, not just their role.
+   *
+   * Comparing role defaults would get the answer wrong in both directions: a
+   * manager granted payroll by override should be able to reset the accountant,
+   * and a manager who has had a permission taken away should not be able to
+   * reset somebody who still has it. The stored overrides are the truth.
+   */
+  const actorRow = await prisma.user.findUnique({
+    where: { id: actorContext.userId },
+    select: { id: true, role: true, overrides: { select: { permission: true, allow: true } } },
+  });
+  if (!actorRow) throw Forbidden('Sign in again to do this');
+
+  const verdict = canResetPasswordOf(
+    { id: actorRow.id, role: actorRow.role, permissions: resolvePermissions(actorRow.role, actorRow.overrides) },
+    { id: target.id, role: target.role, permissions: resolvePermissions(target.role, target.overrides) },
+  );
+
+  if (!verdict.ok) {
+    /**
+     * A sole owner is the one case with no answer inside the salon, and the
+     * refusal says where to go instead. "Forbidden" on its own leaves somebody
+     * clicking the same button harder.
+     */
+    if (target.role === 'OWNER') {
+      const owners = await prisma.user.count({ where: { tenantId, role: 'OWNER', isActive: true } });
+      if (resetIsHandledByPlatform(target.role, Math.max(0, owners - 1))) {
+        throw Forbidden(
+          'This is the salon’s only owner, so nobody here can reset it. They should use “I cannot sign in” on the login screen — support will verify them and email a reset link to the address on the account.',
+        );
+      }
+    }
+    throw Forbidden(verdict.reason);
   }
 
-  const passwordHash = await hashPassword(newPassword);
+  const password = temporaryPassword();
+  const passwordHash = await hashPassword(password);
+
   await prisma.$transaction([
-    prisma.user.update({ where: { id }, data: { passwordHash, mustChangePassword } }),
+    prisma.user.update({ where: { id }, data: { passwordHash, mustChangePassword: true } }),
+    /**
+     * Every session ends, including one that is open right now.
+     *
+     * A password is often reset precisely because somebody else has the old one
+     * and may be signed in with it. Leaving their session alive would make the
+     * reset cosmetic — they keep working until the access token happens to
+     * expire, which could be hours.
+     */
     prisma.refreshToken.updateMany({ where: { userId: id, revokedAt: null }, data: { revokedAt: new Date() } }),
+    // Their open request, if they raised one, is now answered.
+    closeOpenRequest(id, { userId: actorRow.id, name: actorContext.actorName ?? 'A colleague' }),
   ]);
   invalidateIdentity(id);
-  return { reset: true };
+
+  /**
+   * Returned once and never stored in readable form. The caller shows it on
+   * screen for as long as the dialog is open; after that the only way to another
+   * one is another reset, which is another audit row.
+   */
+  return { reset: true, password, name: target.name, email: target.email };
 }
 
 export async function deactivateUser(id: string) {

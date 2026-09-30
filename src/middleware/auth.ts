@@ -7,6 +7,7 @@ import { Forbidden, Unauthorized } from '../core/errors';
 import { ALL_BRANCH_ROLES, resolvePermissions } from '../core/permissions';
 import type { AuthPayload } from '../types/express';
 import { assertWritable } from './read-only';
+import { assertPasswordChanged } from './must-change-password';
 
 export interface AccessTokenClaims {
   sub: string;
@@ -94,6 +95,7 @@ async function loadIdentity(userId: string): Promise<AuthPayload> {
     permissions: resolvePermissions(user.role, user.overrides),
     branchIds: seesAllBranches ? null : user.branches.map((b) => b.branchId),
     staffId: user.staffProfile?.id ?? null,
+    mustChangePassword: user.mustChangePassword,
     readOnly: readOnlyReason !== null,
     readOnlyReason,
   };
@@ -108,6 +110,13 @@ function applyToContext(req: Parameters<RequestHandler>[0], payload: AuthPayload
   req.ctx.userId = payload.userId;
   req.ctx.role = payload.role;
   req.ctx.branchIds = payload.branchIds;
+  /**
+   * The actor's name, copied into the context so the audit trail can write it
+   * down rather than resolving it by join. A trail that joins to `users` stops
+   * being able to say who did something the moment that person is deleted —
+   * which is exactly when somebody asks.
+   */
+  req.ctx.actorName = payload.name;
   req.ctx.bypassTenantScope = false;
 }
 
@@ -119,6 +128,7 @@ export const authenticate: RequestHandler = (req, _res, next) => {
   if (req.auth?.tenantId) {
     try {
       assertWritable(req);
+      assertPasswordChanged(req);
     } catch (error) {
       return next(error);
     }
@@ -143,6 +153,8 @@ export const authenticate: RequestHandler = (req, _res, next) => {
       applyToContext(req, payload);
       // A switched-off salon may read everything and change nothing.
       assertWritable(req);
+      // A temporary password opens the way to changing it, and nothing else.
+      assertPasswordChanged(req);
       next();
     })
     .catch(next);
@@ -183,6 +195,10 @@ export const authenticatePlatform: RequestHandler = (req, _res, next) => {
     .then((admin) => {
       if (!admin || !admin.isActive) throw Unauthorized('Platform account is inactive');
       req.platformAuth = { platformUserId: admin.id, email: admin.email, name: admin.name };
+      // Into the context as well as the request: the audit writer reads the
+      // context, and without this every platform action was recorded anonymously.
+      req.ctx.platformUserId = admin.id;
+      req.ctx.actorName = admin.name;
       req.ctx.isPlatformAdmin = true;
       req.ctx.bypassTenantScope = true;
       req.ctx.tenantId = null;

@@ -33,10 +33,14 @@ export const updateUserSchema = z.object({
   branchIds: z.array(idSchema).optional(),
 });
 
-export const resetUserPasswordSchema = z.object({
-  newPassword: z.string().min(8).max(128),
-  mustChangePassword: z.boolean().default(true),
-});
+/**
+ * `resetUserPasswordSchema` used to live here: a password and a
+ * mustChangePassword flag, both chosen by whoever was doing the resetting.
+ * Both are gone. The password is generated server-side — left to choose, a busy
+ * manager types the same string every time and within a month every temporary
+ * password in the salon is one word everybody knows — and a temporary password
+ * that may be left permanent is not temporary. See users/user.service.ts.
+ */
 
 export const listUsersQuery = searchQuery.extend({
   role: roleSchema.optional(),

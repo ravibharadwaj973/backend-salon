@@ -6,6 +6,7 @@ import { authLimiter } from '../../middleware/rateLimit';
 import { audit } from '../../middleware/audit';
 import { Unauthorized } from '../../core/errors';
 import * as service from './auth.service';
+import * as passwordResets from './password-reset.service';
 import {
   changePasswordSchema,
   forgotPasswordSchema,
@@ -14,7 +15,6 @@ import {
   refreshSchema,
   resetPasswordSchema,
 } from './auth.schema';
-import { isProd } from '../../config/env';
 
 const router = Router();
 
@@ -78,35 +78,59 @@ router.post(
   validate({ body: changePasswordSchema }),
   asyncHandler(async (req, res) => {
     const { currentPassword, newPassword } = req.body as { currentPassword: string; newPassword: string };
-    await service.changePassword(req.auth!.userId, currentPassword, newPassword);
+    const tokens = await service.changePassword(req.auth!.userId, currentPassword, newPassword, {
+      ip: req.ip,
+      userAgent: req.get('user-agent') ?? undefined,
+    });
     audit({ action: 'auth.password_changed', entity: 'User', entityId: req.auth!.userId });
-    return ok(res, { changed: true });
+    /**
+     * A fresh pair comes back because the change revoked every session,
+     * including the one that made this request. The caller swaps its cookies for
+     * these and carries on; without them, finishing a forced password change
+     * would log you straight out.
+     */
+    return ok(res, { changed: true, tokens });
   }),
 );
 
+/**
+ * "I CANNOT SIGN IN" — AN ASK, NOT A LINK.
+ *
+ * This used to mint a reset token, log a line, and answer "a reset link is on
+ * its way". Nothing sent it. In production the token was unreachable by anyone,
+ * so the endpoint's entire behaviour was to tell a locked-out person to go and
+ * wait for an email that would never arrive.
+ *
+ * It now records a request that a person resolves — a colleague inside the salon
+ * for everybody except a sole owner, and support for that one case. See
+ * password-reset.service.ts for why email is the wrong identity check here and
+ * what replaces it.
+ *
+ * The answer is byte-identical whatever the email turns out to be. A different
+ * message, a different status, even a noticeably different response time would
+ * turn this form into a way of finding out who works at a salon.
+ */
 router.post(
   '/forgot-password',
   authLimiter,
   validate({ body: forgotPasswordSchema }),
   asyncHandler(async (req, res) => {
     const { email, tenantSlug } = req.body as { email: string; tenantSlug?: string };
-    const result = await service.requestPasswordReset(email, tenantSlug);
-    // The token is echoed only outside production, so local development works
-    // without a mail/WhatsApp provider configured.
-    return ok(res, {
-      message: 'If that email is registered, a reset link is on its way.',
-      ...(isProd ? {} : { devToken: result.token }),
-    });
+    await passwordResets.requestPasswordHelp(email, tenantSlug, { ip: req.ip });
+    return ok(res, { message: passwordResets.NEUTRAL_ANSWER });
   }),
 );
 
+/**
+ * Redeeming a link support issued. The only way a reset token is ever created.
+ */
 router.post(
   '/reset-password',
   authLimiter,
   validate({ body: resetPasswordSchema }),
   asyncHandler(async (req, res) => {
     const { token, newPassword } = req.body as { token: string; newPassword: string };
-    await service.resetPassword(token, newPassword);
+    await passwordResets.redeemResetLink(token, newPassword);
     return ok(res, { reset: true });
   }),
 );

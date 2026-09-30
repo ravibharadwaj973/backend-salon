@@ -865,6 +865,7 @@ model Tenant {
   @@map("tenants")
   inboundMessages InboundMessage[]
   conversations   Conversation[]
+  passwordResetRequests PasswordResetRequest[]
 }
 
 model TenantSubscription {
@@ -1004,6 +1005,7 @@ model User {
   assignedLeads       Lead[]               @relation("LeadAssignee")
   conversations       Conversation[]
   sentMessages        MessageLog[]         @relation("MessageSentBy")
+  passwordResetRequests PasswordResetRequest[]
 
   @@unique([tenantId, email])
   @@index([tenantId, role])
@@ -1061,6 +1063,22 @@ model AuditLog {
   tenantId  String
   branchId  String?
   userId    String?
+
+  /// WHEN THE PERSON WHO ACTED WORKS FOR US, NOT FOR THE SALON.
+  ///
+  /// `userId` is a foreign key to the salon's own users, so a platform admin
+  /// acting inside a tenant — resetting a locked-out owner, above all — wrote a
+  /// row attributed to nobody, indistinguishable from a background job. The one
+  /// action most in need of a name was the one that had none.
+  platformUserId String?
+
+  /// The actor written out, kept even if the account is later deleted.
+  ///
+  /// An audit trail that resolves names by join stops being able to answer "who
+  /// did this" the moment somebody leaves, which is exactly when the question
+  /// gets asked. Copied at the time, and never updated.
+  actorName String?
+
   action    String
   entity    String
   entityId  String?
@@ -3425,6 +3443,86 @@ model WebhookEvent {
 
   @@index([provider, createdAt])
   @@map("webhook_events")
+}
+
+enum PasswordResetStatus {
+  PENDING
+  /// A new password was issued — by the salon, or by us.
+  RESOLVED
+  /// Looked at and refused. The reason is recorded.
+  REJECTED
+  /// The person got back in by themselves, or asked twice.
+  CANCELLED
+}
+
+/// SOMEBODY ASKING TO BE LET BACK IN — WHICH IS NOT THE SAME AS BEING LET IN.
+///
+/// ── Why an ask rather than a link ────────────────────────────────────────
+///
+/// The ordinary "forgot password" sends a reset link to whoever types a known
+/// email. That is right for a consumer product and wrong here. A salon login is
+/// a till, a customer book and a payroll screen, and the person who wants it
+/// back is nearly always standing in the building with somebody who can verify
+/// them by looking at them. Email is the weakest identity check available and
+/// the only one that flow uses.
+///
+/// So nothing is issued by asking. The ask becomes a row, a human resolves it,
+/// and the credential is created at that moment by somebody accountable for it.
+///
+/// ── Who resolves which ──────────────────────────────────────────────────
+///
+/// Everyone except a lone owner is handled inside the salon, by a colleague who
+/// can already do everything they can do — see core/user-authority.ts. A sole
+/// owner has nobody above them, so theirs is the one case that reaches us, and
+/// support answers it with a link to the address already on the account rather
+/// than a password read down the phone. Support never holds a credential.
+///
+/// ── Why the details are copied in ───────────────────────────────────────
+///
+/// `email` and `role` are written at the time instead of read through the
+/// relation. A queue that renders by join shows the wrong thing the moment a
+/// role changes between asking and answering, and shows nothing at all once a
+/// user is removed — losing the record of a request that may be the reason the
+/// account was removed.
+model PasswordResetRequest {
+  id       String @id @default(cuid())
+  tenantId String
+  userId   String
+
+  email String
+  role  UserRole
+
+  status PasswordResetStatus @default(PENDING)
+
+  requestedAt DateTime @default(now())
+  /// Kept for the same reason a login attempt keeps one: a burst of requests
+  /// from one address is the shape of somebody probing, not somebody forgetful.
+  requestedIp String?
+
+  resolvedAt DateTime?
+  /// The colleague who resolved it, when the salon handled it themselves.
+  resolvedById String?
+  /// The platform admin who resolved it, when it reached support.
+  resolvedByPlatformUserId String?
+  /// Their name, written out — see AuditLog.actorName for why.
+  resolvedByName String?
+  /// Why support acted. Required on that path: it is the record of the identity
+  /// check that happened off-screen, and without it the approval is unexplained.
+  reason String?
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  /// One OPEN ask per person — asking five times is one request, not five, and
+  /// without it a locked-out owner hammering the button fills the console. It is
+  /// a partial unique index, on status = 'PENDING' only, because the same person
+  /// may of course be reset again next year; Prisma cannot express a partial
+  /// index, so it is created in the migration and this is the plain index that
+  /// serves the same lookups.
+  @@index([userId, status])
+  @@index([tenantId, status])
+  @@index([status, requestedAt])
+  @@map("password_reset_requests")
 }
 
 model PasswordResetToken {
