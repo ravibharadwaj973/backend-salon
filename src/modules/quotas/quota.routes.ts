@@ -13,6 +13,7 @@ import { enabledFeatures } from '../../core/features';
 import { prisma } from '../../core/prisma';
 import { runUnscoped } from '../../core/context';
 import {
+  usageHistoryQuery,
   createPackSchema,
   grantCreditsSchema,
   listPacksQuery,
@@ -31,6 +32,23 @@ usageRouter.use(authenticate);
 usageRouter.get(
   '/',
   asyncHandler(async (req, res) => ok(res, await service.usageSummary(req.auth!.tenantId))),
+);
+
+/**
+ * The same figures, month by month, for the year behind them.
+ *
+ * Behind the ordinary salon login rather than a permission: this is the salon's
+ * own sending, everybody in the salon can already see this month's version of
+ * it on the same screen, and a receptionist noticing that marketing has doubled
+ * is a good outcome, not a leak.
+ */
+usageRouter.get(
+  '/history',
+  validate({ query: usageHistoryQuery }),
+  asyncHandler(async (req, res) => {
+    const { months } = req.query as unknown as { months?: number };
+    return ok(res, await service.usageHistory(req.auth!.tenantId, months ?? 12));
+  }),
 );
 
 /** Plan limits — branches, staff, customers — with how close they are. */

@@ -629,3 +629,154 @@ export async function updatePack(id: string, input: Partial<PackInput>) {
   const { code: _code, ...rest } = input;
   return runUnscoped(() => prisma.creditPack.update({ where: { id }, data: rest }));
 }
+
+// ---------------------------------------------------------------- history --
+
+/**
+ * WHAT A SALON SENT, MONTH BY MONTH, AND WHAT IT COST THEM.
+ *
+ * The usage screen has only ever shown the month you are standing in. That
+ * answers "can I send today" and nothing else — not whether this is a heavy
+ * month, not whether the marketing budget doubled since Diwali, and not whether
+ * the top-up bought in August was the third one this year. Those are the
+ * questions an owner actually has when they open a usage screen, and every one
+ * of them needs the months either side.
+ *
+ * ── Empty months are kept ────────────────────────────────────────────────
+ *
+ * A `message_usage` row is created on the first send of a month, so a quiet
+ * month has no row at all. Dropping those would silently close the gap and turn
+ * "we sent nothing in July" into "July never happened" — the two read completely
+ * differently on a trend, and the first one is often the interesting fact.
+ *
+ * `included` stays null for those months rather than falling back to today's
+ * plan allowance. The salon may have been on a different plan in July, and
+ * printing this year's allowance against last year's month is inventing history.
+ */
+export interface MonthMeterUsage {
+  meter: MeterKey;
+  label: string;
+  /** The allowance recorded at the time. Null when nothing was sent that month. */
+  included: number | null;
+  used: number;
+  blocked: number;
+}
+
+export interface MonthUsage {
+  periodStart: Date;
+  /** "September 2026", in the salon's own timezone. */
+  label: string;
+  meters: MonthMeterUsage[];
+  used: number;
+  blocked: number;
+  /**
+   * MONEY ACTUALLY PAID FOR MESSAGING IN THIS MONTH — and nothing else.
+   *
+   * Deliberately NOT the plan fee. The subscription buys the whole product:
+   * the diary, billing, the customer book. Folding it into a figure labelled
+   * "messaging" would tell an owner their reminders cost ₹2,000 a month when the
+   * reminders are included and the ₹2,000 is the software.
+   *
+   * What is here is the extra: top-ups bought because the allowance ran out.
+   * That is the number that answers "is messaging costing me more than I
+   * planned", and it is real money with a payment reference behind it rather
+   * than an apportionment.
+   *
+   * There is no per-message cost anywhere in this system, so none is invented.
+   * A salon on plan allowances pays nothing marginal per message, and a screen
+   * that implied otherwise would be making numbers up.
+   */
+  toppedUp: { amount: number; messages: number };
+}
+
+/** How far back the screen will look. Two years is more than anyone scrolls. */
+const MAX_HISTORY_MONTHS = 24;
+
+export async function usageHistory(tenantId: string, months = 12): Promise<MonthUsage[]> {
+  const tenant = await tenantWithPlan(tenantId);
+  const span = Math.min(Math.max(1, Math.trunc(months)), MAX_HISTORY_MONTHS);
+
+  /**
+   * Built from the salon's own timezone, like every other period in this file.
+   * A month boundary computed in UTC puts the first five and a half hours of an
+   * Indian month into the previous one — so a salon's Diwali campaign sent at
+   * 1am would land in the wrong month's total, and the totals would not add up
+   * to what the current-month card says.
+   */
+  const now = dayjs().tz(tenant.timezone);
+  const windowStart = now.startOf('month').subtract(span - 1, 'month');
+
+  const [rows, purchases] = await runUnscoped(() =>
+    Promise.all([
+      prisma.messageUsage.findMany({
+        where: { tenantId, periodStart: { gte: windowStart.toDate() } },
+        orderBy: { periodStart: 'asc' },
+      }),
+      /**
+       * Top-ups only. `CONSUMPTION` entries are the spending of credits, not the
+       * buying of them, and they carry no `amountPaid` — summing them would count
+       * every message as money.
+       */
+      prisma.creditLedger.findMany({
+        where: {
+          tenantId,
+          reason: 'PURCHASE',
+          createdAt: { gte: windowStart.toDate() },
+        },
+        select: { delta: true, amountPaid: true, createdAt: true },
+      }),
+    ]),
+  );
+
+  /** A month is keyed by its own start date, as a plain YYYY-MM-DD string. */
+  const key = (at: Date) => dayjs(at).tz(tenant.timezone).format('YYYY-MM');
+
+  const usageByMonth = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const k = key(row.periodStart);
+    const list = usageByMonth.get(k) ?? [];
+    list.push(row);
+    usageByMonth.set(k, list);
+  }
+
+  const paidByMonth = new Map<string, { amount: number; messages: number }>();
+  for (const entry of purchases) {
+    const k = key(entry.createdAt);
+    const current = paidByMonth.get(k) ?? { amount: 0, messages: 0 };
+    current.amount += Number(entry.amountPaid ?? 0);
+    // `delta` is positive on a purchase; guarded anyway so an adjustment that
+    // slipped through cannot subtract from a "messages bought" figure.
+    current.messages += Math.max(0, entry.delta);
+    paidByMonth.set(k, current);
+  }
+
+  const out: MonthUsage[] = [];
+  for (let i = 0; i < span; i += 1) {
+    const month = windowStart.add(i, 'month');
+    const k = month.format('YYYY-MM');
+    const monthRows = usageByMonth.get(k) ?? [];
+
+    const meters: MonthMeterUsage[] = ALL_METERS.map((meter) => {
+      const row = monthRows.find((r) => r.meter === meter);
+      return {
+        meter,
+        label: METER_LABELS[meter],
+        included: row?.included ?? null,
+        used: row?.used ?? 0,
+        blocked: row?.blocked ?? 0,
+      };
+    });
+
+    out.push({
+      periodStart: month.toDate(),
+      label: month.format('MMMM YYYY'),
+      meters,
+      used: meters.reduce((sum, m) => sum + m.used, 0),
+      blocked: meters.reduce((sum, m) => sum + m.blocked, 0),
+      toppedUp: paidByMonth.get(k) ?? { amount: 0, messages: 0 },
+    });
+  }
+
+  // Newest first: the month somebody wants is nearly always the last one.
+  return out.reverse();
+}

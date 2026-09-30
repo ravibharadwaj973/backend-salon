@@ -49,3 +49,16 @@ export const grantCreditsSchema = z
   .refine((v) => Boolean(v.packCode) || (Boolean(v.meter) && typeof v.quantity === 'number'), {
     message: 'Give either a packCode, or a meter with a quantity',
   });
+
+/**
+ * How many months of history to return.
+ *
+ * Coerced rather than parsed as a string, because it arrives from a query
+ * string where everything is text, and the service does arithmetic with it —
+ * `"12" - 1` is the kind of bug that produces an empty screen and no error.
+ * Capped at 24 here as well as in the service: a client asking for 500 months
+ * should be told no by the validator, not quietly handed 24.
+ */
+export const usageHistoryQuery = z.object({
+  months: z.coerce.number().int().min(1).max(24).optional(),
+});
