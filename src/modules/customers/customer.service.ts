@@ -2,7 +2,7 @@ import Papa from 'papaparse';
 import type { ConsentStatus, CustomerTier, Gender, LeadSource, Prisma } from '@prisma/client';
 import { prisma } from '../../core/prisma';
 import { requireTenantId } from '../../core/context';
-import { activeBranchId, branchFilter, optionalBranchFilter } from '../../core/scope';
+import { activeBranchId, branchFilter, optionalBranchFilter, permittedBranchFilter } from '../../core/scope';
 import { BadRequest, Conflict, NotFound } from '../../core/errors';
 import { pageParams } from '../../core/http';
 import { normalizePhone, sequenceNumber, toDisplayName } from '../../core/ids';
@@ -73,7 +73,22 @@ export function buildCustomerWhere(tenantId: string, input: ListCustomersInput):
   const asList = (value: Prisma.CustomerWhereInput['AND']): Prisma.CustomerWhereInput[] =>
     value === undefined ? [] : Array.isArray(value) ? value : [value];
 
-  const branch = optionalBranchFilter(input.branchId) as Prisma.CustomerWhereInput;
+  /**
+   * A SEARCH LOOKS THROUGH THE WHOLE BOOK; BROWSING LOOKS AT THIS SHOP'S.
+   *
+   * Pinning a search to the selected branch is what made a customer
+   * simultaneously findable by the duplicate check, invisible in the list, and
+   * impossible to create. See permittedBranchFilter for the whole story — the
+   * short version is that phone numbers are unique across the salon, so the
+   * search that has to agree with that rule cannot be narrower than it is.
+   *
+   * An explicit `branchId` still wins: that is a caller deliberately asking for
+   * one shop's customers, and a filter somebody set should not be quietly
+   * widened underneath them.
+   */
+  const branch = (q && !input.branchId
+    ? permittedBranchFilter()
+    : optionalBranchFilter(input.branchId)) as Prisma.CustomerWhereInput;
   const search = searchClause(q);
   const and = [...asList(branch.AND), ...asList(search.AND)];
 

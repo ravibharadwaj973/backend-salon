@@ -73,6 +73,41 @@ export function optionalBranchFilter(explicitBranchId?: string | null) {
 }
 
 /**
+ * EVERY BRANCH THIS USER MAY SEE — NOT JUST THE ONE THEY HAVE SELECTED.
+ *
+ * The branch picker is a convenience for BROWSING: "show me this shop's book".
+ * It is the wrong scope for SEARCHING, and the difference produced a dead end
+ * somebody could not get out of.
+ *
+ * A customer is a salon-level record. Their phone number is unique across the
+ * whole tenant, the duplicate check behind every "new customer" form is
+ * tenant-wide, and a customer registered at one shop can be served at another —
+ * that is what a chain is. But the customer LIST was pinned to the selected
+ * branch, so a receptionist standing in front of somebody registered elsewhere
+ * saw all three of these at once:
+ *
+ *   · "Already in your book?" — naming them, with their visits and spend;
+ *   · "No customer matches that" — searching for the same number;
+ *   · "A customer with this phone number already exists" — on trying to add them.
+ *
+ * Found, not found, and cannot be created. There is no way forward from that
+ * without knowing which shop they were first signed up at, which is exactly the
+ * thing nobody at a counter knows.
+ *
+ * So a search widens to everything the user is PERMITTED to see, while browsing
+ * stays pinned to the selected branch. It drops the pin, not the permission:
+ * `allowedBranchIds` is still honoured, so a user restricted to two shops still
+ * searches those two and no others. For an owner or an admin, who may see every
+ * branch, that is the whole salon — which is the same scope as the uniqueness
+ * rule they are being held to.
+ */
+export function permittedBranchFilter() {
+  const allowed = allowedBranchIds();
+  if (allowed === null) return {};
+  return { AND: [{ OR: [{ branchId: { in: allowed } }, { branchId: null }] }] };
+}
+
+/**
  * Branch required for writes (creating an appointment, taking a payment...).
  * Falls back to the request's active branch.
  */
