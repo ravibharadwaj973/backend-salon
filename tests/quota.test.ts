@@ -53,9 +53,20 @@ describe('metering', () => {
     expect(meterFor('WHATSAPP', 'AUTHENTICATION')).toBe('WA_AUTHENTICATION');
   });
 
-  it('bills service-window replies at the utility meter', () => {
-    // Meta starts charging for these on 1 Oct 2026, at the utility rate.
-    expect(meterFor('WHATSAPP', 'SERVICE')).toBe('WA_UTILITY');
+  it('charges a reply to a customer to its own meter, not to utility', () => {
+    /**
+     * This test used to assert the opposite, and asserting it is what kept the
+     * bug alive: replies were charged to the allowance that pays for
+     * appointment reminders. The rate Meta charges is indeed the same from
+     * 1 October 2026 — but a shared rate is not a reason to share a meter.
+     *
+     * A utility template is the salon deciding to contact somebody. A reply is
+     * the salon answering somebody who contacted them. Sharing a bucket meant a
+     * busy week of customer questions ate the reminder allowance and then paused
+     * the account for both, so the assistant went silent and the reminders
+     * stopped together. See NEVER_REFUSED in quota.service.ts.
+     */
+    expect(meterFor('WHATSAPP', 'SERVICE')).toBe('WA_SERVICE');
   });
 
   it('meters SMS and email separately, and leaves in-app messages free', () => {

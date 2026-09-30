@@ -49,10 +49,11 @@ describe('what each channel is counted as', () => {
     expect(meterFor('WHATSAPP', 'AUTHENTICATION')).toBe('WA_AUTHENTICATION');
   });
 
-  it('counts a reply inside an open conversation as utility', () => {
-    // Service messages bill at the utility rate, so they must not land in the
-    // marketing column and make a salon look like it is spamming.
-    expect(meterFor('WHATSAPP', 'SERVICE')).toBe('WA_UTILITY');
+  it('counts a reply to a customer on its own meter', () => {
+    // Not utility, though Meta charges both the same from 1 October 2026: the
+    // salon needs to see what the assistant costs separately from what its
+    // reminders cost, and neither should be able to exhaust the other.
+    expect(meterFor('WHATSAPP', 'SERVICE')).toBe('WA_SERVICE');
   });
 
   it('counts SMS and email as themselves', () => {

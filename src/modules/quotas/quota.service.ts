@@ -25,6 +25,7 @@ export const ALL_METERS: readonly MeterKey[] = [
   'WA_UTILITY',
   'WA_MARKETING',
   'WA_AUTHENTICATION',
+  'WA_SERVICE',
   'SMS',
   'EMAIL',
 ];
@@ -33,9 +34,39 @@ export const METER_LABELS: Record<MeterKey, string> = {
   WA_UTILITY: 'WhatsApp utility',
   WA_MARKETING: 'WhatsApp marketing',
   WA_AUTHENTICATION: 'WhatsApp authentication',
+  // Named for what the salon did, not for Meta's billing word. "Service
+  // messages" means nothing to somebody reading their own usage screen.
+  WA_SERVICE: 'WhatsApp replies',
   SMS: 'SMS',
   EMAIL: 'Email',
 };
+
+/**
+ * METERS WHERE REFUSING THE SEND COSTS MORE THAN SENDING IT.
+ *
+ * Exactly one, and it earns the exception. A message on this meter is a reply to
+ * somebody who wrote to the salon and is waiting — the assistant answering a
+ * question, or a receptionist typing in the inbox. Refusing it does not save the
+ * salon anything: it makes them ignore a customer mid-conversation, which loses
+ * the booking the reply was about and costs many times the fraction of a rupee
+ * the message would have cost.
+ *
+ * It is also how this went wrong before. These replies were charged to the
+ * utility allowance, and when that allowance ran out the WHOLE ACCOUNT was
+ * paused — so the assistant went silent AND the appointment reminders stopped,
+ * because one exhausted meter blocks everything. A customer asking "are you open
+ * tomorrow" got nothing back, on a message Meta was not even charging for at the
+ * time.
+ *
+ * So this meter counts and never gates. Going over shows as an overage on the
+ * usage screen and is billed like any other overage — which works here precisely
+ * because billing is a person sending an invoice, not a gateway cutting service.
+ *
+ * The bound on runaway sending is elsewhere and is the right place for it:
+ * reply-limits.ts caps the assistant per customer per burst and per day, so
+ * "never refused" cannot become "unlimited".
+ */
+export const NEVER_REFUSED: readonly MeterKey[] = ['WA_SERVICE'];
 
 /** Which meter a send is charged to. IN_APP messages are free and unmetered. */
 export function meterFor(channel: Channel, category: TemplateCategory = 'UTILITY'): MeterKey | null {
@@ -43,8 +74,23 @@ export function meterFor(channel: Channel, category: TemplateCategory = 'UTILITY
     case 'WHATSAPP':
       if (category === 'MARKETING') return 'WA_MARKETING';
       if (category === 'AUTHENTICATION') return 'WA_AUTHENTICATION';
-      // SERVICE messages are replies inside an open conversation; Meta bills them
-      // at the utility rate from 1 Oct 2026, so they meter as utility.
+      /**
+       * A reply inside an open conversation is its OWN thing, not a utility
+       * message that happens to be free-form.
+       *
+       * It used to fall through to WA_UTILITY on the reasoning that Meta charges
+       * both at the same rate from 1 October 2026. The rate is the same; nothing
+       * else about them is. A utility template is the salon deciding to contact
+       * somebody. This is the salon answering somebody who contacted them —
+       * a different trigger, a different volume pattern, and, until October 2026,
+       * a different price: Meta charged nothing for these between November 2024
+       * and then, so a paid allowance was being spent on free messages.
+       *
+       * Sharing a meter also meant a chatty week of customer questions silently
+       * ate the allowance that pays for appointment reminders, and then paused
+       * the account for both.
+       */
+      if (category === 'SERVICE') return 'WA_SERVICE';
       return 'WA_UTILITY';
     case 'SMS':
       return 'SMS';
@@ -58,13 +104,15 @@ export function meterFor(channel: Channel, category: TemplateCategory = 'UTILITY
 
 export function quotaOf(plan: Pick<
   Plan,
-  'waUtilityQuota' | 'waMarketingQuota' | 'waAuthQuota' | 'smsQuota' | 'emailQuota'
+  'waUtilityQuota' | 'waMarketingQuota' | 'waAuthQuota' | 'waServiceQuota' | 'smsQuota' | 'emailQuota'
 > | null, meter: MeterKey): number {
   if (!plan) return 0;
   switch (meter) {
     case 'WA_UTILITY':        return plan.waUtilityQuota;
     case 'WA_MARKETING':      return plan.waMarketingQuota;
     case 'WA_AUTHENTICATION': return plan.waAuthQuota;
+    // What the salon is told to expect, not a wall — see NEVER_REFUSED.
+    case 'WA_SERVICE':        return plan.waServiceQuota;
     case 'SMS':               return plan.smsQuota;
     case 'EMAIL':             return plan.emailQuota;
   }
@@ -241,6 +289,34 @@ export async function consume(
 ): Promise<ConsumeResult> {
   if (!meter) return { allowed: true, source: 'unmetered', meter: null };
   if (quantity <= 0) return { allowed: true, source: 'unmetered', meter };
+
+  /**
+   * COUNTED, AND NEVER REFUSED.
+   *
+   * Before the allowance check, before the block check, before everything —
+   * because every one of those steps ends in "do not send", and for this meter
+   * that is the wrong answer at any price. Somebody is waiting for a reply.
+   *
+   * It still increments, so the salon sees what it used and can be billed for
+   * going over. What it does not do is consult the block, spend credits, or set
+   * one. See NEVER_REFUSED for why this meter, and only this meter.
+   */
+  if (NEVER_REFUSED.includes(meter)) {
+    const row = await usageRow(tenantId, meter);
+    const after = await runUnscoped(() =>
+      prisma.messageUsage.update({
+        where: { id: row.id },
+        data: { used: { increment: quantity } },
+        select: { used: true, included: true },
+      }),
+    );
+    return {
+      allowed: true,
+      source: 'quota',
+      meter,
+      remaining: Math.max(0, after.included - after.used),
+    };
+  }
 
   // A blocked salon sends nothing new — but work already under way still
   // finishes, so the block is checked *after* the committed flag.

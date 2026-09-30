@@ -592,6 +592,10 @@ enum MeterKey {
   WA_UTILITY
   WA_MARKETING
   WA_AUTHENTICATION
+  /// Replying to a customer who wrote first — the assistant, or a person in the
+  /// inbox. Its own meter, and the one meter that never refuses a send.
+  /// See quota.service.ts for both halves of that reasoning.
+  WA_SERVICE
   SMS
   EMAIL
 }
@@ -621,6 +625,13 @@ model Plan {
   waUtilityQuota   Int @default(500)
   waMarketingQuota Int @default(0)
   waAuthQuota      Int @default(0)
+  /// Replies to customers who wrote first.
+  ///
+  /// Generous by default and deliberately so: this allowance is not a gate. A
+  /// salon that exceeds it keeps replying and is billed for the overage — going
+  /// quiet on somebody mid-conversation costs more than the message does. The
+  /// number is what the salon is told to expect, not a wall.
+  waServiceQuota   Int @default(1000)
   smsQuota         Int @default(250)
   emailQuota       Int @default(2000)
 

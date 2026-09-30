@@ -1,4 +1,4 @@
-import type { Channel, ConsentStatus, MessagePurpose, MessageTemplate, Prisma } from '@prisma/client';
+import type { Channel, ConsentStatus, MessagePurpose, MessageTemplate, Prisma, TemplateCategory } from '@prisma/client';
 import { prisma } from '../core/prisma';
 import { describeGap } from '../modules/customers/visit-due';
 import { runUnscoped } from '../core/context';
@@ -877,7 +877,32 @@ export async function queueMessage(input: QueueMessageInput) {
   // through, so no campaign, journey or job can spend an allowance it does not
   // have. The charge happens before the message is queued — a queued message is
   // one that has already been paid for.
-  const category = template?.category ?? 'UTILITY';
+  /**
+   * WHAT KIND OF MESSAGE THIS IS — AND THE LINE THAT GOT IT WRONG.
+   *
+   * This read `template?.category ?? 'UTILITY'`. A message with no template is
+   * free-form: the assistant answering a customer, or a receptionist typing in
+   * the inbox. Defaulting those to UTILITY charged every one of them to the
+   * allowance that pays for appointment confirmations and reminders.
+   *
+   * Meta's own definition is the one to use, and it is about the template, not
+   * the content: a non-template WhatsApp message is a SERVICE message, which is
+   * only deliverable inside the 24-hour customer service window in the first
+   * place. So no template on WhatsApp means service, always — there is no other
+   * thing it could be.
+   *
+   * The window and the billing category are two separate questions and this is
+   * the line where they were being confused. The window decides whether a
+   * free-form send is ALLOWED — service-window.ts, checked by the assistant
+   * before it replies and by the inbox before it sends. The category decides
+   * what it COSTS. A message can be free-form and still be charged; from
+   * 1 October 2026 every service message is, at the utility rate.
+   *
+   * SMS and email are unaffected: meterFor switches on channel first, so a
+   * template-less SMS still meters as SMS.
+   */
+  const category: TemplateCategory =
+    template?.category ?? (input.channel === 'WHATSAPP' ? 'SERVICE' : 'UTILITY');
   const meter = meterFor(input.channel, category);
 
   // A send that belongs to a campaign or a journey already under way may
