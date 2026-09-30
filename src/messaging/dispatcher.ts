@@ -4,6 +4,7 @@ import { describeGap } from '../modules/customers/visit-due';
 import { runUnscoped } from '../core/context';
 import { logger } from '../core/logger';
 import { classify, recordReachability, suppressionFor } from './reachability';
+import { windowIsOpen } from './service-window';
 import { VARIABLE_PATTERN } from './template-variables';
 import { toE164 } from '../core/ids';
 import { addDays, dateKey, dayjs } from '../core/dates';
@@ -467,6 +468,49 @@ export async function buildVariables(input: {
  * Creates the message log row and schedules delivery. Nothing is sent inline:
  * the worker owns delivery so retries and rate limits are handled in one place.
  */
+/**
+ * WHEN THIS PERSON LAST WROTE TO THE SALON — FROM BOTH PLACES IT IS RECORDED.
+ *
+ * Two records hold it, and neither is complete on its own.
+ *
+ * `customer.lastInboundAt` is the customer's own field, kept by the webhook. It
+ * is the right authority when there is a customer, because WhatsApp's window is
+ * per PERSON: somebody with two conversations still has one window.
+ *
+ * `conversation.lastCustomerMessageAt` is the only record for somebody who is
+ * NOT on the book. Strangers message salons constantly — a number that has never
+ * booked, asking what time you close — and the inbox is built to answer them.
+ * Reading only the customer field would refuse every one of those replies, which
+ * would be a worse bug than the one this gate exists to fix.
+ *
+ * So: the later of the two. Not a preference between them, because either can be
+ * the more recent — a conversation opened before a customer record existed, or a
+ * customer who wrote on a number no conversation was resolved for. Taking the
+ * later one is the only reading that cannot be wrong in the direction that
+ * silences a legitimate reply.
+ */
+async function lastInboundFor(
+  input: { conversationId?: string | null },
+  customer: { lastInboundAt: Date | null } | null,
+): Promise<Date | null> {
+  const fromCustomer = customer?.lastInboundAt ?? null;
+
+  if (!input.conversationId) return fromCustomer;
+
+  const conversation = await prisma.conversation
+    .findUnique({
+      where: { id: input.conversationId },
+      select: { lastCustomerMessageAt: true },
+    })
+    .catch(() => null);
+
+  const fromThread = conversation?.lastCustomerMessageAt ?? null;
+
+  if (!fromCustomer) return fromThread;
+  if (!fromThread) return fromCustomer;
+  return fromCustomer > fromThread ? fromCustomer : fromThread;
+}
+
 export async function queueMessage(input: QueueMessageInput) {
   let template: MessageTemplate | null = null;
 
@@ -869,6 +913,79 @@ export async function queueMessage(input: QueueMessageInput) {
          * in this file would drift from it within a month.
          */
         errorMessage: `Not sent. ${templateProblem}`,
+      },
+    });
+  }
+
+  /**
+   * THE 24-HOUR WINDOW, ENFORCED WHERE EVERY SEND PASSES.
+   *
+   * A WhatsApp message with no template is free-form, and Meta will only deliver
+   * free-form text within 24 hours of the customer's own last message. Outside
+   * that, the send is rejected with error 131047 — and rejected ASYNCHRONOUSLY,
+   * as a delivery failure that arrives minutes later. So the message looks sent,
+   * sits in the thread, and never arrives. Nobody watches for that, which is the
+   * worst shape a failure can take: the salon believes it answered.
+   *
+   * ── Why here, and not only in the two places that already check ─────────
+   *
+   * The assistant checks the window before it replies, and the inbox refuses a
+   * staff reply outside it. Both were right, and both are bypassable: a campaign,
+   * a journey, a scheduled job or any code written next year can call
+   * queueMessage directly and none of them would consult it. This is the same
+   * argument the comment below makes for metering — the gate belongs in the one
+   * place every send passes through, not in each caller who remembers.
+   *
+   * It also settles a disagreement. The assistant read the window from
+   * `customer.lastInboundAt` and the inbox from
+   * `conversation.lastCustomerMessageAt`. Two clocks for one rule eventually
+   * differ, and the one that matters is the customer's: WhatsApp's window is per
+   * person, not per thread, and a customer with two conversations still has one
+   * window.
+   *
+   * ── Before the charge, deliberately ─────────────────────────────────────
+   *
+   * A refused message must not be billed. Placing this after `consume` would
+   * spend an allowance on something never sent, and the salon would pay for
+   * silence.
+   *
+   * A template send is untouched by any of this. Templates are exactly the thing
+   * that reaches somebody outside the window — that is what they are for.
+   */
+  const lastInbound =
+    input.channel === 'WHATSAPP' && !template ? await lastInboundFor(input, customer) : null;
+
+  if (input.channel === 'WHATSAPP' && !template && !windowIsOpen(lastInbound)) {
+    logger.info(
+      { customerId: input.customerId ?? null, purpose },
+      'message not sent: free-form whatsapp outside the 24-hour service window',
+    );
+    return prisma.messageLog.create({
+      data: {
+        tenantId: input.tenantId,
+        branchId: input.branchId ?? null,
+        channel: input.channel,
+        conversationId: input.conversationId ?? null,
+        sentByUserId: input.sentByUserId ?? null,
+        purpose,
+        category: 'SERVICE',
+        customerId: input.customerId ?? null,
+        leadId: input.leadId ?? null,
+        campaignId: input.campaignId ?? null,
+        journeyRunId: input.journeyRunId ?? null,
+        toAddress,
+        renderedBody: body,
+        status: 'SKIPPED',
+        errorCode: 'OUTSIDE_SERVICE_WINDOW',
+        /**
+         * Written for a salon owner reading their message log, not for a
+         * developer. It says what happened, why, and the one thing that would
+         * have worked — because "131047" in a log is a search, not an answer.
+         */
+        errorMessage:
+          lastInbound
+            ? 'Not sent. More than 24 hours have passed since this customer last messaged you, so WhatsApp will not deliver a plain message. An approved template would have reached them.'
+            : 'Not sent. This customer has never messaged you, so WhatsApp will not deliver a plain message to them. Only an approved template can start a conversation.',
       },
     });
   }
