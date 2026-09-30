@@ -33,6 +33,38 @@ export interface SlotOffer {
   label: string;
 }
 
+/** How many times to name in one message before it stops being an offer. */
+const TIMES_TO_NAME = 4;
+
+/**
+ * THE TIMES, WRITTEN AS A CUSTOMER READS THEM.
+ *
+ * `checkAvailability` returns one offer PER STAFF MEMBER, because the booking
+ * needs to know who is free — and that is right. But it means a salon with two
+ * nail technicians both free at ten produces two offers labelled "10:00", and the
+ * message said, verbatim:
+ *
+ *     "we have 10:00, 10:00, 10:15, 10:15. Shall I book 10:00?"
+ *
+ * Which reads like a broken machine, and the customer has no way to tell what the
+ * difference between the two tens is meant to be. There is none that concerns
+ * them: a time is free or it is not, and which of two available people does it is
+ * the salon's business.
+ *
+ * So the labels are collapsed here, at the point where they become a sentence,
+ * and not in `checkAvailability`, which must keep every staff option for the
+ * booking to choose from. Order is preserved — the list arrives soonest first and
+ * that is the order a customer wants to hear.
+ */
+export function timesToOffer(slots: SlotOffer[], limit = TIMES_TO_NAME): string {
+  const seen: string[] = [];
+  for (const slot of slots) {
+    if (!seen.includes(slot.label)) seen.push(slot.label);
+    if (seen.length === limit) break;
+  }
+  return seen.join(', ');
+}
+
 /**
  * The service the customer meant, or nothing.
  *

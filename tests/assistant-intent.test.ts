@@ -299,3 +299,50 @@ describe('choosing the context to carry over', () => {
     expect(carryOverContext([], now)).toEqual([]);
   });
 });
+
+/**
+ * A BOOKING ENDS THE REQUEST IT BELONGED TO.
+ *
+ * The half-hour window was not enough. A whole booking — service, price, offer,
+ * yes — happens well inside half an hour, so every message in the carried history
+ * still named the service after it was booked, and the next question was read as a
+ * continuation of a request that had already finished. The customer asked what
+ * time their appointment was and was quoted the price again.
+ */
+describe('carry-over stops at a completed booking', () => {
+  const at = (minutesAgo: number) => new Date(Date.UTC(2026, 8, 30, 12, 0, 0) - minutesAgo * 60_000);
+
+  const thread = [
+    { id: 'm5', body: 'what time is my appointment?', receivedAt: at(0) },
+    { id: 'm4', body: 'ok book', receivedAt: at(6) },
+    { id: 'm3', body: 'what is the price', receivedAt: at(8) },
+    { id: 'm2', body: 'i want gel nail extension', receivedAt: at(10) },
+  ];
+  const current = { id: 'm5', receivedAt: at(0) };
+
+  it('drops everything said before the booking', () => {
+    const out = carryOverContext(thread, current, { completedAt: at(5) });
+    expect(out).toEqual([]);
+  });
+
+  it('keeps what was said after it', () => {
+    const since = [
+      { id: 'm7', body: 'and can i bring my sister', receivedAt: at(1) },
+      ...thread,
+    ];
+    const out = carryOverContext(since, current, { completedAt: at(5) });
+    expect(out).toEqual(['and can i bring my sister']);
+  });
+
+  it('still applies the window when the booking is older than it', () => {
+    // A booking two hours ago must not widen the half-hour window back to it.
+    const out = carryOverContext(thread, current, { completedAt: at(120) });
+    expect(out).toEqual(['i want gel nail extension', 'what is the price', 'ok book']);
+  });
+
+  it('behaves exactly as before when nothing has completed', () => {
+    expect(carryOverContext(thread, current, { completedAt: null })).toEqual(
+      carryOverContext(thread, current),
+    );
+  });
+});

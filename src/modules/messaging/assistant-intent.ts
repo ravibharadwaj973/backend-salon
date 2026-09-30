@@ -77,12 +77,13 @@ export const CARRY_OVER_MESSAGES = 4;
 /**
  * The messages before this one that the intent step is allowed to see.
  *
- * Three filters, each closing a way this goes wrong:
+ * Four filters, each closing a way this goes wrong:
  *
  *   · the message being classified is removed, so it cannot appear twice and be
  *     read as the customer repeating themselves;
  *   · anything older than the window is dropped, because a detail carried out of
  *     a finished conversation answers a question nobody asked;
+ *   · anything said before the last request COMPLETED is dropped — see below;
  *   · the list is capped, because the instruction to classify only the newest
  *     message holds less well the more there are to pick from.
  *
@@ -92,8 +93,28 @@ export const CARRY_OVER_MESSAGES = 4;
 export function carryOverContext(
   thread: { id: string; body: string; receivedAt: Date }[],
   current: { id: string; receivedAt: Date },
+  options: {
+    /**
+     * WHEN THE LAST REQUEST FINISHED. A BOOKING ENDS A CONVERSATION.
+     *
+     * The window alone is not enough, and this is the bug it let through. A
+     * customer asked for gel nails, was quoted, was offered a time, said yes and
+     * was booked — all inside half an hour. Then they asked what time their
+     * appointment was, and every message in the carried history still said gel
+     * nails, so the intent step kept resolving the finished request and the
+     * assistant quoted the price again. Five times, to five different questions.
+     *
+     * A completed booking is the clearest possible signal that a request is over.
+     * Everything said up to it belongs to that request and must not reach the
+     * next one; everything said after it is the new conversation.
+     */
+    completedAt?: Date | null;
+  } = {},
 ): string[] {
-  const cutoff = current.receivedAt.getTime() - CARRY_OVER_MINUTES * 60 * 1000;
+  const window = current.receivedAt.getTime() - CARRY_OVER_MINUTES * 60 * 1000;
+  const cutoff = options.completedAt
+    ? Math.max(window, options.completedAt.getTime())
+    : window;
 
   return thread
     .filter((row) => row.id !== current.id)

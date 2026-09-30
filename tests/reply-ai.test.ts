@@ -29,6 +29,21 @@ const base = {
   conversation: [{ from: 'CUSTOMER' as const, body: 'do you have hair spa?' }],
   availability: [],
   customerName: 'Ravi',
+  customer: null,
+};
+
+/** One customer's own record, as the app would assemble it. */
+const record = {
+  firstName: 'Ravi',
+  upcoming: [
+    { what: 'Hair Spa', when: 'Tuesday 30 September at 6:00 pm', where: 'Gomti Nagar', withWhom: 'Anita' },
+  ],
+  recent: [
+    { what: 'Haircut (Men)', when: 'Saturday 20 September at 5:00 pm', outcome: 'did not come' as const },
+    { what: 'Beard Trim', when: 'Saturday 6 September at 4:00 pm', outcome: 'came' as const },
+  ],
+  points: 240,
+  offers: [{ code: 'MONSOON20', what: '20% off', until: 'Tuesday 14 October', minimumSpend: '₹1000' }],
 };
 
 describe('what the assistant is told', () => {
@@ -232,5 +247,179 @@ describe('what the assistant is told about dead ends', () => {
     const { system } = replyPrompt({ ...base, availability: [] });
     expect(system).toMatch(/do not say you will check and come back/i);
     expect(system).toMatch(/ask them which service they would like/i);
+  });
+});
+
+
+/**
+ * THE CUSTOMER'S OWN RECORD.
+ *
+ * "What time is my appointment", "did I miss my last one", "have I got any
+ * offers" are the commonest things a salon's WhatsApp number receives, and they
+ * used to reach a model with no facts — which correctly said it would check,
+ * while the app knew every answer.
+ *
+ * The facts are the easy half. What these pin is the three things that must not
+ * happen with somebody's history over WhatsApp: guessed at when absent,
+ * volunteered when nobody asked, or presented as something the assistant can
+ * change.
+ */
+describe('what the assistant is told about this customer', () => {
+  it('is given their upcoming appointment, already written out', () => {
+    // Already formatted, because a model asked to turn a timestamp into a
+    // weekday will eventually pick the wrong one — and a customer told the wrong
+    // day turns up on it.
+    const { system } = replyPrompt({ ...base, customer: record });
+    expect(system).toContain('Hair Spa, Tuesday 30 September at 6:00 pm at Gomti Nagar with Anita');
+  });
+
+  it('says plainly when they did not come to a visit', () => {
+    // "Did I miss it" is a real question with a real answer, and softening it in
+    // the prompt would leave the model guessing at what happened.
+    expect(replyPrompt({ ...base, customer: record }).system).toMatch(/Haircut \(Men\).*they did not come/);
+  });
+
+  it('never uses a missed visit as a reproach', () => {
+    expect(replyPrompt({ ...base, customer: record }).system).toMatch(/never used as a reproach/);
+  });
+
+  it('gives offers with their code, minimum spend and expiry', () => {
+    const { system } = replyPrompt({ ...base, customer: record });
+    expect(system).toContain('MONSOON20: 20% off, on bills over ₹1000, until Tuesday 14 October');
+  });
+
+  it('gives loyalty points when the salon runs a scheme', () => {
+    expect(replyPrompt({ ...base, customer: record }).system).toContain('Loyalty points: 240');
+  });
+
+  it('says nothing about points when the salon runs no scheme', () => {
+    // "You have 0 points" from a salon with no loyalty programme is a confusing
+    // thing to be told.
+    const { system } = replyPrompt({ ...base, customer: { ...record, points: null } });
+    expect(system).not.toContain('Loyalty points');
+  });
+
+  it('states NONE explicitly rather than leaving a gap', () => {
+    /**
+     * The difference between "they have nothing booked" and silence. A prompt
+     * that simply omits the section invites the model to hedge — "let me
+     * check" — about a question the app has answered definitively.
+     */
+    const { system } = replyPrompt({ ...base, customer: { ...record, upcoming: [], offers: [] } });
+    expect(system).toMatch(/Upcoming appointments: NONE/);
+    expect(system).toMatch(/Offers available to them: NONE/);
+  });
+
+  it('forbids inventing anything that is not in the record', () => {
+    const { system } = replyPrompt({ ...base, customer: record });
+    expect(system).toMatch(/does not exist as far as you know/);
+  });
+
+  it('forbids discussing any other customer', () => {
+    // The one failure that would be genuinely serious: reading somebody else's
+    // appointments to the wrong person.
+    expect(replyPrompt({ ...base, customer: record }).system).toMatch(
+      /Only ever discuss the person you are talking to/,
+    );
+  });
+
+  it('tells it not to volunteer the record unprompted', () => {
+    // Somebody asking opening hours does not want to hear about a missed visit.
+    expect(replyPrompt({ ...base, customer: record }).system).toMatch(/Bring it up only when asked/);
+  });
+
+  it('forbids claiming it can change or cancel anything', () => {
+    // It cannot. Nothing on this path writes to the diary, and a customer told
+    // their appointment was moved would arrive on the wrong day.
+    expect(replyPrompt({ ...base, customer: record }).system).toMatch(/CANNOT change, move or cancel/);
+  });
+
+  it('says nothing at all when there is no customer record', () => {
+    const { system } = replyPrompt({ ...base, customer: null });
+    expect(system).not.toContain('THIS CUSTOMER');
+  });
+});
+
+/**
+ * THE REPETITION BUG, IN TESTS.
+ *
+ * A real transcript: the customer booked gel nails, then asked four unrelated
+ * questions, and was quoted ₹2200 for gel nails four times. The cause was the
+ * prompt, in two halves — the salon's own replies were not passed, so the model
+ * could not see what had been answered; and the messages arrived as one block with
+ * nothing saying which of them had just been asked.
+ *
+ * These tests pin the shape of the prompt rather than a model's behaviour, because
+ * the shape is what was wrong and the shape is what can be checked without a key.
+ */
+describe('the prompt distinguishes what was asked from what was already said', () => {
+  const thread = [
+    { from: 'CUSTOMER' as const, body: 'i want gel nail extension' },
+    { from: 'SALON' as const, body: 'Gel Nail Extensions are ₹2200 for about 90 minutes.' },
+    { from: 'CUSTOMER' as const, body: 'ok book' },
+    { from: 'SALON' as const, body: 'Done — Gel Nail Extensions on Wednesday with Pooja Rani.' },
+    { from: 'CUSTOMER' as const, body: 'what time is my appointment?' },
+  ];
+
+  it('marks the newest customer message as the one being answered', () => {
+    const { user } = replyPrompt({ ...base, conversation: thread });
+
+    expect(user).toMatch(/THE MESSAGE TO ANSWER/);
+    // The question, and only the question, sits after that heading.
+    const asked = user.slice(user.indexOf('THE MESSAGE TO ANSWER'));
+    expect(asked).toContain('what time is my appointment?');
+    expect(asked).not.toContain('i want gel nail extension');
+  });
+
+  it('shows the earlier messages as background, not as the question', () => {
+    const { user } = replyPrompt({ ...base, conversation: thread });
+
+    const background = user.slice(0, user.indexOf('THE MESSAGE TO ANSWER'));
+    expect(background).toMatch(/BACKGROUND ONLY/);
+    expect(background).toContain('i want gel nail extension');
+    // The message being answered must not also appear in the history: shown
+    // twice, it reads as the customer repeating themselves.
+    expect(background).not.toContain('what time is my appointment?');
+  });
+
+  it("includes the salon's own replies, which is how it knows what it has said", () => {
+    const { user } = replyPrompt({ ...base, conversation: thread });
+
+    expect(user).toContain('Us: Gel Nail Extensions are ₹2200');
+    expect(user).toContain('Us: Done — Gel Nail Extensions');
+  });
+
+  it('forbids repeating an answer it has already given', () => {
+    const { system } = replyPrompt({ ...base, conversation: thread });
+
+    expect(system).toMatch(/Never say again something you have already said/);
+    expect(system).toMatch(/A new subject replaces the old one completely/);
+  });
+
+  it('answers the only message when there is no history yet', () => {
+    const { user } = replyPrompt({
+      ...base,
+      conversation: [{ from: 'CUSTOMER' as const, body: 'are you open sunday?' }],
+    });
+
+    // No background block at all rather than an empty one, which would read as a
+    // conversation that happened and was forgotten.
+    expect(user).not.toMatch(/BACKGROUND ONLY/);
+    expect(user).toContain('are you open sunday?');
+  });
+
+  it('does not fall over on a thread whose last turn is the salon', () => {
+    // Possible if a campaign message lands between the customer's message and the
+    // reply. The customer's newest is still the one to answer.
+    const { user } = replyPrompt({
+      ...base,
+      conversation: [
+        { from: 'CUSTOMER' as const, body: 'do you do balayage?' },
+        { from: 'SALON' as const, body: 'Reminder: your appointment is tomorrow.' },
+      ],
+    });
+
+    const asked = user.slice(user.indexOf('THE MESSAGE TO ANSWER'));
+    expect(asked).toContain('do you do balayage?');
   });
 });

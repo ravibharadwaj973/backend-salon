@@ -8,7 +8,8 @@ import { dateKey } from '../../core/dates';
 import { queueMessage } from '../../messaging/dispatcher';
 import { windowIsOpen } from '../../messaging/service-window';
 import { salonContext } from './salon-context';
-import { handToHuman, noteOutboundMessage, recordEvent } from './conversation.service';
+import { customerContext } from './customer-context';
+import { assistantThread, handToHuman, noteOutboundMessage, recordEvent } from './conversation.service';
 import {
   type HandoffReason,
   MAX_REPLY_CHARS,
@@ -19,7 +20,7 @@ import {
 } from './reply-ai';
 import { BURST_WINDOW_MINUTES, replyCeiling } from './reply-limits';
 import { type ParsedIntent, carryOverContext, intentPrompt, parseIntent } from './assistant-intent';
-import { type SlotOffer, bookOffer, checkAvailability, matchService } from './assistant-tools';
+import { type SlotOffer, bookOffer, checkAvailability, matchService, timesToOffer } from './assistant-tools';
 import {
   BRANCH_PENDING,
   type BranchChoice,
@@ -345,6 +346,31 @@ export async function maybeAutoReply(input: {
    */
   const salonToday = dateKey(new Date());
 
+  /**
+   * WHEN THIS THREAD LAST FINISHED SOMETHING.
+   *
+   * A booking closes a request. Everything said up to it — the service, the day,
+   * the price question — belongs to that request and must not be carried into the
+   * next one, and the half-hour window is not enough to stop it: the whole
+   * exchange happens inside half an hour.
+   *
+   * This is the fix for the transcript in which a customer booked gel nails and
+   * then asked five unrelated questions, each answered with the price of gel
+   * nails. The carried history still said gel nails in every line, so the intent
+   * step kept resolving a request that was already done.
+   *
+   * Read from the events the assistant writes anyway, so there is no new state to
+   * keep in step. A failure here must not stop a reply, so it degrades to null and
+   * the window alone applies.
+   */
+  const lastBooking = await runUnscoped(() =>
+    prisma.conversationEvent.findFirst({
+      where: { conversationId: message.conversation!.id, kind: 'APPOINTMENT_BOOKED' },
+      orderBy: { at: 'desc' },
+      select: { at: true },
+    }),
+  ).catch(() => null);
+
   let intent: ParsedIntent;
 
   if (forced) {
@@ -364,7 +390,7 @@ export async function maybeAutoReply(input: {
       staffNames: [],
       today: salonToday,
       outstandingOffer: offerHeld ? describeOffer(offerHeld) : null,
-      recent: carryOverContext(thread, message),
+      recent: carryOverContext(thread, message, { completedAt: lastBooking?.at ?? null }),
     });
 
     const intentRaw = await chat(intentCall.system, intentCall.user, {
@@ -593,11 +619,10 @@ export async function maybeAutoReply(input: {
         if (slots.length > 0) {
           const offer = slots[0]!;
           await holdOffer(message.customer.id, offer, bookAt, branchLabel);
-          const alternatives = slots.slice(1, 4).map((s) => s.label);
           const text =
             (intent.time
               ? `Yes — ${offer.serviceName} at ${offer.label} on ${humanWhen(offer.startAt)}${offer.staffName ? ` with ${offer.staffName}` : ''}${atBranch} is free. Shall I book it?`
-              : `For ${offer.serviceName} on ${humanWhen(offer.startAt)}${atBranch} we have ${[offer.label, ...alternatives].join(', ')}. Shall I book ${offer.label}?`) + elsewhere;
+              : `For ${offer.serviceName} on ${humanWhen(offer.startAt)}${atBranch} we have ${timesToOffer(slots)}. Shall I book ${offer.label}?`) + elsewhere;
           await send(input.tenantId, bookAt, message.customer.id, text, message.conversation.id);
           await note('AVAILABILITY_CHECKED', `Read the diary for ${service.name} on ${humanWhen(offer.startAt)}${atBranch}`, {
             serviceName: service.name,
@@ -625,7 +650,7 @@ export async function maybeAutoReply(input: {
           : [];
 
         const text = sameDay.length
-          ? `${intent.time} is taken that day${atBranch}, but we have ${sameDay.slice(0, 3).map((s) => s.label).join(', ')}. Shall I book one of those?${elsewhere}`
+          ? `${intent.time} is taken that day${atBranch}, but we have ${timesToOffer(sameDay)}. Shall I book one of those?${elsewhere}`
           : // Nothing free HERE is exactly when the other shop is worth knowing
             // about, so it is offered before the link to look elsewhere in time.
               `We have nothing free for ${service.name} on that day${atBranch}.${elsewhere} You can also see other days here: ${salon.bookingUrl ?? salon.websiteUrl ?? 'our website'}`;
@@ -638,14 +663,45 @@ export async function maybeAutoReply(input: {
     }
   }
 
+  /**
+   * BOTH SIDES OF IT, WHICH IS THE WHOLE FIX FOR THE REPETITION.
+   *
+   * This used to be `thread` — the customer's half, reversed. The salon's own
+   * replies were left out on the reasoning that they are not needed to answer a
+   * question, and that was wrong in the worst way: with only one half in view the
+   * model cannot tell an answered question from an unanswered one, so it answered
+   * all of them, every time, leading with whatever the pile was mostly about.
+   *
+   * The transcript that proved it: a customer booked gel nails, then asked what
+   * time their appointment was, whether they had one today, what else the salon
+   * does — and was quoted ₹2200 for gel nails four times in a row.
+   */
+  const spoken = await assistantThread(message.conversation.id).catch(() =>
+    // Degrade to the old shape rather than to no reply. Worse context beats
+    // silence, and this read can fail for reasons that have nothing to do with
+    // whether the customer deserves an answer.
+    [...thread].reverse().map((row) => ({ from: 'CUSTOMER' as const, body: row.body, at: row.receivedAt })),
+  );
+
+  /**
+   * And the message being answered is guaranteed to be the last of them.
+   *
+   * `replyPrompt` splits the list at the customer's newest turn to decide what it
+   * is answering, so a thread read that somehow does not contain this message
+   * would have it answer an older one. It is in there in every ordinary case; this
+   * is the line that makes "every ordinary case" into "always".
+   */
+  const conversation = spoken
+    .filter((turn) => turn.body.trim())
+    .map((turn) => ({ from: turn.from, body: turn.body }));
+
+  if (conversation.at(-1)?.body !== message.body && message.body.trim()) {
+    conversation.push({ from: 'CUSTOMER', body: message.body });
+  }
+
   const { system, user } = replyPrompt({
     salon,
-    // Their side of it, oldest first. The salon's outbound copy is not needed to
-    // answer. Already read above, because the intent step needed it too.
-    conversation: [...thread]
-      .reverse()
-      .filter((row) => row.body.trim())
-      .map((row) => ({ from: 'CUSTOMER' as const, body: row.body })),
+    conversation,
     /**
      * Empty for now, and the prompt is explicit about what that means: the
      * assistant says it will check rather than inventing a time. Feeding real
@@ -655,6 +711,14 @@ export async function maybeAutoReply(input: {
      */
     availability: [],
     customerName: message.customer.firstName ?? null,
+    /**
+     * Their own record, fetched only on the path that answers in words.
+     *
+     * Not before the booking paths: those already know what they need and the
+     * customer is waiting, so four queries nobody will read is four queries of
+     * latency on the reply that matters most.
+     */
+    customer: await customerContext(input.tenantId, message.customer.id).catch(() => null),
   });
 
   const raw = await chat(system, user, { timeoutMs: TIMEOUT_MS, temperature: TEMPERATURE, maxTokens: 800 });

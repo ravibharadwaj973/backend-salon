@@ -290,6 +290,81 @@ export function replyWindow(lastCustomerMessageAt: Date | null): {
 }
 
 /**
+ * HOW MUCH OF THE THREAD THE ASSISTANT IS SHOWN.
+ *
+ * Ten turns is an exchange: five things asked and five answered, which is longer
+ * than almost any real booking takes. Ninety minutes is generous for somebody
+ * who puts their phone down mid-conversation and still cannot reach this
+ * morning.
+ *
+ * Both limits exist for the same reason, and it is not cost. A model shown a
+ * long thread starts answering the wrong part of it, and the part it picks is
+ * whatever the thread is mostly about — which is how one customer asking five
+ * different questions was quoted the same price five times.
+ */
+export const ASSISTANT_THREAD_TURNS = 10;
+export const ASSISTANT_THREAD_MINUTES = 90;
+
+/**
+ * THE THREAD AS THE ASSISTANT NEEDS TO SEE IT: BOTH SIDES.
+ *
+ * `threadFor` above is for a screen — every turn, events included, so a salon can
+ * audit what happened. This is for a prompt, and it is a different shape for one
+ * reason: the assistant used to be shown only the customer's half, which meant it
+ * could not tell an answered question from an unanswered one. It answered
+ * everything, every time, and a customer who asked four things got the first
+ * answer four times.
+ *
+ * So: both sides, no events (nothing here happened in front of the customer),
+ * nothing empty, recent only, oldest last. Campaign and journey sends are
+ * included deliberately — the customer received them, the booking confirmation
+ * among them, and "you are already booked" is exactly the fact that was missing.
+ */
+export async function assistantThread(
+  conversationId: string,
+  now: Date = new Date(),
+): Promise<{ from: 'CUSTOMER' | 'SALON'; body: string; at: Date }[]> {
+  const since = new Date(now.getTime() - ASSISTANT_THREAD_MINUTES * 60 * 1000);
+
+  const [inbound, outbound] = await runUnscoped(() =>
+    Promise.all([
+      prisma.inboundMessage.findMany({
+        where: { conversationId, receivedAt: { gte: since } },
+        orderBy: { receivedAt: 'desc' },
+        take: ASSISTANT_THREAD_TURNS,
+        select: { body: true, receivedAt: true },
+      }),
+      prisma.messageLog.findMany({
+        where: {
+          conversationId,
+          queuedAt: { gte: since },
+          // A send that failed was never read, so quoting it back as something
+          // "we said" makes the assistant build on a message nobody saw.
+          status: { not: 'FAILED' },
+        },
+        orderBy: { queuedAt: 'desc' },
+        take: ASSISTANT_THREAD_TURNS,
+        select: { renderedBody: true, queuedAt: true },
+      }),
+    ]),
+  );
+
+  return [
+    ...inbound.map((row) => ({ from: 'CUSTOMER' as const, body: row.body, at: row.receivedAt })),
+    ...outbound.map((row) => ({
+      from: 'SALON' as const,
+      body: row.renderedBody ?? '',
+      at: row.queuedAt,
+    })),
+  ]
+    // An image or a voice note is stored with an empty body, and an empty line in
+    // a prompt invites the model to decide what was in it.
+    .filter((turn) => turn.body.trim().length > 0)
+    .sort((a, b) => a.at.getTime() - b.at.getTime())
+    .slice(-ASSISTANT_THREAD_TURNS);
+}
+
+/**
  * The whole thread, oldest first.
  *
  * Two reads and a merge rather than one table, for the reason at the top of
