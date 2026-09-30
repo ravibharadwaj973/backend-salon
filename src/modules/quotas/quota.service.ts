@@ -697,19 +697,25 @@ export async function usageHistory(tenantId: string, months = 12): Promise<Month
   const span = Math.min(Math.max(1, Math.trunc(months)), MAX_HISTORY_MONTHS);
 
   /**
-   * Built from the salon's own timezone, like every other period in this file.
-   * A month boundary computed in UTC puts the first five and a half hours of an
-   * Indian month into the previous one — so a salon's Diwali campaign sent at
-   * 1am would land in the wrong month's total, and the totals would not add up
-   * to what the current-month card says.
+   * THE MONTHS ARE BUILT WITH THE SAME FUNCTION THAT WROTE THEM.
+   *
+   * `periodFor` is what `usageRow` uses to stamp `periodStart` on every counter,
+   * so asking it again for each month in the window is the only way to be sure
+   * the two agree. Recomputing the boundaries here by hand — even with the same
+   * timezone — is how a history screen ends up showing twelve empty months while
+   * the data sits in the table, because two pieces of code disagreed by a few
+   * hours about where a month starts.
    */
   const now = dayjs().tz(tenant.timezone);
-  const windowStart = now.startOf('month').subtract(span - 1, 'month');
+  const periods = Array.from({ length: span }, (_, i) =>
+    periodFor(now.subtract(span - 1 - i, 'month').toDate(), tenant.timezone),
+  );
+  const windowStart = periods[0]!.start;
 
   const [rows, purchases] = await runUnscoped(() =>
     Promise.all([
       prisma.messageUsage.findMany({
-        where: { tenantId, periodStart: { gte: windowStart.toDate() } },
+        where: { tenantId, periodStart: { gte: windowStart } },
         orderBy: { periodStart: 'asc' },
       }),
       /**
@@ -721,19 +727,35 @@ export async function usageHistory(tenantId: string, months = 12): Promise<Month
         where: {
           tenantId,
           reason: 'PURCHASE',
-          createdAt: { gte: windowStart.toDate() },
+          createdAt: { gte: windowStart },
         },
         select: { delta: true, amountPaid: true, createdAt: true },
       }),
     ]),
   );
 
-  /** A month is keyed by its own start date, as a plain YYYY-MM-DD string. */
-  const key = (at: Date) => dayjs(at).tz(tenant.timezone).format('YYYY-MM');
+  /**
+   * A COUNTER IS KEYED BY ITS UTC DATE PART. A PAYMENT IS KEYED BY THE SALON'S MONTH.
+   *
+   * They are deliberately different, because the two columns are different types.
+   *
+   * `periodStart` is `@db.Date`. The value written is an instant at midnight in
+   * the salon's timezone — 18:30 UTC the previous day for India — and Postgres
+   * keeps only its UTC date part. Read back it returns as UTC midnight on that
+   * stored day, which is NOT the instant that went in. Comparing them directly,
+   * or converting either one back into the salon's timezone, lands a month out.
+   * Taking the UTC date part of both sides is the one comparison where the value
+   * that was written and the value that comes back agree.
+   *
+   * `createdAt` is a real timestamp, so a payment belongs to whichever month it
+   * was in for the salon — that one does convert to their timezone.
+   */
+  const counterKey = (at: Date) => dayjs.utc(at).format('YYYY-MM-DD');
+  const paymentKey = (at: Date) => dayjs(at).tz(tenant.timezone).format('YYYY-MM');
 
   const usageByMonth = new Map<string, typeof rows>();
   for (const row of rows) {
-    const k = key(row.periodStart);
+    const k = counterKey(row.periodStart);
     const list = usageByMonth.get(k) ?? [];
     list.push(row);
     usageByMonth.set(k, list);
@@ -741,7 +763,7 @@ export async function usageHistory(tenantId: string, months = 12): Promise<Month
 
   const paidByMonth = new Map<string, { amount: number; messages: number }>();
   for (const entry of purchases) {
-    const k = key(entry.createdAt);
+    const k = paymentKey(entry.createdAt);
     const current = paidByMonth.get(k) ?? { amount: 0, messages: 0 };
     current.amount += Number(entry.amountPaid ?? 0);
     // `delta` is positive on a purchase; guarded anyway so an adjustment that
@@ -750,11 +772,8 @@ export async function usageHistory(tenantId: string, months = 12): Promise<Month
     paidByMonth.set(k, current);
   }
 
-  const out: MonthUsage[] = [];
-  for (let i = 0; i < span; i += 1) {
-    const month = windowStart.add(i, 'month');
-    const k = month.format('YYYY-MM');
-    const monthRows = usageByMonth.get(k) ?? [];
+  const out: MonthUsage[] = periods.map((period) => {
+    const monthRows = usageByMonth.get(counterKey(period.start)) ?? [];
 
     const meters: MonthMeterUsage[] = ALL_METERS.map((meter) => {
       const row = monthRows.find((r) => r.meter === meter);
@@ -767,15 +786,18 @@ export async function usageHistory(tenantId: string, months = 12): Promise<Month
       };
     });
 
-    out.push({
-      periodStart: month.toDate(),
-      label: month.format('MMMM YYYY'),
+    return {
+      periodStart: period.start,
+      label: period.label,
       meters,
       used: meters.reduce((sum, m) => sum + m.used, 0),
       blocked: meters.reduce((sum, m) => sum + m.blocked, 0),
-      toppedUp: paidByMonth.get(k) ?? { amount: 0, messages: 0 },
-    });
-  }
+      toppedUp: paidByMonth.get(dayjs(period.start).tz(tenant.timezone).format('YYYY-MM')) ?? {
+        amount: 0,
+        messages: 0,
+      },
+    };
+  });
 
   // Newest first: the month somebody wants is nearly always the last one.
   return out.reverse();
