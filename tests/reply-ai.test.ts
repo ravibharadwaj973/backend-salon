@@ -113,10 +113,69 @@ describe('subjects a machine must not answer for the salon', () => {
     expect(needsHuman('please cancel my appointment')).toBe(true);
   });
 
+  /**
+   * THE HALF OF THE CUSTOMERS THIS RULE USED TO MISS.
+   *
+   * The list was English only. A salon's WhatsApp number in India receives
+   * "paise wapas chahiye" and "scalp jal gaya" far more often than the English
+   * for either, and those went straight to the model — which answered them
+   * pleasantly, which is exactly what this rule exists to prevent.
+   *
+   * Transliteration has no agreed spelling, so the forms people actually type
+   * are what is pinned here.
+   */
+  it('hands over money back, however it is spelled', () => {
+    expect(needsHuman('paise wapas chahiye')).toBe(true);
+    expect(needsHuman('paisa vapis karo')).toBe(true);
+    expect(needsHuman('refund chahiye mujhe')).toBe(true);
+    expect(needsHuman('मुझे पैसे वापस चाहिए')).toBe(true);
+  });
+
+  it('hands over somebody who has been hurt', () => {
+    expect(needsHuman('colour ke baad scalp jal gaya')).toBe(true);
+    expect(needsHuman('bohot khujli ho rahi hai')).toBe(true);
+    expect(needsHuman('face pe sujan aa gayi hai')).toBe(true);
+    expect(needsHuman('baal jhad rahe hain treatment ke baad')).toBe(true);
+    expect(needsHuman('सिर में जलन हो रही है')).toBe(true);
+  });
+
+  it('hands over a complaint', () => {
+    expect(needsHuman('mujhe shikayat karni hai')).toBe(true);
+    expect(needsHuman('bahut ghatiya service thi')).toBe(true);
+    expect(needsHuman('bilkul bekar kaam hua')).toBe(true);
+    expect(needsHuman('ये तो बकवास है')).toBe(true);
+  });
+
+  it('hands over cancelling an existing booking', () => {
+    expect(needsHuman('mera appointment cancel kar do')).toBe(true);
+    expect(needsHuman('booking cancel karni hai')).toBe(true);
+    expect(needsHuman('अपॉइंटमेंट कैंसिल करना है')).toBe(true);
+  });
+
   it('leaves ordinary questions alone', () => {
     expect(needsHuman('do you have hair spa?')).toBe(false);
     expect(needsHuman('what time do you open on Saturday')).toBe(false);
     expect(needsHuman('how much is a haircut')).toBe(false);
+  });
+
+  /**
+   * The Hinglish a salon hears all day, which must still reach the assistant.
+   *
+   * The point of the list above is breadth, and breadth is only affordable
+   * because a hand-over still sends a reply. It is NOT affordable if the
+   * commonest questions trip it — an inbox where "kya services aap dete ho"
+   * goes to a human is an assistant that does nothing.
+   */
+  it('leaves ordinary Hinglish questions alone', () => {
+    expect(needsHuman('kya services aap dete ho')).toBe(false);
+    expect(needsHuman('Saturday ko slot hai kya')).toBe(false);
+    expect(needsHuman('haircut kitne ka hai')).toBe(false);
+    expect(needsHuman('kal shaam ko appointment mil jayega')).toBe(false);
+    expect(needsHuman('aapka salon kahan hai')).toBe(false);
+    expect(needsHuman('क्या आप हेयर स्पा करते हैं')).toBe(false);
+    // "cancel" on its own is not cancelling an appointment — somebody asking
+    // what the cancellation policy is still gets an answer.
+    expect(needsHuman('what is your cancellation policy')).toBe(false);
   });
 });
 

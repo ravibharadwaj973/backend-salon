@@ -178,6 +178,34 @@ export function intentPrompt(input: {
     '- Use null for anything not said. Never invent a date, a time or a service.',
     '- Match the service to the list below if you can; otherwise report what they actually said.',
     '- Never report a date in the past. If the only day they named has gone, use null.',
+    /**
+     * The message is as likely to be Hinglish as English, and this step is what
+     * decides whether the diary is ever looked up. Classified wrongly here,
+     * "kal shaam haircut karwana hai" is a general question rather than a
+     * booking, and the customer is asked what they would like — which they just
+     * said.
+     *
+     * The `kal` line earns its place: Hindi uses the same word for yesterday and
+     * tomorrow and leaves the tense to do the work. Read as yesterday, a booking
+     * resolves to a date in the past and gets dropped by usableDate below, so
+     * the customer is silently asked for a day they already gave.
+     */
+    '',
+    'THE MESSAGE IS OFTEN NOT IN ENGLISH:',
+    '- It will frequently be Hindi, or another Indian language, typed in English letters, and',
+    '  usually mixed with English: "kal shaam ko haircut karwana hai" is a BOOK, "Saturday ko',
+    '  slot hai kya" is a BOOK, "kya services aap dete ho" is an ANSWER. Classify on what it',
+    '  means. The language it is written in changes nothing here.',
+    '- Indian day words: aaj = today. kal = TOMORROW when the sentence is about something still',
+    '  to happen, and yesterday only when it is plainly about something past. parso = the day',
+    '  after tomorrow, the same way round. agle hafte / agle week = next week.',
+    '- "karwana hai", "karana hai", "chahiye", "lena hai", "book karna hai" all mean they want it.',
+    '- HUMAN in these words too: paise/paisa wapas and refund chahiye (money back), shikayat',
+    '  (complaint), jal gaya and jalan (burnt, burning), khujli (itching), sujan (swelling),',
+    '  dard (pain), and "cancel kar do" / "appointment cancel karna hai" for calling off a',
+    '  booking they already have.',
+    '- Report the service matched to the list below in ITS OWN SPELLING, never translated:',
+    '  "hair cut karwana hai" is the listed "Haircut".',
     '',
     `Today is ${input.today}.`,
     '',

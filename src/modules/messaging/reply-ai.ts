@@ -84,10 +84,63 @@ export const MAX_REPLY_CHARS = 700;
  * customer describing a burn or asking for their money back.
  */
 const HAND_OVER = [
+  // ---- English ----
   /\b(refund|money back|compensat)/i,
   /\b(allerg|burn|burnt|rash|infect|reaction|itch|swollen|scalp bleed)/i,
   /\b(complain|complaint|terrible|awful|worst|disgusting|ruined|sue|legal|lawyer)/i,
   /\b(cancel my|cancel the) (appointment|booking)/i,
+
+  /**
+   * ---- THE SAME SUBJECTS, IN THE WORDS THEY ACTUALLY ARRIVE IN ----
+   *
+   * This list was English only, which made it a safety rule that worked for
+   * some of the customers. A salon's WhatsApp number in India receives "paise
+   * wapas chahiye" and "scalp jal gaya" far more often than "I want a refund"
+   * and "my scalp is burnt" — and those went to the model, which answered them
+   * pleasantly, which is the one outcome this whole list exists to prevent.
+   *
+   * Transliteration has no spelling, so each word is matched in the forms people
+   * actually type: wapas/wapis/vapas, khujli/khujali, sujan/soojan.
+   *
+   * BREADTH IS DELIBERATE, and it is cheap here for a reason worth writing down:
+   * a false positive is not silence. The handoff still sends a reply — "someone
+   * from the salon will look at this personally", with the number — so the cost
+   * of over-matching is one slightly formal answer, and the cost of
+   * under-matching is a model chatting to somebody whose scalp is burnt.
+   */
+
+  // Money back.
+  /\b(pais[ae]|paisa|rupay[ae]?)\s*(wapas|wapis|vapas|vapis|return)/i,
+  /\b(wapas|wapis|vapas|vapis)\s*(chahiye|chaiye|karo|kar\s*do|de\s*do|dedo)/i,
+  /\brefund\s*(chahiye|chaiye|karo|kar\s*do|kardo)/i,
+
+  // Hurt, or unwell.
+  /\b(jal\s*ga(ya|yi|ye|i)|jalan|jalna|jl\s*gaya)\b/i,
+  /\b(khujli|khujali|khujlee|kharish)\b/i,
+  /\b(sujan|soojan|suj\s*ga(ya|yi))\b/i,
+  /\b(dard|chubhan)\b/i,
+  /\bbaal\s*(jhad|jhar|jad|tut|toot|kharab|barbad)/i,
+
+  // A complaint.
+  /\b(shikayat|shikaayat|sikayat)\b/i,
+  /\b(bakwas|bakwaas|bekaar|bekar|barbaad|barbad|ghatiya)\b/i,
+  /\b(ganda|kharab|galat)\s*(kaam|kiya|kar\s*diya|ho\s*gaya)/i,
+
+  // Cancelling something already booked.
+  /\bcancel\s*(kar\s*do|kardo|karna|karni|karo|kr\s*do)/i,
+  /\b(appointment|booking|slot|sitting)\s*cancel\b/i,
+
+  /**
+   * ---- Devanagari ----
+   *
+   * No \b: JavaScript's word boundary is defined on ASCII, so it does not fire
+   * between a Devanagari letter and a space and would make every one of these
+   * never match. The substring is the match.
+   */
+  /(पैसे?\s*वापस|रिफ़?ंड|रीफंड)/,
+  /(जल\s*ग(या|यी|ई)|जलन|खुजली|सूजन|एलर्जी|एलर्जी|संक्रमण|दर्द)/,
+  /(शिकायत|बकवास|बेकार|घटिया|बर्बाद|ख़?राब)/,
+  /(कैंसिल|कैन्सिल|रद्द)/,
 ];
 
 export function needsHuman(text: string): boolean {
@@ -114,6 +167,42 @@ export function replyPrompt(input: ReplyInput): { system: string; user: string }
     '   You may say which times are free and send the booking link. Nothing else.',
     '3. If the customer seems unhappy, unwell, or is asking about money back, say a person from',
     '   the salon will get in touch shortly, and nothing more.',
+    '',
+    /**
+     * THE LANGUAGE RULES, AND WHY THE SCRIPT ONE IS THE IMPORTANT ONE.
+     *
+     * This is India and this is WhatsApp: most messages a salon's number
+     * receives are Hindi typed in English letters, usually half-mixed with
+     * English — "kya services aap dete ho", "Saturday ko slot hai kya".
+     *
+     * Answering those in English is not quite wrong, but it is the reply of a
+     * business that did not notice who it was talking to. Answering them in
+     * Devanagari is worse: a great many people who write Hindi in Latin letters
+     * read it far more comfortably that way, and a reply in a script they did
+     * not use reads like a wrong number.
+     *
+     * So the instruction is to mirror, not to translate — and the carve-out for
+     * names, prices and links is the one that stops it going wrong in an
+     * expensive way.
+     */
+    'LANGUAGE — ANSWER IN THE ONE THEY WROTE IN:',
+    '- Mirror the customer\'s language AND its script. Hindi typed in English letters',
+    '  ("kya services aap dete ho") is answered in Hindi typed in English letters',
+    '  ("haan ji, hum ye services dete hain"). Devanagari is answered in Devanagari.',
+    '  English is answered in English.',
+    '- NEVER switch script on them. Somebody who typed in English letters may not read',
+    '  Devanagari comfortably at all, and a reply in a script they did not use looks like',
+    '  it was meant for somebody else.',
+    '- Half and half is normal and is not a mistake to tidy up. "Saturday ko slot hai kya?"',
+    '  is answered the same way. Do not translate the English words out of it, and do not',
+    '  write formal textbook Hindi — write the way the message was written.',
+    '- The same goes for any other Indian language, in its own script or in English letters:',
+    '  Marathi, Bengali, Gujarati, Punjabi, Tamil, Telugu, Kannada, Malayalam.',
+    '- FOUR THINGS NEVER CHANGE, whatever the language: service names exactly as they are',
+    '  listed below, prices and times exactly as given, the booking link, and the address and',
+    '  phone number. A translated or transliterated service name is one the salon cannot find',
+    '  on its own price list, and the customer who asks for it at the counter is not understood.',
+    '- If you cannot tell what language it is, use English.',
     '',
     'HOW TO WRITE:',
     '- Short. One or two sentences, three at the very most. This is WhatsApp, not an email.',
