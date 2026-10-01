@@ -192,6 +192,9 @@ export async function serviceMenu(input: { gender?: Gender; onlineOnly?: boolean
           price: true,
           memberPrice: true,
           taxRatePct: true,
+          // The till needs it per service: it decides whether this price has the
+          // GST inside it or gets it added, and the two answers differ by the tax.
+          priceIncludesTax: true,
           gender: true,
           imageUrl: true,
         },

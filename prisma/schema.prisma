@@ -1135,6 +1135,19 @@ model Service {
   price            Decimal        @db.Decimal(12, 2)
   memberPrice      Decimal?       @db.Decimal(12, 2)
   taxRatePct       Decimal        @default(18) @db.Decimal(5, 2)
+  /// DOES THIS PRICE ALREADY HAVE GST IN IT?
+  ///
+  /// NULL means "whatever the salon's setting says", and that is the point of it
+  /// being nullable rather than a boolean with a default. A salon sets the rule
+  /// once in Settings and never thinks about it again; this column exists for the
+  /// services that are the exception, and a default of true or false would have
+  /// silently answered the question for every service that never asked it.
+  ///
+  /// It decides a different thing from taxRatePct — not what the rate is, but
+  /// whether the menu price already contains it. ₹800 at 18% is either ₹800 to
+  /// the customer with ₹122.03 of tax inside, or ₹944 with ₹144 added on top,
+  /// and nothing about the number itself says which.
+  priceIncludesTax Boolean?
   hsnSac           String?
   commissionType   CommissionType @default(NONE)
   commissionRate   Decimal        @default(0) @db.Decimal(6, 2)

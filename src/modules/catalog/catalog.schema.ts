@@ -29,6 +29,21 @@ export const createServiceSchema = z.object({
    * in Settings. Asking for it here made every new service a small tax
    * decision the front desk had to get right in advance.
    */
+  /**
+   * Whether this price already contains the GST.
+   *
+   * Three answers, not two, which is why it is nullable rather than a plain
+   * boolean: null is "use the salon's setting", and it is what almost every
+   * service should say. Only the exceptions answer for themselves — the salon
+   * whose treatments are quoted tax-inclusive but whose premium services are
+   * quoted plus-tax, which one switch in Settings could not express.
+   *
+   * Unlike taxRatePct, which is deliberately absent above, this is NOT a tax
+   * decision the front desk has to get right in advance. It is a statement about
+   * the number already typed into the price box: does ₹800 mean ₹800 to the
+   * customer, or ₹800 plus tax? Somebody setting the price knows that.
+   */
+  priceIncludesTax: z.boolean().nullable().optional(),
   hsnSac: z.string().trim().max(12).optional(),
   commissionType: z.enum(['NONE', 'PERCENT_OF_SERVICE', 'PERCENT_OF_TOTAL', 'FLAT_PER_SERVICE', 'SLAB']).default('NONE'),
   commissionRate: z.coerce.number().min(0).max(100000).default(0),

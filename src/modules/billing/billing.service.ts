@@ -136,6 +136,15 @@ interface ResolvedLine {
   unitPrice: Prisma.Decimal;
   itemDiscount: Prisma.Decimal;
   taxRatePct: Prisma.Decimal;
+  /**
+   * Does this line's price already contain the GST, or does it go on top?
+   *
+   * Per line, not per bill. A salon quotes most treatments tax-inclusive and
+   * some plus-tax, and until now one switch answered for all of them — so one
+   * group or the other was billed wrong by the tax amount on every single sale.
+   * Resolved here, from the service's own setting, falling back to the salon's.
+   */
+  priceIncludesTax: boolean;
   redeemedFrom: RedemptionSource;
   packagePurchaseItemId: string | null;
   membershipSubscriptionId: string | null;
@@ -205,7 +214,13 @@ function performerIdsOf(item: InvoiceItemInput): string[] {
 async function resolveLines(
   tenantId: string,
   items: InvoiceItemInput[],
-  context: { membership: Awaited<ReturnType<typeof memberships.activeMembership>>; applyMembershipDiscount: boolean; defaultGstRate: number },
+  context: {
+    membership: Awaited<ReturnType<typeof memberships.activeMembership>>;
+    applyMembershipDiscount: boolean;
+    defaultGstRate: number;
+    /** The salon's setting, used by every line that does not override it. */
+    pricesIncludeTax: boolean;
+  },
 ): Promise<ResolvedLine[]> {
   const serviceIds = items.filter((i) => i.itemType === 'SERVICE' && i.refId).map((i) => i.refId!);
   const productIds = items.filter((i) => i.itemType === 'PRODUCT' && i.refId).map((i) => i.refId!);
@@ -242,6 +257,8 @@ async function resolveLines(
     let hsnSac: string | null = null;
     let serviceCommission: { commissionType: CommissionType; commissionRate: Prisma.Decimal } | null = null;
     let autoDiscount = d(0);
+    // The salon's answer until the line says otherwise.
+    let priceIncludesTax = context.pricesIncludeTax;
 
     /**
      * Resolved in the order they were sent, so the first is the primary. A name
@@ -276,6 +293,16 @@ async function resolveLines(
             }
           }
         }
+
+        /**
+         * The service's own answer, where it has one.
+         *
+         * `?? ` and not `||`: false is a real answer here — "this price does NOT
+         * include GST, whatever the salon's default says" — and `||` would throw
+         * it away and fall back, which is the opposite of what the salon asked
+         * for and would be wrong by the tax on every line of that service.
+         */
+        priceIncludesTax = service.priceIncludesTax ?? context.pricesIncludeTax;
 
         // Carried, not resolved. Whose arrangement wins — the service's or the
         // stylist's — is decided per person in ./commission, because two
@@ -347,6 +374,7 @@ async function resolveLines(
       unitPrice,
       itemDiscount,
       taxRatePct,
+      priceIncludesTax,
       redeemedFrom,
       packagePurchaseItemId: item.packagePurchaseItemId ?? null,
       membershipSubscriptionId: item.membershipSubscriptionId ?? null,
@@ -490,6 +518,7 @@ export async function createInvoice(input: CreateInvoiceInput) {
     membership,
     applyMembershipDiscount: input.applyMembershipDiscount !== false,
     defaultGstRate: settings.defaultGstRate,
+    pricesIncludeTax: settings.pricesIncludeTax,
   });
 
   // 3. Bill-level discount and coupon ------------------------------------
@@ -539,7 +568,9 @@ export async function createInvoice(input: CreateInvoiceInput) {
     const netAfterBillDiscount = clampNonNegative(sub(line.net, shares[index] ?? d(0)));
     const tax = computeLineTax(
       { net: netAfterBillDiscount, taxRatePct: line.taxRatePct },
-      { inclusive: settings.pricesIncludeTax, interState, gstEnabled: isGst },
+      // The line's own answer, not the salon's. gst.ts already took this per
+      // call; it was simply never given anything but the one value.
+      { inclusive: line.priceIncludesTax, interState, gstEnabled: isGst },
     );
     return { line, apportionedDiscount: shares[index] ?? d(0), ...tax };
   });
