@@ -2882,6 +2882,18 @@ model Feedback {
   /// Never posted anywhere by this app. See feedback-ai.ts.
   reviewDraft    String?
 
+  /// ALL THE SUGGESTIONS THE CUSTOMER WAS OFFERED, WRITTEN ONCE.
+  ///
+  /// These used to be generated on every request for them, which had two costs.
+  /// The customer paid several seconds for a model to compose five reviews while
+  /// standing at a counter deciding whether to bother — and a refresh produced a
+  /// different five, so the sentence somebody had half-chosen simply vanished.
+  ///
+  /// Written the moment the rating is saved, in the background, so the screen
+  /// that asks for them usually finds them already here. The salon's own feedback
+  /// list keeps showing reviewDraft above, which is the first of these.
+  reviewDrafts   String[]
+
   topics         FeedbackTopic[]
   serviceRatings FeedbackServiceRating[]
   appointment    Appointment?            @relation(fields: [appointmentId], references: [id], onDelete: SetNull)

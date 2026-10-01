@@ -221,6 +221,21 @@ export async function submitFeedback(input: FeedbackInput, tenantIdOverride?: st
   if (staffId) await refreshStaffRating(staffId);
 
   /**
+   * START WRITING THE REVIEW SUGGESTIONS NOW — WITHOUT WAITING FOR THEM.
+   *
+   * Not enqueued, and that is the point: a queued job is picked up whenever the
+   * worker next looks, and the customer's browser asks for these roughly one
+   * round trip from here. The whole value of the feature is being ready before
+   * they decide whether to bother with Google, and a few hundred milliseconds
+   * decides it. The analysis above is genuinely background work; this is not.
+   *
+   * Deliberately after the service ratings are stored — they are what the
+   * drafts are built from, and starting a moment earlier would compose five
+   * reviews that mention nothing the customer actually rated.
+   */
+  void startReviewDrafts(feedback.id).catch(() => undefined);
+
+  /**
    * Read the comment, in the background, if there is a key for it.
    *
    * Enqueued rather than awaited: the customer is looking at a spinner, and
@@ -417,43 +432,99 @@ async function draftableServices(
  * call reads it back rather than paying a model to write five more. Somebody
  * refreshing the page should see the same suggestions, not a new set.
  */
-export async function reviewSuggestions(
-  feedbackId: string,
-): Promise<{ reviewDrafts: string[] }> {
-  const feedback = await runUnscoped(() =>
-    prisma.feedback.findUnique({
-      where: { id: feedbackId },
-      include: { serviceRatings: { include: { service: { select: { name: true } } } } },
-    }),
+/**
+ * Generations currently in flight, so the same five are never written twice.
+ *
+ * The rating's own request starts one of these and does not wait for it. A
+ * moment later the thank-you screen asks for the result, and without this map
+ * that second request would start a SECOND generation — paying the model twice
+ * and handing the customer a different five from the ones already being stored.
+ *
+ * In-process, deliberately. It is an optimisation, not a lock: if two instances
+ * ever run it at once the loser's write simply lands on a row that already has
+ * drafts, and the check below keeps the first set. A distributed lock for that
+ * would be more machinery than the thing it protects.
+ */
+const draftsInFlight = new Map<string, Promise<string[]>>();
+
+/**
+ * WRITE THE SUGGESTIONS NOW, SO THE THANK-YOU SCREEN DOES NOT HAVE TO WAIT.
+ *
+ * Called without awaiting when a rating is saved. By the time the customer's
+ * browser asks for the drafts — one round trip later — the work is usually
+ * either done or already running, and the screen gets its answer in the time a
+ * database read takes rather than the time a model takes.
+ *
+ * This is the fix for the thing that made the feature almost never land: the
+ * drafts were composed inside the request that asked for them, so the customer
+ * waited on a model while standing at a counter, the screen gave up at three
+ * seconds, and they tapped through to an empty Google box.
+ *
+ * Safe to call twice, and safe to call on a row that already has drafts.
+ */
+export function startReviewDrafts(feedbackId: string): Promise<string[]> {
+  const running = draftsInFlight.get(feedbackId);
+  if (running) return running;
+
+  const work = (async () => {
+    const feedback = await runUnscoped(() =>
+      prisma.feedback.findUnique({
+        where: { id: feedbackId },
+        include: { serviceRatings: { include: { service: { select: { name: true } } } } },
+      }),
+    );
+    if (!feedback) return [];
+    // Already written, by an earlier call or another instance. Keep that set:
+    // the customer may already be looking at it.
+    if (feedback.reviewDrafts.length > 0) return feedback.reviewDrafts;
+    if (!aiReady) return [];
+
+    const drafts = await draftReviewsNow({
+      overallRating: feedback.rating,
+      staffRating: feedback.staffRating,
+      cleanlinessRating: feedback.ambienceRating,
+      waitingRating: feedback.waitRating,
+      comment: feedback.comment,
+      services: feedback.serviceRatings.map((row) => ({ name: row.service.name, rating: row.rating })),
+    }).catch(() => [] as string[]);
+
+    if (drafts.length > 0) {
+      await runUnscoped(() =>
+        prisma.feedback.update({
+          where: { id: feedback.id },
+          data: {
+            reviewDrafts: drafts,
+            // The first one stays on its own column, which is all the salon's
+            // feedback list has room to show — and is the sentence the customer
+            // was offered, not a new one written for the salon's benefit.
+            ...(feedback.reviewDraft ? {} : { reviewDraft: drafts[0] }),
+          },
+        }),
+      ).catch(() => undefined);
+    }
+
+    return drafts;
+  })();
+
+  draftsInFlight.set(feedbackId, work);
+  // Cleared only once the write above has landed, so a request arriving at that
+  // instant reads the stored set rather than starting again.
+  void work.finally(() => draftsInFlight.delete(feedbackId));
+  return work;
+}
+
+export async function reviewSuggestions(feedbackId: string): Promise<{ reviewDrafts: string[] }> {
+  const stored = await runUnscoped(() =>
+    prisma.feedback.findUnique({ where: { id: feedbackId }, select: { id: true, reviewDrafts: true } }),
   );
-  if (!feedback) throw NotFound('Feedback');
+  if (!stored) throw NotFound('Feedback');
 
-  if (!aiReady) return { reviewDrafts: [] };
+  // The common case now: written while the rating was being saved.
+  if (stored.reviewDrafts.length > 0) return { reviewDrafts: stored.reviewDrafts };
 
-  const drafts = await draftReviewsNow({
-    overallRating: feedback.rating,
-    staffRating: feedback.staffRating,
-    cleanlinessRating: feedback.ambienceRating,
-    waitingRating: feedback.waitRating,
-    comment: feedback.comment,
-    services: feedback.serviceRatings.map((row) => ({
-      name: row.service.name,
-      rating: row.rating,
-    })),
-  }).catch(() => [] as string[]);
-
-  /**
-   * The first one is kept on the row, which is all the salon's own feedback
-   * list has room to show. Stored rather than regenerated so the salon sees
-   * the same sentence the customer was offered.
-   */
-  if (drafts[0] && !feedback.reviewDraft) {
-    await runUnscoped(() =>
-      prisma.feedback.update({ where: { id: feedback.id }, data: { reviewDraft: drafts[0] } }),
-    ).catch(() => undefined);
-  }
-
-  return { reviewDrafts: drafts };
+  // Still being written, or never started — an old row, or a restart between
+  // the two requests. Joins the work in flight rather than duplicating it.
+  return { reviewDrafts: await startReviewDrafts(feedbackId) };
 }
 
 export async function googleReviewUrlFor(tenantId: string, branchId: string | null): Promise<string | null> {
