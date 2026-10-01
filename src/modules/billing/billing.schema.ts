@@ -74,6 +74,22 @@ export const listInvoicesQuery = searchQuery.extend({
 
 export const addPaymentSchema = paymentSchema;
 
+/**
+ * Checking a discount code against the bill being built.
+ *
+ * The subtotal and the bill discount come from the unsaved cart, so they are
+ * taken from the request — there is no invoice to read them off yet. They only
+ * decide what the preview SAYS; the authoritative figures are recomputed from
+ * the catalogue when the bill is actually saved, so a client that sends a
+ * flattering subtotal gets a flattering preview and the same honest invoice.
+ */
+export const validateCouponSchema = z.object({
+  code: z.string().trim().min(1).max(40),
+  subtotal: moneySchema,
+  billDiscount: moneySchema.optional(),
+  customerId: idSchema.optional(),
+});
+
 export const advanceSchema = z.object({
   customerId: idSchema,
   amount: moneySchema,

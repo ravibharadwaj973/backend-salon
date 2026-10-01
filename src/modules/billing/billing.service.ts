@@ -321,6 +321,44 @@ async function validateCoupon(tenantId: string, code: string, customerId: string
 }
 
 /**
+ * CHECK A DISCOUNT CODE BEFORE THE BILL IS SAVED.
+ *
+ * The till had a box for a coupon code and no way to find out whether it was any
+ * good. The code went out with the invoice, and the front desk learned it was
+ * expired, used up, or short of its minimum bill only when the whole save was
+ * rejected — standing in front of the customer, with the bill not raised.
+ *
+ * So the same check runs on demand. `validateCoupon` is called, not copied: a
+ * preview that computed the discount its own way would eventually show a number
+ * the bill then disagreed with, and the customer would be watching when it did.
+ * Every refusal it throws is already a sentence somebody can read out loud.
+ *
+ * No new exposure in guessing codes: anybody who can reach this can already post
+ * an invoice with a guessed code and read the same refusal.
+ */
+export async function previewCoupon(input: { code: string; subtotal: number; billDiscount?: number; customerId?: string }) {
+  const tenantId = requireTenantId();
+
+  // The coupon applies to what is left after a manual bill discount, which is
+  // the order createInvoice uses. Previewing against the gross subtotal would
+  // overstate a percentage coupon on any bill that also had money knocked off.
+  const appliesTo = clampNonNegative(sub(round2(input.subtotal), round2(input.billDiscount ?? 0)));
+  const { coupon, discount } = await validateCoupon(tenantId, input.code, input.customerId, appliesTo);
+
+  return {
+    code: coupon.code,
+    description: coupon.description,
+    discountType: coupon.discountType,
+    value: coupon.value,
+    maxDiscount: coupon.maxDiscount,
+    minBillAmount: coupon.minBillAmount,
+    validTo: coupon.validTo,
+    appliesTo,
+    discount,
+  };
+}
+
+/**
  * The heart of the POS. One call takes a basket to a fully settled, GST-compliant
  * invoice — including package and membership redemptions, loyalty, wallet,
  * commissions and stock consumption — inside a single transaction.
@@ -371,6 +409,23 @@ export async function createInvoice(input: CreateInvoiceInput) {
   if (input.customerId && !customer) throw NotFound('Customer');
 
   const membership = customer ? await memberships.activeMembership(customer.id) : null;
+
+  /**
+   * A PACKAGE OR A MEMBERSHIP HAS TO BELONG TO SOMEBODY.
+   *
+   * Without this the line was priced, taxed and billed, the money was recorded —
+   * and then the `if (… && customer)` further down quietly declined to create
+   * the purchase. The customer paid for six facials and owned nothing. No error,
+   * no warning, and nothing on the bill to say so; it surfaces weeks later when
+   * they come back for a session that was never recorded.
+   *
+   * Refused here, before a number is issued, rather than defended at the till
+   * alone: the till now asks for a customer, but the till is not the only thing
+   * that can post an invoice.
+   */
+  if (!customer && items.some((item) => item.itemType === 'PACKAGE' || item.itemType === 'MEMBERSHIP')) {
+    throw BadRequest('Attach a customer before selling a package or a membership — the sessions have to belong to somebody');
+  }
 
   const resolved = await resolveLines(tenantId, items, {
     membership,

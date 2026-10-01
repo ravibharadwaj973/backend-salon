@@ -23,6 +23,7 @@ import {
   refundSchema,
   setItemStaffSchema,
   updateCouponSchema,
+  validateCouponSchema,
   voidSchema,
 } from './billing.schema';
 import type { PaymentMode } from '@prisma/client';
@@ -102,6 +103,22 @@ invoiceRouter.get(
   requirePermission(PERMISSIONS.REPORT_FINANCIAL),
   validate({ query: z.object({ from: z.coerce.date(), to: z.coerce.date(), branchId: idSchema.optional() }) }),
   asyncHandler(async (req, res) => ok(res, await billing.gstReport(req.query as never))),
+);
+
+/**
+ * Is this discount code good, and what is it worth on this bill?
+ *
+ * Above '/:id', like the exports below it, or Express reads "validate-coupon" as
+ * an invoice id. A read, but a POST: the cart it is checked against does not fit
+ * in a query string, and the customer id has no business being in a URL.
+ */
+invoiceRouter.post(
+  '/validate-coupon',
+  requirePermission(PERMISSIONS.INVOICE_CREATE),
+  validate({ body: validateCouponSchema }),
+  asyncHandler(async (req, res) =>
+    ok(res, await billing.previewCoupon(req.body as { code: string; subtotal: number; billDiscount?: number; customerId?: string })),
+  ),
 );
 
 invoiceRouter.get(
