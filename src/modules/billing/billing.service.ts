@@ -21,7 +21,7 @@ import { endOfDay, startOfDay } from '../../core/dates';
 import { sequenceNumber } from '../../core/ids';
 import { enqueueSafe } from '../../jobs/queue';
 import { apportionDiscount, computeLineTax, financialYear, isInterStateSupply, taxSummary } from './gst';
-import { NO_COMMISSION, commissionAmount, commissionTerms, type CommissionTerms } from './commission';
+import { commissionAmount, commissionTerms, shareOut, splitCommission } from './commission';
 import { billingIdentity, ensureSeries, issueInvoiceNumber } from './tax-settings.service';
 import * as loyalty from '../loyalty/loyalty.service';
 import * as packages from '../packages/package.service';
@@ -33,7 +33,16 @@ export interface InvoiceItemInput {
   itemType: InvoiceItemType;
   refId?: string;
   name?: string;
+  /** The primary performer. Kept for every caller that sends one name. */
   staffId?: string;
+  /**
+   * Everyone who performed this service, primary first.
+   *
+   * Sent instead of `staffId` by the till. When both arrive, this wins and
+   * `staffId` is ignored rather than merged — two sources for one fact, silently
+   * combined, is how a line ends up crediting somebody nobody chose.
+   */
+  staffIds?: string[];
   quantity?: number;
   unitPrice?: number;
   discount?: number;
@@ -91,12 +100,29 @@ export interface CreateInvoiceInput {
 const INVOICE_INCLUDE = {
   customer: { select: { id: true, firstName: true, lastName: true, phone: true, email: true, tier: true, loyaltyPoints: true } },
   branch: { select: { id: true, name: true, gstin: true, addressLine: true, city: true, stateCode: true, phone: true } },
-  items: { include: { staff: { select: { id: true, displayName: true } } } },
+  items: {
+    include: {
+      staff: { select: { id: true, displayName: true } },
+      // Everyone on the line, primary first. Internal only — nothing that goes
+      // to a customer carries a stylist's name.
+      performers: {
+        select: { staffId: true, sharePct: true, isPrimary: true, staff: { select: { id: true, displayName: true } } },
+        orderBy: { isPrimary: 'desc' },
+      },
+    },
+  },
   payments: true,
   refunds: true,
   appointment: { select: { id: true, startAt: true } },
   coupon: { select: { id: true, code: true } },
 } satisfies Prisma.InvoiceInclude;
+
+/** The slice of a staff row the commission split needs. */
+interface Performer {
+  id: string;
+  commissionType: CommissionType;
+  commissionRate: Prisma.Decimal;
+}
 
 interface ResolvedLine {
   input: InvoiceItemInput;
@@ -104,6 +130,7 @@ interface ResolvedLine {
   refId: string | null;
   name: string;
   hsnSac: string | null;
+  /** The primary performer, mirrored onto invoice_items.staffId for the reports. */
   staffId: string | null;
   quantity: Prisma.Decimal;
   unitPrice: Prisma.Decimal;
@@ -112,8 +139,15 @@ interface ResolvedLine {
   redeemedFrom: RedemptionSource;
   packagePurchaseItemId: string | null;
   membershipSubscriptionId: string | null;
-  /** Whose arrangement applies, and at what rate — resolved once, in ./commission. */
-  commission: CommissionTerms;
+  /** Everyone on this line, primary first. Empty on a line nobody is credited for. */
+  performers: Performer[];
+  /**
+   * The service's own commission arrangement, carried rather than resolved.
+   *
+   * It cannot be reduced to a rate here any more: with two stylists on a line,
+   * whose arrangement wins is decided once per person, not once per line.
+   */
+  serviceCommission: { commissionType: CommissionType; commissionRate: Prisma.Decimal } | null;
   net: Prisma.Decimal;
 }
 
@@ -155,6 +189,19 @@ export async function billingDefaults(tenantId: string) {
   };
 }
 
+/**
+ * Every staff id on a line, primary first, with nothing repeated.
+ *
+ * `staffIds` wins over `staffId` when both are sent — see the note on the input
+ * type. De-duplicated because the same name twice would halve that person's own
+ * commission and still pay the same total, which is a bug nobody would read off
+ * a payslip.
+ */
+function performerIdsOf(item: InvoiceItemInput): string[] {
+  const ids = item.staffIds?.length ? item.staffIds : item.staffId ? [item.staffId] : [];
+  return [...new Set(ids.filter(Boolean))];
+}
+
 async function resolveLines(
   tenantId: string,
   items: InvoiceItemInput[],
@@ -171,7 +218,10 @@ async function resolveLines(
     packageIds.length ? prisma.packageTemplate.findMany({ where: { tenantId, id: { in: packageIds } } }) : [],
     planIds.length ? prisma.membershipPlan.findMany({ where: { tenantId, id: { in: planIds } } }) : [],
     prisma.staff.findMany({
-      where: { tenantId, id: { in: items.map((i) => i.staffId).filter((s): s is string => Boolean(s)) } },
+      where: {
+        tenantId,
+        id: { in: [...new Set(items.flatMap((i) => performerIdsOf(i)))] },
+      },
     }),
   ]);
 
@@ -190,10 +240,19 @@ async function resolveLines(
     let unitPrice = d(item.unitPrice ?? 0);
     let taxRatePct = d(item.taxRatePct ?? context.defaultGstRate);
     let hsnSac: string | null = null;
-    let commission: CommissionTerms = NO_COMMISSION;
+    let serviceCommission: { commissionType: CommissionType; commissionRate: Prisma.Decimal } | null = null;
     let autoDiscount = d(0);
 
-    const staff = item.staffId ? staffById.get(item.staffId) : undefined;
+    /**
+     * Resolved in the order they were sent, so the first is the primary. A name
+     * the tenant does not have is dropped rather than refused: a stale screen
+     * should not cost a salon the whole bill over a stylist who left this
+     * morning, and the line still records everyone who is real.
+     */
+    const performers = performerIdsOf(item)
+      .map((id) => staffById.get(id))
+      .filter((row): row is NonNullable<typeof row> => Boolean(row))
+      .map((row) => ({ id: row.id, commissionType: row.commissionType, commissionRate: row.commissionRate }));
 
     switch (item.itemType) {
       case 'SERVICE': {
@@ -218,11 +277,10 @@ async function resolveLines(
           }
         }
 
-        // Service-level commission settings win; otherwise fall back to the
-        // stylist's own arrangement. The rule itself lives in ./commission,
-        // because correcting the stylist on a saved bill has to arrive at
-        // exactly the number the till would have written here.
-        commission = commissionTerms(service, staff);
+        // Carried, not resolved. Whose arrangement wins — the service's or the
+        // stylist's — is decided per person in ./commission, because two
+        // stylists on one line can be on two different deals.
+        serviceCommission = { commissionType: service.commissionType, commissionRate: service.commissionRate };
         break;
       }
       case 'PRODUCT': {
@@ -282,7 +340,9 @@ async function resolveLines(
       refId: item.refId ?? null,
       name,
       hsnSac,
-      staffId: item.staffId ?? null,
+      staffId: performers[0]?.id ?? null,
+      performers,
+      serviceCommission,
       quantity,
       unitPrice,
       itemDiscount,
@@ -290,7 +350,6 @@ async function resolveLines(
       redeemedFrom,
       packagePurchaseItemId: item.packagePurchaseItemId ?? null,
       membershipSubscriptionId: item.membershipSubscriptionId ?? null,
-      commission,
       net,
     };
   });
@@ -630,25 +689,54 @@ export async function createInvoice(input: CreateInvoiceInput) {
           });
         }
 
-        // Commission on services actually charged for
-        if (line.itemType === 'SERVICE' && line.staffId) {
-          const base = entry.lineTotal;
-          const amount = commissionAmount(line.commission, base, line.quantity);
+        /**
+         * WHO PERFORMED IT, AND WHAT EACH OF THEM EARNED.
+         *
+         * Two rows go out per performer and they answer different questions. The
+         * share row is the record that somebody was on this line at all, and it
+         * is written even when the commission is nothing — a salaried stylist
+         * still has to appear in "revenue by stylist", and a line that paid no
+         * commission is not a line nobody worked on.
+         *
+         * The commission entry is written only when there is money in it, which
+         * keeps the table meaning what it has always meant: a list of amounts
+         * owed, not a log of services.
+         */
+        if (line.itemType === 'SERVICE' && line.performers.length > 0) {
+          const shares = shareOut(d(100), line.performers.length);
+          const split = splitCommission({
+            service: line.serviceCommission,
+            performers: line.performers,
+            base: entry.lineTotal,
+            quantity: line.quantity,
+          });
 
-          if (amount.greaterThan(0)) {
-            await tx.commissionEntry.create({
+          for (const [index, row] of split.entries()) {
+            await tx.invoiceItemStaff.create({
               data: {
                 tenantId,
-                branchId,
-                staffId: line.staffId,
-                invoiceId: invoice.id,
                 invoiceItemId: invoiceItem.id,
-                baseAmount: base,
-                ratePct: line.commission.ratePct,
-                amount,
-                earnedOn: invoiceDate,
+                staffId: row.performer.id,
+                sharePct: shares[index]!,
+                isPrimary: index === 0,
               },
             });
+
+            if (row.amount.greaterThan(0)) {
+              await tx.commissionEntry.create({
+                data: {
+                  tenantId,
+                  branchId,
+                  staffId: row.performer.id,
+                  invoiceId: invoice.id,
+                  invoiceItemId: invoiceItem.id,
+                  baseAmount: row.baseAmount,
+                  ratePct: row.ratePct,
+                  amount: row.amount,
+                  earnedOn: invoiceDate,
+                },
+              });
+            }
           }
         }
 
@@ -1045,7 +1133,7 @@ export async function removePayment(invoiceId: string, paymentId: string) {
  *
  * Returns the change as well as the bill, so the route can audit what moved.
  */
-export async function setInvoiceItemStaff(invoiceId: string, itemId: string, staffId: string | null) {
+export async function setInvoiceItemStaff(invoiceId: string, itemId: string, staffIds: string[]) {
   const tenantId = requireTenantId();
 
   const invoice = await prisma.invoice.findUnique({
@@ -1069,7 +1157,7 @@ export async function setInvoiceItemStaff(invoiceId: string, itemId: string, sta
       staffId: true,
       quantity: true,
       lineTotal: true,
-      staff: { select: { id: true, displayName: true } },
+      performers: { select: { staffId: true, isPrimary: true, staff: { select: { displayName: true } } } },
     },
   });
   // Checked against this bill rather than trusted from the path: an item id from
@@ -1080,30 +1168,32 @@ export async function setInvoiceItemStaff(invoiceId: string, itemId: string, sta
     throw BadRequest('Only a service line has somebody who performed it — a retail product has a seller, not a stylist');
   }
 
-  const previousStaffId = item.staffId ?? null;
-  if (previousStaffId === staffId) {
-    // Idempotent on purpose: two clicks on the same name, or a stale screen
-    // sending what is already stored, should not churn the commission entry.
+  const wanted = [...new Set(staffIds.filter(Boolean))];
+  const before = [...item.performers]
+    .sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary))
+    .map((row) => ({ staffId: row.staffId, name: row.staff.displayName }));
+
+  // Order is part of the value: the first name is the primary performer, so
+  // promoting the second stylist is a real change even with the same two people.
+  if (before.map((row) => row.staffId).join(',') === wanted.join(',')) {
+    // Idempotent on purpose: a stale screen sending back what is already stored
+    // should not churn the commission entries.
     return { invoice: await getInvoice(invoiceId), change: null };
   }
 
-  let staff: {
-    id: string;
-    displayName: string;
-    branchId: string;
-    commissionType: CommissionType;
-    commissionRate: Prisma.Decimal;
-  } | null = null;
-  if (staffId) {
-    staff = await prisma.staff.findUnique({
-      where: { id: staffId },
-      select: { id: true, displayName: true, branchId: true, commissionType: true, commissionRate: true },
-    });
-    if (!staff) throw NotFound('Staff member');
-    if (staff.branchId !== invoice.branchId) {
-      throw BadRequest(`${staff.displayName} is not at the branch that issued this bill`);
-    }
-  }
+  const staff = wanted.length
+    ? await prisma.staff.findMany({
+        where: { id: { in: wanted } },
+        select: { id: true, displayName: true, branchId: true, commissionType: true, commissionRate: true },
+      })
+    : [];
+
+  const byId = new Map(staff.map((row) => [row.id, row]));
+  const missing = wanted.find((id) => !byId.has(id));
+  if (missing) throw NotFound('Staff member');
+
+  const elsewhere = staff.find((row) => row.branchId !== invoice.branchId);
+  if (elsewhere) throw BadRequest(`${elsewhere.displayName} is not at the branch that issued this bill`);
 
   const existing = await prisma.commissionEntry.findMany({
     where: { invoiceItemId: itemId },
@@ -1115,56 +1205,80 @@ export async function setInvoiceItemStaff(invoiceId: string, itemId: string, sta
     );
   }
 
-  const service =
-    item.refId && staff
-      ? await prisma.service.findUnique({
-          where: { id: item.refId },
-          select: { commissionType: true, commissionRate: true },
-        })
-      : null;
+  // In the order asked for, so the first name stays the primary.
+  const performers = wanted.map((id) => byId.get(id)!);
+  const service = item.refId
+    ? await prisma.service.findUnique({
+        where: { id: item.refId },
+        select: { commissionType: true, commissionRate: true },
+      })
+    : null;
 
-  const terms = staff ? commissionTerms(service, staff) : NO_COMMISSION;
-  const amount = staff ? commissionAmount(terms, item.lineTotal, item.quantity) : d(0);
+  const shares = shareOut(d(100), performers.length || 1);
+  const split = performers.length
+    ? splitCommission({ service, performers, base: item.lineTotal, quantity: item.quantity })
+    : [];
 
   await prisma.$transaction(async (tx) => {
     await tx.commissionEntry.deleteMany({ where: { invoiceItemId: itemId, isPaid: false } });
-    await tx.invoiceItem.update({ where: { id: itemId }, data: { staffId } });
+    await tx.invoiceItemStaff.deleteMany({ where: { invoiceItemId: itemId } });
 
-    /**
-     * No entry when the arrangement pays nothing — and the line still keeps the
-     * name. Attribution and commission are two separate things: a salaried
-     * stylist earns no percentage but must still show up in "revenue by
-     * stylist", which reads invoice_items.staffId, not commission_entries.
-     */
-    if (staff && amount.greaterThan(0)) {
-      await tx.commissionEntry.create({
+    // The primary is mirrored back onto the column every existing report reads.
+    await tx.invoiceItem.update({ where: { id: itemId }, data: { staffId: performers[0]?.id ?? null } });
+
+    for (const [index, row] of split.entries()) {
+      await tx.invoiceItemStaff.create({
         data: {
           tenantId,
-          branchId: invoice.branchId,
-          staffId: staff.id,
-          invoiceId,
           invoiceItemId: itemId,
-          baseAmount: item.lineTotal,
-          ratePct: terms.ratePct,
-          amount,
-          // The day the work was done, not today. See the note above.
-          earnedOn: invoice.invoiceDate,
+          staffId: row.performer.id,
+          sharePct: shares[index]!,
+          isPrimary: index === 0,
         },
       });
+
+      /**
+       * No entry when the arrangement pays nothing — and the share row above is
+       * still written. Attribution and commission are two separate things: a
+       * salaried stylist earns no percentage but must still show up in "revenue
+       * by stylist", which reads the names, not the amounts.
+       */
+      if (row.amount.greaterThan(0)) {
+        await tx.commissionEntry.create({
+          data: {
+            tenantId,
+            branchId: invoice.branchId,
+            staffId: row.performer.id,
+            invoiceId,
+            invoiceItemId: itemId,
+            baseAmount: row.baseAmount,
+            ratePct: row.ratePct,
+            amount: row.amount,
+            // The day the work was done, not today. See the note above.
+            earnedOn: invoice.invoiceDate,
+          },
+        });
+      }
     }
   });
 
   const change = {
     line: item.name,
     from: {
-      staffId: previousStaffId,
-      name: item.staff?.displayName ?? null,
+      staff: before,
       commission: existing.reduce((sum, entry) => add(sum, entry.amount), d(0)).toString(),
     },
-    to: { staffId, name: staff?.displayName ?? null, commission: amount.toString() },
+    to: {
+      staff: split.map((row) => ({
+        staffId: row.performer.id,
+        name: byId.get(row.performer.id)!.displayName,
+        commission: row.amount.toString(),
+      })),
+      commission: split.reduce((sum, row) => add(sum, row.amount), d(0)).toString(),
+    },
   };
 
-  logger.info({ invoiceId, itemId, ...change }, 'invoice line staff changed');
+  logger.info({ invoiceId, itemId, line: change.line }, 'invoice line performers changed');
   return { invoice: await getInvoice(invoiceId), change };
 }
 

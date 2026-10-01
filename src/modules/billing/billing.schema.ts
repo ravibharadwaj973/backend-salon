@@ -26,6 +26,15 @@ const invoiceItemSchema = z.object({
   refId: idSchema.optional(),
   name: z.string().trim().max(160).optional(),
   staffId: idSchema.optional(),
+  /**
+   * Everyone who performed this service, primary first.
+   *
+   * Capped at four. Not an arbitrary number: beyond three or four names on one
+   * service the commission on each share is small enough that the salon is
+   * better off billing the work as separate lines, and an uncapped array here is
+   * an invitation to send a thousand ids and make the till write a thousand rows.
+   */
+  staffIds: z.array(idSchema).max(4).optional(),
   quantity: z.coerce.number().positive().max(1000).default(1),
   unitPrice: moneySchema.optional(),
   discount: moneySchema.optional(),
@@ -119,7 +128,12 @@ export const voidSchema = z.object({
  * somebody's commission.
  */
 export const setItemStaffSchema = z.object({
-  staffId: idSchema.nullable(),
+  /**
+   * The full cast for this line, primary first. An empty array takes every name
+   * off it — that is a meaningful instruction, not a missing field, which is why
+   * the array is required rather than optional.
+   */
+  staffIds: z.array(idSchema).max(4),
 });
 
 export const createCouponSchema = z.object({

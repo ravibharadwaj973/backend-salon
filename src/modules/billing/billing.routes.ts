@@ -215,8 +215,8 @@ invoiceRouter.patch(
   requirePermission(PERMISSIONS.INVOICE_ITEM_STAFF),
   validate({ params: idParam.extend({ itemId: idSchema }), body: setItemStaffSchema }),
   asyncHandler(async (req, res) => {
-    const { staffId } = req.body as { staffId: string | null };
-    const { invoice, change } = await billing.setInvoiceItemStaff(req.params.id!, req.params.itemId!, staffId);
+    const { staffIds } = req.body as { staffIds: string[] };
+    const { invoice, change } = await billing.setInvoiceItemStaff(req.params.id!, req.params.itemId!, staffIds);
     // Not audited when nothing moved — resending the name already on the line is
     // a no-op, and a log full of those hides the changes that did happen.
     if (change) {

@@ -1217,6 +1217,7 @@ model Staff {
   timeOff              StaffTimeOff[]
   appointmentServices  AppointmentService[]
   invoiceItems         InvoiceItem[]
+  invoiceItemShares    InvoiceItemStaff[]
   attendance           Attendance[]
   leaveRequests        LeaveRequest[]
   targets              StaffTarget[]
@@ -1867,13 +1868,51 @@ model InvoiceItem {
   packagePurchaseItemId    String?
   membershipSubscriptionId String?
 
-  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  staff   Staff?  @relation(fields: [staffId], references: [id], onDelete: SetNull)
+  invoice    Invoice            @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  staff      Staff?             @relation(fields: [staffId], references: [id], onDelete: SetNull)
+  performers InvoiceItemStaff[]
 
   @@index([tenantId, invoiceId])
   @@index([tenantId, itemType, refId])
   @@index([tenantId, staffId])
   @@map("invoice_items")
+}
+
+/// EVERYONE WHO PERFORMED A SERVICE, NOT JUST THE FIRST NAME ON IT.
+///
+/// Two stylists on one bridal makeup is ordinary, and until now the bill could
+/// record one of them. The second person did the work and earned nothing,
+/// because there was one column to put them in.
+///
+/// `invoice_items.staffId` STAYS, and is the primary performer — the first of
+/// these rows. Every report in the app reads that column: revenue by stylist,
+/// the staff filter on the invoice list, a stylist's own page. Replacing it with
+/// this table would have meant rewriting all of them at once, and any one missed
+/// would quietly report a salon's busiest stylist as idle. So the column keeps
+/// its meaning and this table carries the full cast, the primary included, so
+/// there is exactly one place to read "who was on this line".
+///
+/// `sharePct` is stored rather than divided on the fly. An equal split is what
+/// the till writes today, but a commission entry has to stay explicable years
+/// later — "why did she get ₹1,500 of a ₹3,000 service" is answered by a row
+/// that says 50, not by whatever the code happened to do that month.
+model InvoiceItemStaff {
+  id            String  @id @default(cuid())
+  tenantId      String
+  invoiceItemId String
+  staffId       String
+  /// 0–100. The parts of one line always add up to 100.
+  sharePct      Decimal @default(100) @db.Decimal(5, 2)
+  /// The one on invoice_items.staffId. Exactly one per line, and it takes the
+  /// rounding remainder when a share does not divide evenly.
+  isPrimary     Boolean @default(false)
+
+  item  InvoiceItem @relation(fields: [invoiceItemId], references: [id], onDelete: Cascade)
+  staff Staff       @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@unique([invoiceItemId, staffId])
+  @@index([tenantId, staffId])
+  @@map("invoice_item_staff")
 }
 
 model Payment {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { commissionAmount, commissionTerms } from '../src/modules/billing/commission';
+import { add, d } from '../src/core/money';
+import { commissionAmount, commissionTerms, shareOut, splitCommission } from '../src/modules/billing/commission';
 
 /**
  * These are the arithmetic a stylist's payslip is made of, which is why they are
@@ -84,5 +85,97 @@ describe('what the entry is worth', () => {
     const terms = commissionTerms(none, flat(150));
     expect(terms.ratePct.toString()).toBe('0');
     expect(terms.flat.toString()).toBe('150');
+  });
+});
+
+describe('cutting one amount into parts', () => {
+  it('divides evenly when it divides evenly', () => {
+    expect(shareOut(d(1000), 2).map(String)).toEqual(['500', '500']);
+  });
+
+  it('still adds up to the whole when it does not', () => {
+    // ₹333.33 three times is ₹999.99, and the missing paisa turns up in a
+    // reconciliation two quarters later with nobody able to explain it.
+    const parts = shareOut(d(1000), 3);
+    expect(parts.map(String)).toEqual(['333.34', '333.33', '333.33']);
+    expect(parts.reduce((sum, part) => add(sum, part), d(0)).toString()).toBe('1000');
+  });
+
+  it('gives the remainder to the first part', () => {
+    // The first part is the primary performer. Somebody has to get it, and the
+    // name on the line is the one that can be defended.
+    expect(shareOut(d(100), 3)[0]!.toString()).toBe('33.34');
+  });
+
+  it('hands the whole thing over when there is only one of them', () => {
+    expect(shareOut(d(2800), 1).map(String)).toEqual(['2800']);
+  });
+});
+
+describe('two stylists on one service', () => {
+  const priya = { id: 'priya', ...percent(10) };
+  const anita = { id: 'anita', ...percent(10) };
+
+  it('splits the line between them rather than paying both in full', () => {
+    // A 10% rate on a ₹3,000 service costs the salon ₹300 whether one person
+    // did it or three. Paying each of them ₹300 would double the wage bill
+    // every time a second name was added, and nothing on the bill would say so.
+    const split = splitCommission({ service: none, performers: [priya, anita], base: 3000, quantity: 1 });
+    expect(split.map((row) => row.amount.toString())).toEqual(['150', '150']);
+  });
+
+  it('lets each earn at their own rate on their own share', () => {
+    // Different people are on different deals, and sharing a service does not
+    // put them on the same one.
+    const split = splitCommission({
+      service: none,
+      performers: [{ id: 'senior', ...percent(15) }, { id: 'junior', ...percent(5) }],
+      base: 2000,
+      quantity: 1,
+    });
+    expect(split.map((row) => row.amount.toString())).toEqual(['150', '50']);
+  });
+
+  it('still lets the service arrangement override both of them', () => {
+    const split = splitCommission({ service: percent(4), performers: [priya, anita], base: 5000, quantity: 1 });
+    expect(split.map((row) => row.amount.toString())).toEqual(['100', '100']);
+  });
+
+  it('divides a flat rate too', () => {
+    // A flat per-service rate is what the salon pays for the service being done,
+    // not what it pays each person who touches it.
+    const split = splitCommission({
+      service: none,
+      performers: [{ id: 'a', ...flat(150) }, { id: 'b', ...flat(150) }],
+      base: 4000,
+      quantity: 1,
+    });
+    expect(split.map((row) => row.amount.toString())).toEqual(['75', '75']);
+  });
+
+  it('records what each was credited on, not the whole line', () => {
+    // baseAmount is what a payslip query reports back. Writing the full line
+    // value against each person would show a ₹3,000 service twice.
+    const split = splitCommission({ service: none, performers: [priya, anita], base: 3000, quantity: 1 });
+    expect(split.map((row) => row.baseAmount.toString())).toEqual(['1500', '1500']);
+  });
+
+  it('pays no more in total for three than for one', () => {
+    const alone = splitCommission({ service: none, performers: [priya], base: 1000, quantity: 1 });
+    const three = splitCommission({
+      service: none,
+      performers: [priya, anita, { id: 'c', ...percent(10) }],
+      base: 1000,
+      quantity: 1,
+    });
+    const total = (rows: { amount: ReturnType<typeof d> }[]) =>
+      rows.reduce((sum, row) => add(sum, row.amount), d(0)).toString();
+
+    expect(total(alone)).toBe('100');
+    expect(total(three)).toBe('100');
+  });
+
+  it('returns nothing at all when nobody is on the line', () => {
+    expect(splitCommission({ service: percent(10), performers: [], base: 3000, quantity: 1 })).toEqual([]);
   });
 });
