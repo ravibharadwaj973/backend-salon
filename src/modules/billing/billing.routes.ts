@@ -21,6 +21,7 @@ import {
   createInvoiceSchema,
   listInvoicesQuery,
   refundSchema,
+  setItemStaffSchema,
   updateCouponSchema,
   voidSchema,
 } from './billing.schema';
@@ -179,6 +180,41 @@ invoiceRouter.post(
     const invoice = await billing.addPayment(req.params.id!, req.body as PaymentInput);
     audit({ action: 'payment.received', entity: 'Invoice', entityId: invoice.id, after: req.body });
     return ok(res, invoice);
+  }),
+);
+
+/**
+ * Add or change who performed a billed service.
+ *
+ * PATCH rather than a re-POST of the bill: nothing about the money changes, so
+ * the invoice keeps its number, its totals and its document. What moves is the
+ * commission, and that is why the audit line carries both names and both
+ * amounts — "who changed this stylist, and what did it cost or pay" is the only
+ * question anybody asks about this afterwards, and it has to be answerable
+ * months later from the log alone.
+ */
+invoiceRouter.patch(
+  '/:id/items/:itemId/staff',
+  requirePermission(PERMISSIONS.INVOICE_ITEM_STAFF),
+  validate({ params: idParam.extend({ itemId: idSchema }), body: setItemStaffSchema }),
+  asyncHandler(async (req, res) => {
+    const { staffId } = req.body as { staffId: string | null };
+    const { invoice, change } = await billing.setInvoiceItemStaff(req.params.id!, req.params.itemId!, staffId);
+    // Not audited when nothing moved — resending the name already on the line is
+    // a no-op, and a log full of those hides the changes that did happen.
+    if (change) {
+      audit({
+        action: 'invoice.item_staff_changed',
+        entity: 'InvoiceItem',
+        entityId: req.params.itemId!,
+        before: { invoiceNumber: invoice.invoiceNumber, line: change.line, ...change.from },
+        after: change.to,
+      });
+    }
+    // The change goes back with the bill, not just into the log. "Who is this
+    // credited to now" is half the answer; "and ₹237.29 moved with it" is the
+    // half that stops somebody clicking a name without realising it was money.
+    return ok(res, { invoice, change });
   }),
 );
 

@@ -65,6 +65,18 @@ export const PERMISSIONS = {
   INVOICE_DISCOUNT: 'invoice.discount',
   /** Choose, bill by bill, whether GST is charged — the salon default applies otherwise. */
   INVOICE_GST_CHOICE: 'invoice.gst_choice',
+  /**
+   * Add or change who performed a service on a bill that is already saved.
+   *
+   * Sits with the front desk rather than with management, and deliberately: the
+   * same person already chooses the stylist when they raise the bill, so being
+   * able to fix it a minute later is no new power — it is the same decision,
+   * made once the mistake is visible. What stops it being a way to move money
+   * quietly is not the permission but the rules behind it: a commission already
+   * paid out cannot be moved, and every change is audited with both names and
+   * both amounts.
+   */
+  INVOICE_ITEM_STAFF: 'invoice.item_staff',
   PAYMENT_MANAGE: 'payment.manage',
   REFUND_MANAGE: 'refund.manage',
   COUPON_MANAGE: 'coupon.manage',
@@ -122,6 +134,7 @@ const RECEPTIONIST: Permission[] = [
   PERMISSIONS.APPOINTMENT_CANCEL,
   PERMISSIONS.INVOICE_VIEW,
   PERMISSIONS.INVOICE_CREATE,
+  PERMISSIONS.INVOICE_ITEM_STAFF,
   PERMISSIONS.PAYMENT_MANAGE,
   PERMISSIONS.PACKAGE_VIEW,
   PERMISSIONS.PACKAGE_MANAGE,

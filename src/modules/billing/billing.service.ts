@@ -1,7 +1,7 @@
-import type { InvoiceItemType, PaymentMode, Prisma, RedemptionSource } from '@prisma/client';
+import type { CommissionType, InvoiceItemType, PaymentMode, Prisma, RedemptionSource } from '@prisma/client';
 import { prisma, type TxClient } from '../../core/prisma';
 import { currentUserId, requireTenantId } from '../../core/context';
-import { branchFilter, requireBranchId } from '../../core/scope';
+import { assertBranchAccess, branchFilter, requireBranchId } from '../../core/scope';
 import { BadRequest, Conflict, NotFound } from '../../core/errors';
 import { pageParams } from '../../core/http';
 import {
@@ -21,6 +21,7 @@ import { endOfDay, startOfDay } from '../../core/dates';
 import { sequenceNumber } from '../../core/ids';
 import { enqueueSafe } from '../../jobs/queue';
 import { apportionDiscount, computeLineTax, financialYear, isInterStateSupply, taxSummary } from './gst';
+import { NO_COMMISSION, commissionAmount, commissionTerms, type CommissionTerms } from './commission';
 import { billingIdentity, ensureSeries, issueInvoiceNumber } from './tax-settings.service';
 import * as loyalty from '../loyalty/loyalty.service';
 import * as packages from '../packages/package.service';
@@ -111,8 +112,8 @@ interface ResolvedLine {
   redeemedFrom: RedemptionSource;
   packagePurchaseItemId: string | null;
   membershipSubscriptionId: string | null;
-  commissionRatePct: Prisma.Decimal;
-  commissionFlat: Prisma.Decimal;
+  /** Whose arrangement applies, and at what rate — resolved once, in ./commission. */
+  commission: CommissionTerms;
   net: Prisma.Decimal;
 }
 
@@ -189,8 +190,7 @@ async function resolveLines(
     let unitPrice = d(item.unitPrice ?? 0);
     let taxRatePct = d(item.taxRatePct ?? context.defaultGstRate);
     let hsnSac: string | null = null;
-    let commissionRatePct = d(0);
-    let commissionFlat = d(0);
+    let commission: CommissionTerms = NO_COMMISSION;
     let autoDiscount = d(0);
 
     const staff = item.staffId ? staffById.get(item.staffId) : undefined;
@@ -219,14 +219,10 @@ async function resolveLines(
         }
 
         // Service-level commission settings win; otherwise fall back to the
-        // stylist's own arrangement.
-        if (service.commissionType !== 'NONE') {
-          if (service.commissionType === 'FLAT_PER_SERVICE') commissionFlat = d(service.commissionRate);
-          else commissionRatePct = d(service.commissionRate);
-        } else if (staff && staff.commissionType !== 'NONE') {
-          if (staff.commissionType === 'FLAT_PER_SERVICE') commissionFlat = d(staff.commissionRate);
-          else commissionRatePct = d(staff.commissionRate);
-        }
+        // stylist's own arrangement. The rule itself lives in ./commission,
+        // because correcting the stylist on a saved bill has to arrive at
+        // exactly the number the till would have written here.
+        commission = commissionTerms(service, staff);
         break;
       }
       case 'PRODUCT': {
@@ -294,8 +290,7 @@ async function resolveLines(
       redeemedFrom,
       packagePurchaseItemId: item.packagePurchaseItemId ?? null,
       membershipSubscriptionId: item.membershipSubscriptionId ?? null,
-      commissionRatePct,
-      commissionFlat,
+      commission,
       net,
     };
   });
@@ -583,9 +578,7 @@ export async function createInvoice(input: CreateInvoiceInput) {
         // Commission on services actually charged for
         if (line.itemType === 'SERVICE' && line.staffId) {
           const base = entry.lineTotal;
-          const amount = line.commissionFlat.greaterThan(0)
-            ? round2(mul(line.commissionFlat, line.quantity))
-            : round2(mul(base, div(line.commissionRatePct, 100)));
+          const amount = commissionAmount(line.commission, base, line.quantity);
 
           if (amount.greaterThan(0)) {
             await tx.commissionEntry.create({
@@ -596,7 +589,7 @@ export async function createInvoice(input: CreateInvoiceInput) {
                 invoiceId: invoice.id,
                 invoiceItemId: invoiceItem.id,
                 baseAmount: base,
-                ratePct: line.commissionRatePct,
+                ratePct: line.commission.ratePct,
                 amount,
                 earnedOn: invoiceDate,
               },
@@ -958,6 +951,166 @@ export async function removePayment(invoiceId: string, paymentId: string) {
 
     return { invoice: updated, removed: payment };
   });
+}
+
+/**
+ * ADD OR CHANGE WHO PERFORMED A BILLED SERVICE.
+ *
+ * Until now the stylist on a line was fixed the moment the bill was saved. The
+ * only way to correct it was to void the bill and raise it again, which burns an
+ * invoice number, leaves a gap an auditor asks about, and re-issues a document
+ * the customer has already been handed — all to fix a dropdown.
+ *
+ * And it gets skipped constantly. The box is optional at the counter (see the
+ * till screen, which says so), so the common case is not even a wrong name: it
+ * is no name at all, noticed at the end of the month when a stylist's commission
+ * is short and nobody can say which bills it was.
+ *
+ * So the attribution is editable after the fact, with three rules that keep it
+ * from becoming a way to move money around quietly:
+ *
+ *   1. A PAID COMMISSION IS FROZEN. Once payroll has paid an entry out, this
+ *      refuses. Deleting it would take money back from somebody who has already
+ *      been paid, and silently — the payslip would stop matching the entries it
+ *      was built from. That correction belongs in the next payroll as an
+ *      adjustment a human signs off, not in a dropdown on a bill.
+ *   2. SAME BRANCH ONLY. The commission entry is written against the bill's
+ *      branch. Crediting a stylist from another shop would file their earning
+ *      under a branch they do not work at, and every per-branch payroll and
+ *      commission report downstream reads that column.
+ *   3. EARNED ON THE DAY OF THE SERVICE, NOT THE DAY OF THE CORRECTION. The new
+ *      entry carries the invoice's own date, so fixing a 28 September bill on
+ *      3 October puts the money in September's payroll where it belongs. Using
+ *      "now" would quietly move earnings between months, which is the subtlest
+ *      way to get this wrong and the hardest to spot afterwards.
+ *
+ * An inactive staff member is deliberately still allowed. A bill from last month
+ * performed by somebody who has since left is exactly the bill most likely to
+ * need correcting, and refusing would make it permanently wrong.
+ *
+ * Returns the change as well as the bill, so the route can audit what moved.
+ */
+export async function setInvoiceItemStaff(invoiceId: string, itemId: string, staffId: string | null) {
+  const tenantId = requireTenantId();
+
+  const invoice = await prisma.invoice.findUnique({
+    where: { id: invoiceId },
+    select: { id: true, branchId: true, invoiceNumber: true, invoiceDate: true, status: true },
+  });
+  if (!invoice) throw NotFound('Invoice');
+  assertBranchAccess(invoice.branchId);
+  if (invoice.status === 'VOID') {
+    throw Conflict('This bill has been voided — nothing on it is owed to anybody');
+  }
+
+  const item = await prisma.invoiceItem.findUnique({
+    where: { id: itemId },
+    select: {
+      id: true,
+      invoiceId: true,
+      itemType: true,
+      refId: true,
+      name: true,
+      staffId: true,
+      quantity: true,
+      lineTotal: true,
+      staff: { select: { id: true, displayName: true } },
+    },
+  });
+  // Checked against this bill rather than trusted from the path: an item id from
+  // another invoice would otherwise be editable through any invoice the caller
+  // can reach.
+  if (!item || item.invoiceId !== invoiceId) throw NotFound('Invoice line');
+  if (item.itemType !== 'SERVICE') {
+    throw BadRequest('Only a service line has somebody who performed it — a retail product has a seller, not a stylist');
+  }
+
+  const previousStaffId = item.staffId ?? null;
+  if (previousStaffId === staffId) {
+    // Idempotent on purpose: two clicks on the same name, or a stale screen
+    // sending what is already stored, should not churn the commission entry.
+    return { invoice: await getInvoice(invoiceId), change: null };
+  }
+
+  let staff: {
+    id: string;
+    displayName: string;
+    branchId: string;
+    commissionType: CommissionType;
+    commissionRate: Prisma.Decimal;
+  } | null = null;
+  if (staffId) {
+    staff = await prisma.staff.findUnique({
+      where: { id: staffId },
+      select: { id: true, displayName: true, branchId: true, commissionType: true, commissionRate: true },
+    });
+    if (!staff) throw NotFound('Staff member');
+    if (staff.branchId !== invoice.branchId) {
+      throw BadRequest(`${staff.displayName} is not at the branch that issued this bill`);
+    }
+  }
+
+  const existing = await prisma.commissionEntry.findMany({
+    where: { invoiceItemId: itemId },
+    select: { id: true, amount: true, isPaid: true, payrollId: true },
+  });
+  if (existing.some((entry) => entry.isPaid)) {
+    throw Conflict(
+      `The commission on “${item.name}” has already been paid out. Changing it now would take back money somebody has been paid — make the correction in the next payroll instead.`,
+    );
+  }
+
+  const service =
+    item.refId && staff
+      ? await prisma.service.findUnique({
+          where: { id: item.refId },
+          select: { commissionType: true, commissionRate: true },
+        })
+      : null;
+
+  const terms = staff ? commissionTerms(service, staff) : NO_COMMISSION;
+  const amount = staff ? commissionAmount(terms, item.lineTotal, item.quantity) : d(0);
+
+  await prisma.$transaction(async (tx) => {
+    await tx.commissionEntry.deleteMany({ where: { invoiceItemId: itemId, isPaid: false } });
+    await tx.invoiceItem.update({ where: { id: itemId }, data: { staffId } });
+
+    /**
+     * No entry when the arrangement pays nothing — and the line still keeps the
+     * name. Attribution and commission are two separate things: a salaried
+     * stylist earns no percentage but must still show up in "revenue by
+     * stylist", which reads invoice_items.staffId, not commission_entries.
+     */
+    if (staff && amount.greaterThan(0)) {
+      await tx.commissionEntry.create({
+        data: {
+          tenantId,
+          branchId: invoice.branchId,
+          staffId: staff.id,
+          invoiceId,
+          invoiceItemId: itemId,
+          baseAmount: item.lineTotal,
+          ratePct: terms.ratePct,
+          amount,
+          // The day the work was done, not today. See the note above.
+          earnedOn: invoice.invoiceDate,
+        },
+      });
+    }
+  });
+
+  const change = {
+    line: item.name,
+    from: {
+      staffId: previousStaffId,
+      name: item.staff?.displayName ?? null,
+      commission: existing.reduce((sum, entry) => add(sum, entry.amount), d(0)).toString(),
+    },
+    to: { staffId, name: staff?.displayName ?? null, commission: amount.toString() },
+  };
+
+  logger.info({ invoiceId, itemId, ...change }, 'invoice line staff changed');
+  return { invoice: await getInvoice(invoiceId), change };
 }
 
 /**

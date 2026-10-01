@@ -93,6 +93,19 @@ export const voidSchema = z.object({
   reason: z.string().trim().min(3).max(240),
 });
 
+/**
+ * Who performed a service on a bill that is already saved.
+ *
+ * `null` is a meaningful value, not a missing one — it is how the front desk
+ * takes a name OFF a line that was attributed to the wrong person, so it is
+ * `nullable()` rather than `optional()`. An absent key would be ambiguous
+ * between "clear it" and "leave it alone", and the two have opposite effects on
+ * somebody's commission.
+ */
+export const setItemStaffSchema = z.object({
+  staffId: idSchema.nullable(),
+});
+
 export const createCouponSchema = z.object({
   code: z.string().trim().min(3).max(24).toUpperCase(),
   description: z.string().trim().max(240).optional(),
