@@ -81,6 +81,29 @@ export function speakerFor(row: { campaignId: string | null; journeyRunId: strin
  * has not thereby taken over forty open conversations, and a salon that
  * switches it on has not handed back the ones its staff are holding.
  */
+/**
+ * THE THREAD KEY — AND WHY IT IS NOT ALWAYS A PHONE NUMBER.
+ *
+ * This ran normalizePhone over every address, which was right while every
+ * channel here carried a phone number and is quietly destructive now that two
+ * do not. Instagram and Messenger address people by a scoped id, which is a
+ * long run of digits — and normalizePhone treats a run of digits as a number to
+ * tidy: twelve of them beginning 91 lose their first two.
+ *
+ * Nothing would have failed loudly. The id stored on the way in would simply
+ * stop matching the one looked up later, and the damage lands in one of two
+ * places: one person's conversation splits into two threads, or — far worse —
+ * two people's ids collapse to the same key and one customer is shown another
+ * customer's messages.
+ *
+ * So the rule is explicit: normalise where the address really is a phone
+ * number, and store an opaque id exactly as Meta gave it.
+ */
+function conversationAddress(channel: Channel, address: string): string {
+  if (channel === 'INSTAGRAM' || channel === 'MESSENGER') return address.trim();
+  return normalizePhone(address);
+}
+
 export async function openConversation(input: {
   tenantId: string;
   channel: Channel;
@@ -88,7 +111,7 @@ export async function openConversation(input: {
   customerId?: string | null;
   branchId?: string | null;
 }): Promise<{ id: string; mode: ConversationMode }> {
-  const customerAddress = normalizePhone(input.address);
+  const customerAddress = conversationAddress(input.channel, input.address);
 
   const existing = await runUnscoped(() =>
     prisma.conversation.findUnique({
