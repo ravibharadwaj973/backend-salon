@@ -68,7 +68,7 @@ export async function maybeAutoReply(input: {
     prisma.inboundMessage.findUnique({
       where: { id: input.inboundMessageId },
       include: {
-        conversation: { select: { id: true, mode: true } },
+        conversation: { select: { id: true, mode: true, lastCustomerMessageAt: true } },
         customer: {
           select: {
             id: true,
@@ -112,28 +112,70 @@ export async function maybeAutoReply(input: {
   }
 
   /**
-   * A stranger gets nothing automatic.
+   * A STRANGER ON WHATSAPP IS A RISK. A STRANGER ON INSTAGRAM IS THE CUSTOMER.
    *
-   * With no customer record there is no consent, no history and no branch —
-   * and an unknown number messaging a salon is as likely to be a wrong number
-   * or a scam as a customer. A person should look at it.
+   * This guard used to be unconditional, and on WhatsApp it is right: the
+   * address is a phone number, a salon's customers are on the book by their
+   * number, and an unknown number writing in is as likely to be a wrong number
+   * or a scam as a booking. A person should look at it.
+   *
+   * On Instagram and Messenger the same rule would switch the feature off
+   * entirely. The address there is a scoped id that exists nowhere else and
+   * matches nobody on the book, so EVERY first DM is from a stranger — that is
+   * what the channel is. Someone who found the salon through a reel and asked
+   * "kitne ka hai" is not an intruder to be screened out; they are the entire
+   * reason for connecting Instagram at all, and the salon loses them to silence
+   * today.
+   *
+   * They are answered with the salon's own public facts — services, prices,
+   * hours, the booking link — and nothing else. `replyPrompt` already takes a
+   * null customer, so no one's history can leak into a thread we cannot name.
    */
-  if (!message.customer) return { sent: false, reason: 'not a known customer' };
+  const isDirectMessage = message.channel === 'INSTAGRAM' || message.channel === 'MESSENGER';
+  if (!message.customer && !isDirectMessage) {
+    return { sent: false, reason: 'not a known customer' };
+  }
 
-  if (message.customer.whatsappConsent === 'OPTED_OUT') {
+  /**
+   * Consent is per channel, and WhatsApp's does not travel.
+   *
+   * Somebody who sent STOP on WhatsApp has opted out of WhatsApp. They have not
+   * opted out of a conversation they themselves started on Instagram a month
+   * later, and refusing to answer it would be both wrong and baffling to them.
+   */
+  if (message.channel === 'WHATSAPP' && message.customer?.whatsappConsent === 'OPTED_OUT') {
     return { sent: false, reason: 'customer has opted out' };
   }
 
   /**
    * The window governs the SHAPE of a reply, and free text is the only shape
-   * this can produce. Outside it, Meta refuses the send — so there is nothing
-   * to do here but leave it for a person, who can pick an approved template.
+   * this can produce. Outside it Meta refuses the send, so there is nothing to
+   * do here but leave it for a person.
+   *
+   * Measured from the CONVERSATION on a DM channel, not from the customer.
+   * `customer.lastInboundAt` is a single WhatsApp-wide timestamp: reading it
+   * here would let a WhatsApp message from this morning hold an Instagram
+   * thread's window open, and would slam it shut for every stranger, who has no
+   * customer row to carry one.
    */
-  if (!windowIsOpen(message.customer.lastInboundAt)) {
+  const lastInbound = isDirectMessage
+    ? (message.conversation.lastCustomerMessageAt ?? message.receivedAt)
+    : (message.customer?.lastInboundAt ?? null);
+
+  if (!windowIsOpen(lastInbound)) {
     return { sent: false, reason: 'outside the 24-hour service window' };
   }
 
-  const branchId = message.customer.branchId ?? message.branchId;
+  const branchId = message.customer?.branchId ?? message.branchId;
+
+  /**
+   * Null on a DM channel when nobody has linked this thread to the book, which
+   * is the ordinary case there. Everything below that needs a customer row —
+   * the burst ceiling, held offers, confirming or making a booking — is guarded
+   * on it, and what is left is the part that was always safe for a stranger:
+   * answering from the salon's own public facts.
+   */
+  const customer = message.customer;
 
   /**
    * Read before the refusals below, not after, because they need it.
@@ -199,7 +241,10 @@ export async function maybeAutoReply(input: {
 
     const text = handoffReply(salon, reason);
     if (!text) return { sent: false, reason: `${decision} (nothing to hand over to)` };
-    await send(input.tenantId, branchId, message.customer!.id, text, message.conversation!.id);
+    // A stranger has no customer row to address a queued message to. The thread
+    // has already been handed to a person above, which is the part that matters;
+    // the spoken handoff is skipped rather than faked against a null customer.
+    if (customer) await send(input.tenantId, branchId, customer.id, text, message.conversation!.id);
     return { sent: true, reason: decision };
   };
 
@@ -217,13 +262,25 @@ export async function maybeAutoReply(input: {
   startOfToday.setHours(0, 0, 0, 0);
   const burstSince = new Date(Date.now() - BURST_WINDOW_MINUTES * 60 * 1000);
 
+  /**
+   * The runaway guard, counted per THREAD rather than per customer.
+   *
+   * It used to count by customerId on WhatsApp alone, which breaks twice now. A
+   * stranger on Instagram has no customer row, so the count would be of every
+   * reply to every unlinked thread at once — one chatty DM would silence the
+   * whole channel. And counting WhatsApp's replies against an Instagram
+   * conversation is simply the wrong number.
+   *
+   * The conversation is the right key either way: a runaway is this thread
+   * going round in circles, which is exactly what the ceiling is for.
+   */
   const countReplies = (since: Date) =>
     runUnscoped(() =>
       prisma.messageLog.count({
         where: {
           tenantId: input.tenantId,
-          customerId: message.customer!.id,
-          channel: 'WHATSAPP',
+          conversationId: message.conversation!.id,
+          channel: message.channel,
           // Our own automatic replies, which is what a runaway consists of.
           // A campaign or a booking confirmation is not part of this count.
           purpose: 'OTHER',
@@ -243,7 +300,8 @@ export async function maybeAutoReply(input: {
     logger.warn(
       {
         tenantId: input.tenantId,
-        customerId: message.customer.id,
+        customerId: customer?.id ?? null,
+        conversationId: message.conversation!.id,
         limit: limit.which,
         action: limit.action,
         repliesInBurst,
@@ -265,12 +323,16 @@ export async function maybeAutoReply(input: {
    * Everything it says is a proposal the code below either verifies against
    * the database or refuses.
    */
-  const offerHeld = readHeldOffer(message.customer.assistantOffer, message.customer.assistantOfferAt);
-  const branchPending = readPendingBranch(
-    message.customer.assistantOffer,
-    message.customer.assistantOfferAt,
-    OFFER_STALE_MINUTES,
-  );
+  /**
+   * A held offer lives on the customer row, so a thread with no customer has
+   * none — and null here is what quietly disables CONFIRM, DECLINE and the
+   * branch-choice resume further down, all of which require one. A stranger
+   * cannot accept a slot we are not holding for anybody.
+   */
+  const offerHeld = customer ? readHeldOffer(customer.assistantOffer, customer.assistantOfferAt) : null;
+  const branchPending = customer
+    ? readPendingBranch(customer.assistantOffer, customer.assistantOfferAt, OFFER_STALE_MINUTES)
+    : null;
 
   /**
    * "BANDRA." — THE SHORTEST USEFUL MESSAGE THERE IS.
@@ -286,7 +348,7 @@ export async function maybeAutoReply(input: {
    * what "2" means will happily decide it is two o'clock.
    */
   const resumed = branchPending ? resumeBranchChoice(branchPending, message.body) : null;
-  if (resumed) await clearOffer(message.customer.id);
+  if (resumed && customer) await clearOffer(customer.id);
 
   /**
    * "ACTUALLY, THE OTHER ONE."
@@ -306,8 +368,8 @@ export async function maybeAutoReply(input: {
    * reading it as a shop would move a booking nobody asked to move.
    */
   const switched = !resumed && offerHeld ? await branchSwitch(input.tenantId, offerHeld, message.body) : null;
-  if (switched) {
-    await clearOffer(message.customer.id);
+  if (switched && customer) {
+    await clearOffer(customer.id);
     await recordEvent({
       tenantId: input.tenantId,
       conversationId: message.conversation.id,
@@ -327,9 +389,20 @@ export async function maybeAutoReply(input: {
    * one to make sense of a half-finished request, and the answer path needs the
    * whole thread including this message.
    */
+  /**
+   * The recent history the intent step reads, keyed on whichever identifier
+   * this thread actually has.
+   *
+   * A stranger has no customerId, and asking for `customerId: null` would match
+   * every unlinked message the salon has ever received — so the model would
+   * read one person's half-finished booking as context for another's. The
+   * conversation is the right key there, and is the ONLY key that is right.
+   */
   const thread = await runUnscoped(() =>
     prisma.inboundMessage.findMany({
-      where: { tenantId: input.tenantId, customerId: message.customer!.id },
+      where: customer
+        ? { tenantId: input.tenantId, customerId: customer.id }
+        : { tenantId: input.tenantId, conversationId: message.conversation!.id },
       orderBy: { receivedAt: 'desc' },
       take: HISTORY,
       select: { id: true, body: true, receivedAt: true },
@@ -428,15 +501,18 @@ export async function maybeAutoReply(input: {
    */
   const confirmBranchId = offerHeld?.branchId ?? branchId;
 
-  if (intent.intent === 'CONFIRM' && offerHeld && confirmBranchId) {
+  // `customer` is implied by offerHeld — an offer is stored on a customer row —
+  // but saying so lets the compiler narrow it through the whole block instead of
+  // taking twelve assertions to get there.
+  if (intent.intent === 'CONFIRM' && offerHeld && confirmBranchId && customer) {
     const booked = await bookOffer({
       tenantId: input.tenantId,
       branchId: confirmBranchId,
-      customerId: message.customer.id,
+      customerId: customer.id,
       offer: offerHeld,
     });
 
-    await clearOffer(message.customer.id);
+    await clearOffer(customer.id);
 
     /**
      * Three outcomes, not two.
@@ -452,7 +528,7 @@ export async function maybeAutoReply(input: {
       await send(
         input.tenantId,
         confirmBranchId,
-        message.customer.id,
+        customer.id,
         `Done — ${offerHeld.serviceName} on ${humanWhen(offerHeld.startAt)}${offerHeld.staffName ? ` with ${offerHeld.staffName}` : ''}${offerHeld.branchName ? ` at ${offerHeld.branchName}` : ''}. See you then.`,
         message.conversation.id,
       );
@@ -475,7 +551,7 @@ export async function maybeAutoReply(input: {
       await send(
         input.tenantId,
         confirmBranchId,
-        message.customer.id,
+        customer.id,
         `Sorry — that time has just gone. Would another time suit you? You can also see what is free here: ${salon.bookingUrl ?? salon.websiteUrl ?? 'our website'}`,
         message.conversation.id,
       );
@@ -497,7 +573,7 @@ export async function maybeAutoReply(input: {
     return handOver('PERSON', 'booking failed for a reason that is ours — handed to a person');
   }
 
-  if (intent.intent === 'DECLINE' && offerHeld) await clearOffer(message.customer.id);
+  if (intent.intent === 'DECLINE' && offerHeld && customer) await clearOffer(customer.id);
 
   /**
    * STEP THREE: A BOOKING REQUEST BECOMES AN OFFER, NEVER AN APPOINTMENT.
@@ -506,7 +582,16 @@ export async function maybeAutoReply(input: {
    * reading "maybe Tuesday?" as agreement is the failure this shape exists to
    * make impossible.
    */
-  if (intent.intent === 'BOOK') {
+  /**
+   * Booking needs somebody to book FOR.
+   *
+   * A stranger on Instagram saying "kal 5 baje" cannot be put in the diary:
+   * there is no name, no number, and the scoped id Meta gives us is not a
+   * person a salon can ring. So they fall through to the answer below, which
+   * sends the booking link and asks what they would like — which is the right
+   * reply to that message anyway, and the one a receptionist would give.
+   */
+  if (intent.intent === 'BOOK' && customer) {
     const service = await matchService(input.tenantId, intent.service);
 
     if (service && intent.date) {
@@ -533,9 +618,9 @@ export async function maybeAutoReply(input: {
           } as const)
         : await resolveBranch({
             tenantId: input.tenantId,
-            customerBranchId: message.customer.branchId,
+            customerBranchId: customer.branchId,
             messageBranchId: message.branchId,
-            customerId: message.customer.id,
+            customerId: customer.id,
             said: message.body,
           });
 
@@ -547,7 +632,7 @@ export async function maybeAutoReply(input: {
          * time by definition.
          */
         await holdPendingBranch(
-          message.customer.id,
+          customer.id,
           pendingBranchPayload({
             branches: where.branches,
             service: intent.service,
@@ -556,7 +641,7 @@ export async function maybeAutoReply(input: {
             staff: intent.staff,
           }),
         );
-        await send(input.tenantId, null, message.customer.id, where.question, message.conversation.id);
+        await send(input.tenantId, null, customer.id, where.question, message.conversation.id);
         await note('BRANCH_ASKED', `Asked which location — ${where.branches.map((b) => b.name).join(', ')}`);
         await markHandled(message.id);
         return { sent: true, reason: 'asked which location' };
@@ -618,12 +703,12 @@ export async function maybeAutoReply(input: {
 
         if (slots.length > 0) {
           const offer = slots[0]!;
-          await holdOffer(message.customer.id, offer, bookAt, branchLabel);
+          await holdOffer(customer.id, offer, bookAt, branchLabel);
           const text =
             (intent.time
               ? `Yes — ${offer.serviceName} at ${offer.label} on ${humanWhen(offer.startAt)}${offer.staffName ? ` with ${offer.staffName}` : ''}${atBranch} is free. Shall I book it?`
               : `For ${offer.serviceName} on ${humanWhen(offer.startAt)}${atBranch} we have ${timesToOffer(slots)}. Shall I book ${offer.label}?`) + elsewhere;
-          await send(input.tenantId, bookAt, message.customer.id, text, message.conversation.id);
+          await send(input.tenantId, bookAt, customer.id, text, message.conversation.id);
           await note('AVAILABILITY_CHECKED', `Read the diary for ${service.name} on ${humanWhen(offer.startAt)}${atBranch}`, {
             serviceName: service.name,
             date: intent.date,
@@ -655,8 +740,8 @@ export async function maybeAutoReply(input: {
             // about, so it is offered before the link to look elsewhere in time.
               `We have nothing free for ${service.name} on that day${atBranch}.${elsewhere} You can also see other days here: ${salon.bookingUrl ?? salon.websiteUrl ?? 'our website'}`;
 
-        if (sameDay.length) await holdOffer(message.customer.id, sameDay[0]!, bookAt, branchLabel);
-        await send(input.tenantId, bookAt, message.customer.id, text, message.conversation.id);
+        if (sameDay.length) await holdOffer(customer.id, sameDay[0]!, bookAt, branchLabel);
+        await send(input.tenantId, bookAt, customer.id, text, message.conversation.id);
         await markHandled(message.id);
         return { sent: true, reason: 'offered alternatives' };
       }
@@ -710,7 +795,7 @@ export async function maybeAutoReply(input: {
      * saying "let me look".
      */
     availability: [],
-    customerName: message.customer.firstName ?? null,
+    customerName: customer?.firstName ?? null,
     /**
      * Their own record, fetched only on the path that answers in words.
      *
@@ -718,7 +803,10 @@ export async function maybeAutoReply(input: {
      * customer is waiting, so four queries nobody will read is four queries of
      * latency on the reply that matters most.
      */
-    customer: await customerContext(input.tenantId, message.customer.id).catch(() => null),
+    // Null for a thread nobody has linked to the book. replyPrompt already
+    // takes that, and it is what keeps one person's visits and offers out of a
+    // conversation we cannot put a name to.
+    customer: customer ? await customerContext(input.tenantId, customer.id).catch(() => null) : null,
   });
 
   const raw = await chat(system, user, { timeoutMs: TIMEOUT_MS, temperature: TEMPERATURE, maxTokens: 800 });
@@ -746,9 +834,12 @@ export async function maybeAutoReply(input: {
 
   await queueMessage({
     tenantId: input.tenantId,
-    branchId: message.customer.branchId ?? message.branchId ?? undefined,
-    customerId: message.customer.id,
-    channel: 'WHATSAPP',
+    branchId: customer?.branchId ?? message.branchId ?? undefined,
+    customerId: customer?.id,
+    // The channel they wrote in on. Hardcoding WhatsApp here sent an Instagram
+    // reply down the WhatsApp provider, where the scoped id is not a phone
+    // number and the send fails with nothing on screen to say why.
+    channel: message.channel,
     // No template: a free-form reply, which is exactly what the open window
     // permits and nothing else does.
     body: parsed.text.slice(0, MAX_REPLY_CHARS),

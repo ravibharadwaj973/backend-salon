@@ -6,13 +6,14 @@ import { env } from '../../config/env';
 import { logger } from '../../core/logger';
 import { applyStatusUpdate, recordReply } from '../../messaging/dispatcher';
 import { normalizePhone } from '../../core/ids';
-import { tenantForPhoneNumber } from './webhook-tenant';
+import { tenantForFacebookPage, tenantForInstagramAccount, tenantForPhoneNumber } from './webhook-tenant';
+import { parseMetaDmWebhook } from './meta-dm';
 import { verifyWhatsAppSignature } from './whatsapp-signature';
 import { verifyResendSignature } from './resend-signature';
 import { parseReports } from './msg91-status';
 import type { Prisma } from '@prisma/client';
 import { maybeAutoReply } from '../messaging/auto-reply.service';
-import { noteCustomerMessage, openConversation } from '../messaging/conversation.service';
+import { noteCustomerMessage, noteOutboundMessage, openConversation } from '../messaging/conversation.service';
 
 const router = Router();
 
@@ -369,6 +370,172 @@ router.post(
 
         logger.info({ tenantId, phone, updated: result.count }, 'customer opted out via WhatsApp');
       }
+    }
+  }),
+);
+
+
+// --------------------------------------------------- Instagram & Messenger ---
+
+/**
+ * Meta's verification handshake, shared with WhatsApp.
+ *
+ * Same app, same verify token: all three subscriptions are configured on one
+ * Meta app and Meta checks each callback URL the same way.
+ */
+router.get('/meta', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  if (mode === 'subscribe' && token === env.WHATSAPP_WEBHOOK_VERIFY_TOKEN) {
+    res.status(200).send(String(challenge ?? ''));
+    return;
+  }
+  res.sendStatus(403);
+});
+
+/**
+ * INSTAGRAM AND FACEBOOK DIRECT MESSAGES.
+ *
+ * Both arrive here; `object` says which. Signed with the same app secret as the
+ * WhatsApp webhook, so the existing verifier is reused rather than copied —
+ * X-Hub-Signature-256 over the raw bytes is Meta's scheme, not WhatsApp's.
+ *
+ * Answers 200 immediately, like the WhatsApp handler, because Meta retries
+ * anything else and a retry is a second message to a real person.
+ */
+router.post(
+  '/meta',
+  verifyWhatsAppSignature,
+  asyncHandler(async (req, res) => {
+    res.status(200).json({ received: true });
+
+    const payload = req.body as unknown;
+
+    await runUnscoped(() =>
+      prisma.webhookEvent.create({
+        data: { provider: 'meta_dm', eventType: 'message', payload: payload as Prisma.InputJsonValue },
+      }),
+    ).catch(() => undefined);
+
+    for (const event of parseMetaDmWebhook(payload)) {
+      const tenantId =
+        event.channel === 'INSTAGRAM'
+          ? await tenantForInstagramAccount(event.accountId)
+          : await tenantForFacebookPage(event.accountId);
+
+      if (!tenantId) {
+        /**
+         * error, not warn, for the same reason the WhatsApp handler says so:
+         * somebody wrote to a salon and nobody will ever see it. On these two
+         * channels that is more often than not a stranger asking a price —
+         * which is to say, a booking that did not happen.
+         */
+        logger.error(
+          { channel: event.channel, accountId: event.accountId },
+          'inbound DM dropped: no salon has this Instagram account or Facebook Page connected, so the ' +
+            'message cannot be attributed and nobody will see it. Connect it under Settings → Messaging.',
+        );
+        continue;
+      }
+
+      /**
+       * WHO THIS IS, IF WE KNOW AT ALL.
+       *
+       * On WhatsApp the address is a phone number and the customer is found by
+       * it. Here it is a scoped id — an IGSID or PSID — which exists nowhere
+       * else and matches nobody on the book. So a DM is almost always from
+       * somebody we cannot name, and the thread carries the id alone until a
+       * person links it to a customer.
+       *
+       * That is not a gap to paper over by guessing. Two salons get different
+       * ids for the same person, and the id cannot be turned back into a phone
+       * number by any means Meta offers.
+       */
+      const known = await runUnscoped(() =>
+        prisma.conversation.findUnique({
+          where: {
+            tenantId_channel_customerAddress: {
+              tenantId,
+              channel: event.channel,
+              customerAddress: event.customerAddress,
+            },
+          },
+          select: { customerId: true, branchId: true },
+        }),
+      ).catch(() => null);
+
+      const conversation = await openConversation({
+        tenantId,
+        channel: event.channel,
+        address: event.customerAddress,
+        customerId: known?.customerId ?? null,
+        branchId: known?.branchId ?? null,
+      }).catch((err: unknown) => {
+        logger.warn({ err, tenantId, channel: event.channel }, 'could not open a conversation for an inbound DM');
+        return null;
+      });
+
+      const stored = await runUnscoped(() =>
+        prisma.inboundMessage.create({
+          data: {
+            tenantId,
+            customerId: known?.customerId ?? null,
+            branchId: known?.branchId ?? null,
+            conversationId: conversation?.id ?? null,
+            channel: event.channel,
+            fromAddress: event.customerAddress,
+            body: event.body,
+            messageType: event.messageType,
+            providerMessageId: event.providerMessageId,
+          },
+        }),
+      ).catch((err: unknown) => {
+        // P2002 is the unique constraint catching one of Meta's retries, which
+        // is the constraint doing its job and not worth a line in the log.
+        const code = (err as { code?: string } | null)?.code;
+        if (code !== 'P2002') logger.warn({ err, tenantId, channel: event.channel }, 'inbound DM not stored');
+        return null;
+      });
+
+      if (!stored) continue;
+
+      /**
+       * AN ECHO IS STORED AND THEN LEFT ALONE.
+       *
+       * The salon answered from the Instagram or Facebook app on their phone.
+       * It belongs in the thread — otherwise the inbox shows a customer waiting
+       * on a reply that was sent twenty minutes ago, and the assistant, reading
+       * the same thread, says it again.
+       *
+       * What it must NOT do is open the service window or trigger a reply. The
+       * window is measured from the CUSTOMER's last message; treating the
+       * salon's own words as inbound would hold it open indefinitely and let
+       * the assistant answer itself.
+       */
+      if (event.isEcho) {
+        if (conversation) await noteOutboundMessage(conversation.id, stored.receivedAt);
+        continue;
+      }
+
+      if (conversation) await noteCustomerMessage(conversation.id, stored.receivedAt);
+
+      const decision = await maybeAutoReply({ tenantId, inboundMessageId: stored.id }).catch((err: unknown) => {
+        logger.warn({ err, tenantId, channel: event.channel }, 'auto-reply failed');
+        return { sent: false, reason: 'threw' };
+      });
+
+      logger.info(
+        {
+          tenantId,
+          channel: event.channel,
+          inboundMessageId: stored.id,
+          sent: decision.sent,
+          reason: decision.reason,
+        },
+        decision.sent ? 'assistant replied to a DM' : 'assistant did not reply to a DM',
+      );
     }
   }),
 );

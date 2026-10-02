@@ -160,3 +160,38 @@ async function resolveEnvConfiguredTenant(): Promise<string | null> {
   );
   return null;
 }
+
+/**
+ * The salon an Instagram account belongs to, or null.
+ *
+ * Simpler than the WhatsApp lookup above and deliberately so: there is no
+ * environment fallback here and there should not be one. A salon's Instagram is
+ * always connected through Settings, which writes the id — so an id that
+ * resolves to nothing genuinely belongs to nobody, and the long story above
+ * about env-configured deployments does not apply.
+ *
+ * Unrecognised is not an error. Meta keeps delivering for an account that has
+ * since disconnected, and for other accounts on the same Meta app.
+ */
+export async function tenantForInstagramAccount(accountId: string | undefined): Promise<string | null> {
+  if (!accountId) return null;
+  const config = await runUnscoped(() =>
+    prisma.tenantMessagingConfig.findUnique({
+      where: { igAccountId: accountId },
+      select: { tenantId: true },
+    }),
+  ).catch(() => null);
+  return config?.tenantId ?? null;
+}
+
+/** The salon a Facebook Page belongs to, or null. Same reasoning as above. */
+export async function tenantForFacebookPage(pageId: string | undefined): Promise<string | null> {
+  if (!pageId) return null;
+  const config = await runUnscoped(() =>
+    prisma.tenantMessagingConfig.findUnique({
+      where: { fbPageId: pageId },
+      select: { tenantId: true },
+    }),
+  ).catch(() => null);
+  return config?.tenantId ?? null;
+}
