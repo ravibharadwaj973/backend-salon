@@ -188,6 +188,10 @@ enum Channel {
   SMS
   EMAIL
   IN_APP
+  /// A direct message on the salon's own Instagram account.
+  INSTAGRAM
+  /// A direct message on the salon's own Facebook Page, through Messenger.
+  MESSENGER
 }
 
 /// Where a customer sits against their OWN visit cycle, not a fixed number of
@@ -598,6 +602,17 @@ enum MeterKey {
   WA_SERVICE
   SMS
   EMAIL
+  /// Instagram and Messenger DMs.
+  ///
+  /// Counted but NEVER refused, for two reasons that both matter. Meta charges
+  /// nothing for them, so refusing one saves the salon no money — it only loses
+  /// them a customer mid-sentence. And the person on the other end wrote first:
+  /// going quiet on somebody who is waiting is the single worst thing this
+  /// system can do, and it is not worth doing to enforce an allowance that
+  /// costs nothing to exceed. They are metered so the salon can SEE the volume
+  /// on their usage screen, not so it can be cut off.
+  IG_DM
+  FB_DM
 }
 
 /// Why a credit balance moved. Consumption rows are only written when purchased
@@ -702,6 +717,41 @@ model TenantMessagingConfig {
   waTokenExpiresAt DateTime?
   waDisplayNumber  String?
   waVerifiedAt     DateTime?
+
+  // --- Instagram direct messages (Instagram API with Instagram Login) ---
+  //
+  // Deliberately NOT routed through a Facebook Page. Meta's newer Instagram
+  // Login path authenticates the Instagram professional account directly, and
+  // that difference decides whether a salon can connect at all: plenty of them
+  // run a busy Instagram beside a Facebook Page that was made years ago by
+  // somebody who has left, with a password nobody has. Requiring the Page would
+  // lose those salons for a reason that has nothing to do with Instagram.
+  igStatus         MessagingSetupStatus @default(NOT_CONNECTED)
+  /// Meta's id for this salon's Instagram account. Unique across the platform
+  /// for the same reason waPhoneNumberId is: every webhook arrives carrying only
+  /// this id, so it is the ONLY way an inbound DM finds the salon it belongs to.
+  /// Without the constraint, two salons could claim one account and a customer's
+  /// message would be delivered to the wrong business.
+  igAccountId      String?              @unique
+  igUsername       String?
+  /// Stored server-side only and never returned to the browser in full.
+  igAccessToken    String?
+  /// Instagram's long-lived tokens last 60 days and must be refreshed before
+  /// they lapse. Null means we do not know, which is itself worth alerting on —
+  /// an expired token is silent, and the salon just stops receiving DMs.
+  igTokenExpiresAt DateTime?
+  igConnectedAt    DateTime?
+
+  // --- Facebook Page messages (Messenger Platform) ---
+  fbStatus         MessagingSetupStatus @default(NOT_CONNECTED)
+  /// Unique for the same reason as igAccountId above.
+  fbPageId         String?              @unique
+  fbPageName       String?
+  /// A Page access token, which does not expire while the granting user's
+  /// token is valid. Server-side only.
+  fbAccessToken    String?
+  fbTokenExpiresAt DateTime?
+  fbConnectedAt    DateTime?
 
   // --- SMS (MSG91 or compatible; India needs a DLT-registered header) ---
   smsStatus      MessagingSetupStatus @default(NOT_CONNECTED)

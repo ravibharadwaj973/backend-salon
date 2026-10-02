@@ -90,6 +90,31 @@ export const CAPABILITIES: Record<Channel, ChannelCapability> = {
     complaint: false,
     note: 'In-app notices are shown inside the app, so there is nothing to deliver and no receipt to read. They cost nothing and are not counted in delivery figures.',
   },
+  /**
+   * A DM is a conversation, not a campaign, and the figures have to say so.
+   *
+   * Meta reports delivery and read receipts on both, and charges for neither.
+   * What is deliberately false is `click`: nothing here shortens a link inside
+   * a DM, so a click rate would be a believable zero sitting next to WhatsApp's
+   * real one — which reads as a channel performing badly rather than as a
+   * channel nobody is measuring.
+   */
+  INSTAGRAM: {
+    delivery: true,
+    read: true,
+    click: false,
+    bounce: false,
+    complaint: false,
+    note: 'Instagram reports delivery and read receipts, and Meta charges nothing for a DM. Links inside a DM are not shortened, so clicks are left blank rather than shown as zero.',
+  },
+  MESSENGER: {
+    delivery: true,
+    read: true,
+    click: false,
+    bounce: false,
+    complaint: false,
+    note: 'Messenger reports delivery and read receipts, and Meta charges nothing for a DM. Links inside a DM are not shortened, so clicks are left blank rather than shown as zero.',
+  },
 };
 
 /** The channels a message is actually sent over, in the order they are shown. */

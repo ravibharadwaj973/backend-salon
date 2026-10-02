@@ -28,6 +28,8 @@ export const ALL_METERS: readonly MeterKey[] = [
   'WA_SERVICE',
   'SMS',
   'EMAIL',
+  'IG_DM',
+  'FB_DM',
 ];
 
 export const METER_LABELS: Record<MeterKey, string> = {
@@ -39,6 +41,8 @@ export const METER_LABELS: Record<MeterKey, string> = {
   WA_SERVICE: 'WhatsApp replies',
   SMS: 'SMS',
   EMAIL: 'Email',
+  IG_DM: 'Instagram DMs',
+  FB_DM: 'Facebook DMs',
 };
 
 /**
@@ -66,7 +70,13 @@ export const METER_LABELS: Record<MeterKey, string> = {
  * reply-limits.ts caps the assistant per customer per burst and per day, so
  * "never refused" cannot become "unlimited".
  */
-export const NEVER_REFUSED: readonly MeterKey[] = ['WA_SERVICE'];
+/**
+ * Instagram and Messenger join WA_SERVICE here for the same reason and one
+ * stronger one: Meta charges nothing for either, so refusing a DM saves the
+ * salon no money at all. It only loses them somebody who wrote in — on the two
+ * channels where the writer is usually a stranger deciding whether to book.
+ */
+export const NEVER_REFUSED: readonly MeterKey[] = ['WA_SERVICE', 'IG_DM', 'FB_DM'];
 
 /** Which meter a send is charged to. IN_APP messages are free and unmetered. */
 export function meterFor(channel: Channel, category: TemplateCategory = 'UTILITY'): MeterKey | null {
@@ -92,6 +102,10 @@ export function meterFor(channel: Channel, category: TemplateCategory = 'UTILITY
        */
       if (category === 'SERVICE') return 'WA_SERVICE';
       return 'WA_UTILITY';
+    case 'INSTAGRAM':
+      return 'IG_DM';
+    case 'MESSENGER':
+      return 'FB_DM';
     case 'SMS':
       return 'SMS';
     case 'EMAIL':
@@ -115,6 +129,17 @@ export function quotaOf(plan: Pick<
     case 'WA_SERVICE':        return plan.waServiceQuota;
     case 'SMS':               return plan.smsQuota;
     case 'EMAIL':             return plan.emailQuota;
+    /**
+     * NO ALLOWANCE, BECAUSE THERE IS NOTHING TO RATION.
+     *
+     * Meta charges nothing for an Instagram or Messenger DM, so there is no
+     * cost to cap and no plan line to sell. Zero here is not "none allowed" —
+     * these meters are in NEVER_REFUSED, so consume() increments and returns
+     * allowed before any allowance is read. It is counted so the salon can see
+     * the volume on their usage screen, and that is all it is for.
+     */
+    case 'IG_DM':
+    case 'FB_DM':             return 0;
   }
 }
 

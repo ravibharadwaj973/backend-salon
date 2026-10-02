@@ -50,8 +50,22 @@ describe('what each kind of WhatsApp message is charged to', () => {
 });
 
 describe('the allowance that must never stop a reply', () => {
-  it('is the replies meter, and only that one', () => {
-    expect(NEVER_REFUSED).toEqual(['WA_SERVICE']);
+  /**
+   * THE RULE, NOT THE LIST.
+   *
+   * This asserted exactly ['WA_SERVICE'] until Instagram and Messenger DMs
+   * arrived, and the list is the wrong thing to pin: it fails every time a
+   * channel is added, which teaches whoever is adding one to widen the array
+   * until the test goes green. What has to hold is the PRINCIPLE — a meter is
+   * exempt only when somebody is mid-conversation and waiting — so the test
+   * below states that from both directions instead.
+   */
+  it('exempts the meters where a customer is waiting on an answer', () => {
+    // A reply on WhatsApp, Instagram or Messenger is always to somebody who
+    // wrote first. Going quiet on them is the worst thing this system can do,
+    // and on the two DM channels Meta charges nothing anyway — so refusing
+    // saves the salon not one rupee.
+    expect([...NEVER_REFUSED].sort()).toEqual(['FB_DM', 'IG_DM', 'WA_SERVICE']);
   });
 
   it('never exempts a meter the salon chose to spend', () => {
