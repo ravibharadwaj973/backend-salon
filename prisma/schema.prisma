@@ -926,6 +926,7 @@ model Tenant {
   @@map("tenants")
   inboundMessages InboundMessage[]
   conversations   Conversation[]
+  marketingSources MarketingSource[]
   passwordResetRequests PasswordResetRequest[]
 }
 
@@ -1021,6 +1022,7 @@ model Branch {
   purchaseOrders PurchaseOrder[]
   holidays       Holiday[]
   invoiceSeries  InvoiceSeries[]
+  marketingSources MarketingSource[]
 
   @@unique([tenantId, code])
   @@index([tenantId, isActive])
@@ -3695,6 +3697,98 @@ model PasswordResetToken {
 /// free text, staff included — only an approved template. So the window is not
 /// a field on this model: it is a fact computed from that timestamp, in
 /// service-window.ts, and every screen that offers a reply box has to ask.
+/// WHAT KIND OF THING THE SALON IS PROMOTING.
+enum MarketingKind {
+  /// Posted and not paid for. Still worth measuring: most salons' best
+  /// performing content is organic, and they have never once been told so.
+  ORGANIC_POST
+  /// A post the salon pressed "Boost" on from their phone. The commonest paid
+  /// thing an Indian salon does, and the one Ads Manager reports on worst.
+  BOOSTED_POST
+  /// A campaign built properly, in Ads Manager or later from here.
+  AD
+  /// A printed code: on the counter, on a mirror, in a window.
+  QR
+  OTHER
+}
+
+/// ONE THING THE SALON IS PROMOTING, AND WHAT CAME BACK FROM IT.
+///
+/// Deliberately NOT called Campaign: that name is taken, by the messaging
+/// campaigns a salon sends to its own customers. This is the opposite
+/// direction — money spent to reach people who are not customers yet — and
+/// conflating the two would put "₹3,000 spent" next to a WhatsApp blast that
+/// cost nothing.
+///
+/// ── Why `spend` is a column a human types into ───────────────────────────
+///
+/// It could be read from Meta once the ads API is connected, and one day it
+/// will be. It is a plain number now because the salon pressing Boost on their
+/// phone for ₹500 is the real behaviour today, and waiting for an API approval
+/// to tell them whether that ₹500 came back is leaving the only question they
+/// actually have unanswered for a quarter. A typed number and a real booking
+/// count beats a perfect number and no booking count.
+model MarketingSource {
+  id       String  @id @default(cuid())
+  tenantId String
+  branchId String?
+
+  name    String
+  /// Short, and what travels in a link and in an ad's referral payload. Unique
+  /// per salon rather than globally: two salons may both call something "diwali".
+  code    String
+  channel Channel       @default(INSTAGRAM)
+  kind    MarketingKind @default(BOOSTED_POST)
+
+  /// What the salon says they spent, in rupees. Zero for an organic post, which
+  /// is a real answer and not a missing one.
+  spend     Decimal  @default(0) @db.Decimal(12, 2)
+  /// A daily cap the salon set, so the screen can say when they are near it.
+  dailyBudget Decimal? @db.Decimal(12, 2)
+
+  startedOn DateTime? @db.Date
+  endedOn   DateTime? @db.Date
+  isActive  Boolean   @default(true)
+  notes     String?
+
+  /// Meta's own ids, filled in once the ads API is connected. Null while the
+  /// spend above is typed by hand, which is every row today.
+  metaCampaignId String?
+  metaAdId       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch Branch? @relation(fields: [branchId], references: [id], onDelete: SetNull)
+
+  clicks MarketingClick[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, isActive])
+  @@map("marketing_sources")
+}
+
+/// A TAP. NOTHING ELSE.
+///
+/// No IP address, no user agent, no device, no cookie — and that is a decision
+/// rather than an omission. The only question this table exists to answer is
+/// "how many people tapped this, and when", and every extra column would be
+/// personal data about somebody who has not yet chosen to give the salon
+/// anything. A row here is one anonymous tap at one moment.
+model MarketingClick {
+  id       String   @id @default(cuid())
+  tenantId String
+  sourceId String
+  at       DateTime @default(now())
+
+  source MarketingSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  /// The dashboard asks for one source over a date range, which is this index.
+  @@index([tenantId, sourceId, at])
+  @@map("marketing_clicks")
+}
+
 model Conversation {
   id       String @id @default(cuid())
   tenantId String
@@ -3726,6 +3820,20 @@ model Conversation {
   lastMessageAt DateTime?
   /// Set when a person, or the assistant, hands the thread to staff.
   needsAttentionAt DateTime?
+
+  /// WHICH POST OR AD SENT THIS PERSON HERE.
+  ///
+  /// A click-to-DM ad opens the conversation carrying a referral, and Meta
+  /// hands it to the webhook exactly once — on the very first message. Stored
+  /// on the thread at that moment or lost for good, which is why it lives here
+  /// and not on a message.
+  ///
+  /// It is the only way a DM can ever be attributed. Everything else in the
+  /// loop has a link to carry a code; a direct message has this and nothing.
+  sourceRef   String?
+  /// Meta's own ad id from the same payload, kept raw so it can be matched to a
+  /// MarketingSource later even if the salon never set a code.
+  sourceAdId  String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

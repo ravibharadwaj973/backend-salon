@@ -201,3 +201,59 @@ describe('time', () => {
     expect(event.at.getUTCFullYear()).toBe(2025);
   });
 });
+
+describe('which ad sent them', () => {
+  /**
+   * Meta attaches the referral to the FIRST message of a thread and to no
+   * other. Miss it there and that DM is unattributable forever — there is no
+   * backfill and no second delivery. It is the only way a direct message can
+   * ever be tied to the thing that produced it.
+   */
+  it('reads a referral nested inside the message, as Instagram sends it', () => {
+    const [event] = parseMetaDmWebhook(
+      igMessage({ referral: { ref: 'diwali-reel', ad_id: '120210000000000000' } }),
+    );
+    expect(event.referral).toEqual({ ref: 'diwali-reel', adId: '120210000000000000' });
+  });
+
+  it('reads a referral alongside the message, as Messenger sends it', () => {
+    // The two products put it in different places. A parser that knows only one
+    // loses attribution on half the traffic and nothing says so.
+    const [event] = parseMetaDmWebhook({
+      object: 'page',
+      entry: [
+        {
+          id: 'page-salon-9',
+          messaging: [
+            {
+              sender: { id: 'psid-anita' },
+              recipient: { id: 'page-salon-9' },
+              referral: { ref: 'bridal-oct', ad_id: '120299999999999999', source: 'ADS' },
+              message: { mid: 'mid-ref-2', text: 'hi' },
+            },
+          ],
+        },
+      ],
+    });
+    expect(event.referral).toEqual({ ref: 'bridal-oct', adId: '120299999999999999' });
+  });
+
+  it('is null on an ordinary DM, so nothing is attributed by accident', () => {
+    expect(parseMetaDmWebhook(igMessage())[0]!.referral).toBeNull();
+  });
+
+  it('is null when the referral is present but empty', () => {
+    // An empty ref is not an attribution. Storing '' would file every organic
+    // DM under one blank source.
+    expect(parseMetaDmWebhook(igMessage({ referral: { ref: '  ', ad_id: '' } }))[0]!.referral).toBeNull();
+  });
+
+  it('keeps the ad id even when the salon set no ref', () => {
+    // Boosting a post from the phone gives an ad id and no ref at all, which is
+    // the commonest paid thing an Indian salon does.
+    expect(parseMetaDmWebhook(igMessage({ referral: { ad_id: '12021' } }))[0]!.referral).toEqual({
+      ref: null,
+      adId: '12021',
+    });
+  });
+});

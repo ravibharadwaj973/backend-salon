@@ -45,12 +45,34 @@ export interface MetaDmEvent {
    * itself.
    */
   isEcho: boolean;
+  /**
+   * WHICH POST OR AD SENT THEM, WHEN THERE WAS ONE.
+   *
+   * A click-to-DM ad opens the thread carrying a referral. Meta sends it ONCE —
+   * attached to the first message of the conversation and never again — so it
+   * is either stored at that moment or the DM is unattributable forever.
+   *
+   * This is the only way a direct message can ever be tied to the thing that
+   * produced it. A link can carry a code in its URL; a DM carries this, and
+   * when it is absent there is nothing else to fall back on.
+   */
+  referral: { ref: string | null; adId: string | null } | null;
+}
+
+interface RawReferral {
+  /** The `ref` the salon set on the ad or the ice-breaker link. */
+  ref?: string;
+  ad_id?: string;
+  source?: string;
+  type?: string;
 }
 
 interface RawMessaging {
   sender?: { id?: string };
   recipient?: { id?: string };
   timestamp?: number;
+  /** On the first message of an ad-originated thread, and only then. */
+  referral?: RawReferral;
   message?: {
     mid?: string;
     text?: string;
@@ -59,6 +81,8 @@ interface RawMessaging {
     is_unsupported?: boolean;
     attachments?: { type?: string }[];
     reply_to?: { story?: unknown };
+    /** Instagram puts it inside the message; Messenger puts it alongside. */
+    referral?: RawReferral;
   };
 }
 
@@ -148,6 +172,22 @@ export function parseMetaDmWebhook(payload: unknown): MetaDmEvent[] {
 
       const { body: text, type } = describe(message);
 
+      /**
+       * Read from both places on purpose: Instagram nests the referral inside
+       * the message and Messenger puts it beside it, and a parser that knows
+       * only one of the two silently loses attribution on half the traffic.
+       */
+      const raw = message.referral ?? item.referral ?? null;
+      /*
+       * Trim BEFORE deciding whether there is an attribution at all. Testing
+       * the raw fields first lets a whitespace-only ref through the gate and
+       * then empties it, which stores {ref: null, adId: null} -- a referral
+       * that says nothing, and a thread marked as ad-originated with no ad.
+       */
+      const ref = raw?.ref?.trim() || null;
+      const adId = raw?.ad_id?.trim() || null;
+      const referral = ref || adId ? { ref, adId } : null;
+
       events.push({
         channel,
         accountId,
@@ -159,6 +199,7 @@ export function parseMetaDmWebhook(payload: unknown): MetaDmEvent[] {
         // Reading one as the other puts a message in 1970 or in the year 56000.
         at: item.timestamp ? new Date(item.timestamp) : new Date(),
         isEcho,
+        referral,
       });
     }
   }

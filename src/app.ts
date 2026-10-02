@@ -10,9 +10,12 @@ import { logger } from './core/logger';
 import { redactUrl } from './core/log-redact';
 import { contextMiddleware } from './middleware/context';
 import { resolveClick } from './messaging/tracked-links';
+import { recordClick } from './modules/marketing/marketing-source.service';
+import { bookingUrl } from './core/public-links';
 import { applyStatusUpdate } from './messaging/dispatcher';
 import { errorHandler, notFoundHandler } from './middleware/error';
-import { databaseHealthy } from './core/prisma';
+import { databaseHealthy, prisma } from './core/prisma';
+import { runUnscoped } from './core/context';
 import { pendingMigrationsAtBoot } from './core/migrations';
 import { aiVerified } from './modules/feedback/feedback-ai.service';
 import { buildRouter } from './routes';
@@ -231,6 +234,48 @@ export function createApp(): Express {
         // 302, not 301: a permanent redirect is cached by the phone, and the
         // second tap would never reach us to be counted.
         res.redirect(302, hit.targetUrl);
+      })
+      .catch(() => res.status(404).type('text/plain').send('This link has expired.'));
+  });
+
+  /**
+   * THE MARKETING LINK — the one a salon puts in their Instagram bio.
+   *
+   * A separate path from /r/ above, and not a clever extension of it. That one
+   * carries a seven-character random code generated per message; this one
+   * carries a word the salon chose, like "diwali-reel", because it goes in a
+   * bio, on a printed QR code and inside an ad, where somebody may have to read
+   * it or type it. Sharing a namespace between a random code and a chosen word
+   * is how "diwali" eventually collides with a generated one.
+   *
+   * Outside the API prefix and outside auth, like the other: the person opening
+   * it has never heard of us and has no session.
+   */
+  app.get('/go/:code', (req, res) => {
+    void recordClick(req.params.code)
+      .then(async (hit) => {
+        if (!hit) {
+          res.status(404).type('text/plain').send('This link has expired.');
+          return;
+        }
+
+        const tenant = await runUnscoped(() =>
+          prisma.tenant.findUnique({ where: { id: hit.tenantId }, select: { slug: true } }),
+        ).catch(() => null);
+
+        if (!tenant) {
+          res.status(404).type('text/plain').send('This link has expired.');
+          return;
+        }
+
+        /**
+         * `ref` is the whole point: it rides into the booking page, is stored on
+         * the appointment as sourceRef, and is what later joins a booking back
+         * to the thing that produced it.
+         */
+        // 302, not 301: a permanent redirect is cached by the phone and the
+        // second tap would never reach us to be counted.
+        res.redirect(302, bookingUrl(tenant.slug, { ref: hit.code }));
       })
       .catch(() => res.status(404).type('text/plain').send('This link has expired.'));
   });

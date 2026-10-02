@@ -502,6 +502,26 @@ router.post(
       if (!stored) continue;
 
       /**
+       * WHICH AD SENT THEM — stored now or never.
+       *
+       * Meta attaches the referral to the first message of the thread and to no
+       * other, so there is no second chance at this and no way to backfill it.
+       * Written with updateMany on a thread that still has none, so a later
+       * message carrying a stale referral cannot overwrite the one that opened
+       * the conversation.
+       */
+      if (conversation && event.referral) {
+        await runUnscoped(() =>
+          prisma.conversation.updateMany({
+            where: { id: conversation.id, sourceRef: null, sourceAdId: null },
+            data: { sourceRef: event.referral!.ref, sourceAdId: event.referral!.adId },
+          }),
+        ).catch((err: unknown) =>
+          logger.warn({ err, tenantId, channel: event.channel }, 'ad referral not stored on the conversation'),
+        );
+      }
+
+      /**
        * AN ECHO IS STORED AND THEN LEFT ALONE.
        *
        * The salon answered from the Instagram or Facebook app on their phone.

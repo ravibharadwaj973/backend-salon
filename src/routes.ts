@@ -25,6 +25,7 @@ import analyticsRoutes from './modules/analytics/analytics.routes';
 import publicRoutes from './modules/public/public.routes';
 import webhookRoutes from './modules/webhooks/webhook.routes';
 import { segmentRouter, campaignRouter, journeyRouter, templateRouter, messageRouter } from './modules/marketing/marketing.routes';
+import { marketingSourceRouter } from './modules/marketing/marketing-source.routes';
 import { usageRouter, platformQuotaRouter } from './modules/quotas/quota.routes';
 import { auditRouter, platformAuditRouter } from './modules/audit/audit.routes';
 import messagingRouter from './modules/messaging/messaging.routes';
@@ -92,6 +93,10 @@ export function buildRouter(): Router {
     campaignRouter,
   );
   router.use('/journeys', authenticate, requireFeature(FEATURES.JOURNEYS), journeyRouter);
+  // No requireFeature: see the note on the router. Knowing which post filled
+  // Saturday costs the platform nothing, and charging for arithmetic is how a
+  // Starter salon never finds out the thing that would make them upgrade.
+  router.use('/marketing-sources', marketingSourceRouter);
   router.use('/gallery', galleryRoutes);
   router.use('/templates', templateRouter);
   router.use('/messages', messageRouter);
