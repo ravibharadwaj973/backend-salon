@@ -489,6 +489,20 @@ export async function buildVariables(input: {
  * later one is the only reading that cannot be wrong in the direction that
  * silences a legitimate reply.
  */
+/**
+ * THE CHANNELS WITH A 24-HOUR RULE.
+ *
+ * All three of Meta's. WhatsApp at least has a way out — an approved template
+ * still delivers once the window shuts — so the gate there decides the SHAPE of
+ * a message. Instagram and Messenger have no templates at all: outside the
+ * window there is nothing to send, and a message that goes anyway comes back
+ * refused with nothing on the salon's screen to say why.
+ *
+ * SMS and email are absent on purpose. Neither has a window, and adding one
+ * would stop a reminder reaching somebody who is perfectly reachable.
+ */
+const WINDOWED_CHANNELS: Channel[] = ['WHATSAPP', 'INSTAGRAM', 'MESSENGER'];
+
 async function lastInboundFor(
   input: { conversationId?: string | null },
   customer: { lastInboundAt: Date | null } | null,
@@ -953,12 +967,12 @@ export async function queueMessage(input: QueueMessageInput) {
    * that reaches somebody outside the window — that is what they are for.
    */
   const lastInbound =
-    input.channel === 'WHATSAPP' && !template ? await lastInboundFor(input, customer) : null;
+    WINDOWED_CHANNELS.includes(input.channel) && !template ? await lastInboundFor(input, customer) : null;
 
-  if (input.channel === 'WHATSAPP' && !template && !windowIsOpen(lastInbound)) {
+  if (WINDOWED_CHANNELS.includes(input.channel) && !template && !windowIsOpen(lastInbound)) {
     logger.info(
-      { customerId: input.customerId ?? null, purpose },
-      'message not sent: free-form whatsapp outside the 24-hour service window',
+      { customerId: input.customerId ?? null, channel: input.channel, purpose },
+      'message not sent: outside the 24-hour service window',
     );
     return prisma.messageLog.create({
       data: {

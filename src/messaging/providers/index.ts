@@ -7,6 +7,7 @@ import { WhatsAppCloudProvider } from './whatsapp.provider';
 import { Msg91Provider } from './msg91.provider';
 import { SimulatorProvider } from './simulator.provider';
 import { ResendEmailProvider } from './email.provider';
+import { MetaDmProvider } from './meta-dm.provider';
 import type { MessageProvider } from './types';
 
 /**
@@ -90,6 +91,73 @@ export async function resolveProvider(channel: Channel, tenantId: string | null)
           [!config?.waPhoneNumberId, 'the WhatsApp Phone Number ID'],
           [!config?.waAccessToken, 'the access token'],
           [Boolean(config?.waAccessToken && config.waPhoneNumberId && config.waStatus !== 'CONNECTED'), 'a successful test send — the number is saved but not verified yet'],
+        ]),
+      };
+    }
+
+    /**
+     * Instagram and Messenger: tenant credentials or nothing.
+     *
+     * No environment fallback, unlike WhatsApp. That fallback exists because one
+     * number can be configured on the server for a single-salon deployment; a
+     * DM account is always connected per salon through Settings, so an env
+     * variable here would be a way to send a second salon's replies from the
+     * first salon's Instagram.
+     */
+    case 'INSTAGRAM': {
+      if (config?.igAccessToken && config.igAccountId && config.igStatus === 'CONNECTED') {
+        return {
+          provider: new MetaDmProvider(
+            { accessToken: config.igAccessToken, accountId: config.igAccountId },
+            'INSTAGRAM',
+          ),
+          live: true,
+          source: 'tenant',
+          missing: null,
+        };
+      }
+      return {
+        provider: new ConsoleProvider('INSTAGRAM'),
+        live: false,
+        source: 'none',
+        missing: whatIsMissing([
+          [!config?.igAccountId, 'a connected Instagram account'],
+          [!config?.igAccessToken, 'the Instagram access token'],
+          [
+            Boolean(config?.igAccessToken && config.igAccountId && config.igStatus !== 'CONNECTED'),
+            'a finished connection — the account is saved but not verified yet',
+          ],
+          [
+            Boolean(config?.igTokenExpiresAt && config.igTokenExpiresAt < new Date()),
+            'a reconnection — the Instagram token has expired',
+          ],
+        ]),
+      };
+    }
+
+    case 'MESSENGER': {
+      if (config?.fbAccessToken && config.fbPageId && config.fbStatus === 'CONNECTED') {
+        return {
+          provider: new MetaDmProvider(
+            { accessToken: config.fbAccessToken, accountId: config.fbPageId },
+            'MESSENGER',
+          ),
+          live: true,
+          source: 'tenant',
+          missing: null,
+        };
+      }
+      return {
+        provider: new ConsoleProvider('MESSENGER'),
+        live: false,
+        source: 'none',
+        missing: whatIsMissing([
+          [!config?.fbPageId, 'a connected Facebook Page'],
+          [!config?.fbAccessToken, 'the Page access token'],
+          [
+            Boolean(config?.fbAccessToken && config.fbPageId && config.fbStatus !== 'CONNECTED'),
+            'a finished connection — the Page is saved but not verified yet',
+          ],
         ]),
       };
     }
