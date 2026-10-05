@@ -907,27 +907,29 @@ model Tenant {
 
   plan Plan? @relation(fields: [planId], references: [id])
 
-  branches          Branch[]
-  users             User[]
-  customers         Customer[]
-  services          Service[]
-  serviceCategories ServiceCategory[]
-  staff             Staff[]
-  appointments      Appointment[]
-  invoices          Invoice[]
-  settingsKv        Setting[]
-  subscriptions     TenantSubscription[]
-  messageUsage      MessageUsage[]
-  creditBalances    CreditBalance[]
-  creditLedger      CreditLedger[]
-  messagingConfig   TenantMessagingConfig?
+  branches              Branch[]
+  users                 User[]
+  customers             Customer[]
+  services              Service[]
+  serviceCategories     ServiceCategory[]
+  staff                 Staff[]
+  appointments          Appointment[]
+  invoices              Invoice[]
+  settingsKv            Setting[]
+  subscriptions         TenantSubscription[]
+  messageUsage          MessageUsage[]
+  creditBalances        CreditBalance[]
+  creditLedger          CreditLedger[]
+  messagingConfig       TenantMessagingConfig?
+  inboundMessages       InboundMessage[]
+  conversations         Conversation[]
+  marketingSources      MarketingSource[]
+  passwordResetRequests PasswordResetRequest[]
+  hairstyles            HairstyleCatalog[]
+  hairDesigns           HairDesign[]
 
   @@index([status])
   @@map("tenants")
-  inboundMessages InboundMessage[]
-  conversations   Conversation[]
-  marketingSources MarketingSource[]
-  passwordResetRequests PasswordResetRequest[]
 }
 
 model TenantSubscription {
@@ -1008,21 +1010,23 @@ model Branch {
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
-  userBranches   UserBranch[]
-  staff          Staff[]
-  resources      Resource[]
-  appointments   Appointment[]
-  invoices       Invoice[]
-  expenses       Expense[]
-  stocks         Stock[]
-  stockMovements StockMovement[]
-  settings       Setting[]
-  customers      Customer[]
-  leads          Lead[]
-  purchaseOrders PurchaseOrder[]
-  holidays       Holiday[]
-  invoiceSeries  InvoiceSeries[]
+  userBranches     UserBranch[]
+  staff            Staff[]
+  resources        Resource[]
+  appointments     Appointment[]
+  invoices         Invoice[]
+  expenses         Expense[]
+  stocks           Stock[]
+  stockMovements   StockMovement[]
+  settings         Setting[]
+  customers        Customer[]
+  leads            Lead[]
+  purchaseOrders   PurchaseOrder[]
+  holidays         Holiday[]
+  invoiceSeries    InvoiceSeries[]
   marketingSources MarketingSource[]
+  hairstyles       HairstyleCatalog[]
+  hairDesigns      HairDesign[]
 
   @@unique([tenantId, code])
   @@index([tenantId, isActive])
@@ -1058,16 +1062,16 @@ model User {
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
-  branches            UserBranch[]
-  refreshTokens       RefreshToken[]
-  overrides           PermissionOverride[]
-  staffProfile        Staff?
-  auditLogs           AuditLog[]
-  createdAppointments Appointment[]        @relation("AppointmentCreatedBy")
-  createdInvoices     Invoice[]            @relation("InvoiceCreatedBy")
-  assignedLeads       Lead[]               @relation("LeadAssignee")
-  conversations       Conversation[]
-  sentMessages        MessageLog[]         @relation("MessageSentBy")
+  branches              UserBranch[]
+  refreshTokens         RefreshToken[]
+  overrides             PermissionOverride[]
+  staffProfile          Staff?
+  auditLogs             AuditLog[]
+  createdAppointments   Appointment[]          @relation("AppointmentCreatedBy")
+  createdInvoices       Invoice[]              @relation("InvoiceCreatedBy")
+  assignedLeads         Lead[]                 @relation("LeadAssignee")
+  conversations         Conversation[]
+  sentMessages          MessageLog[]           @relation("MessageSentBy")
   passwordResetRequests PasswordResetRequest[]
 
   @@unique([tenantId, email])
@@ -1122,10 +1126,10 @@ model RefreshToken {
 }
 
 model AuditLog {
-  id        String   @id @default(cuid())
-  tenantId  String
-  branchId  String?
-  userId    String?
+  id       String  @id @default(cuid())
+  tenantId String
+  branchId String?
+  userId   String?
 
   /// WHEN THE PERSON WHO ACTED WORKS FOR US, NOT FOR THE SALON.
   ///
@@ -1223,6 +1227,8 @@ model Service {
   rewards              Reward[]
 
   feedbackRatings FeedbackServiceRating[]
+  hairstyles      HairstyleCatalog[]
+  hairDesigns     HairDesign[]
 
   @@unique([tenantId, name, gender])
   @@index([tenantId, isActive])
@@ -1290,6 +1296,7 @@ model Staff {
   payrolls             PayrollItem[]
   preferredByCustomers Customer[]           @relation("PreferredStaff")
   feedback             Feedback[]
+  hairDesigns          HairDesign[]
 
   @@unique([tenantId, code])
   @@index([tenantId, branchId, isActive])
@@ -1598,15 +1605,8 @@ model Customer {
   waitlistEntries   Waitlist[]
   couponRedemptions CouponRedemption[]
   interests         CustomerInterest[]
+  hairDesigns       HairDesign[]
   convertedFromLead Lead[]
-
-  @@unique([tenantId, phone])
-  @@index([tenantId, lastVisitAt])
-  @@index([tenantId, branchId])
-  @@index([tenantId, tier])
-  @@index([tenantId, lifecycleStage])
-  @@index([tenantId, expectedNextVisitAt])
-  @@map("customers")
   /// WHEN THIS CUSTOMER LAST WROTE TO US.
   ///
   /// WhatsApp allows a free-form reply only within 24 hours of this moment.
@@ -1614,7 +1614,7 @@ model Customer {
   /// back 131047 — which a salon experiences as their answer silently never
   /// arriving. Denormalised onto the customer so the send path can check it
   /// without a join on every message.
-  lastInboundAt DateTime?
+  lastInboundAt     DateTime?
 
   /// THE OFFER THE ASSISTANT IS WAITING FOR AN ANSWER TO.
   ///
@@ -1633,6 +1633,14 @@ model Customer {
 
   inboundMessages InboundMessage[]
   conversations   Conversation[]
+
+  @@unique([tenantId, phone])
+  @@index([tenantId, lastVisitAt])
+  @@index([tenantId, branchId])
+  @@index([tenantId, tier])
+  @@index([tenantId, lifecycleStage])
+  @@index([tenantId, expectedNextVisitAt])
+  @@map("customers")
 }
 
 model CustomerNote {
@@ -1729,9 +1737,10 @@ model Appointment {
   customer  Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
   createdBy User?     @relation("AppointmentCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
 
-  services AppointmentService[]
-  invoice  Invoice?
-  feedback Feedback?
+  services    AppointmentService[]
+  invoice     Invoice?
+  feedback    Feedback?
+  hairDesigns HairDesign[]
 
   @@index([tenantId, branchId, startAt])
   @@index([tenantId, customerId, startAt])
@@ -2944,7 +2953,7 @@ model Feedback {
   /// Written the moment the rating is saved, in the background, so the screen
   /// that asks for them usually finds them already here. The salon's own feedback
   /// list keeps showing reviewDraft above, which is the first of these.
-  reviewDrafts   String[]
+  reviewDrafts String[]
 
   topics         FeedbackTopic[]
   serviceRatings FeedbackServiceRating[]
@@ -3512,29 +3521,29 @@ model TenantAsset {
 ///
 /// So: its own table, and the outbound log is left alone.
 model InboundMessage {
-  id       String @id @default(cuid())
-  tenantId String
+  id         String  @id @default(cuid())
+  tenantId   String
   /// Null when the number belongs to nobody on the book — a stranger messaging
   /// the salon is still worth showing, and is how some customers arrive.
   customerId String?
   branchId   String?
 
-  channel Channel @default(WHATSAPP)
+  channel     Channel @default(WHATSAPP)
   /// E.164, normalised the same way outbound addresses are.
   fromAddress String
   body        String
   /// 'text', 'image', 'button', 'interactive' … kept raw: the salon should see
   /// that a photograph arrived even when nothing here can display it yet.
-  messageType String @default("text")
+  messageType String  @default("text")
 
-/// The provider's own id for this message.
-///
-/// Unique, and that is the whole point. Meta retries a webhook until it gets a
-/// 200 and does not care that it already got one — so the same customer
-/// message arrives two or three times. Today that is harmless because the
-/// handler barely acts on it. The moment anything replies automatically, every
-/// retry is another message to a real person, and the constraint is what stops
-/// it rather than anybody remembering to.
+  /// The provider's own id for this message.
+  ///
+  /// Unique, and that is the whole point. Meta retries a webhook until it gets a
+  /// 200 and does not care that it already got one — so the same customer
+  /// message arrives two or three times. Today that is harmless because the
+  /// handler barely acts on it. The moment anything replies automatically, every
+  /// retry is another message to a real person, and the constraint is what stops
+  /// it rather than anybody remembering to.
   providerMessageId String? @unique
 
   /// When the salon (or a person acting for it) dealt with this.
@@ -3626,16 +3635,16 @@ model PasswordResetRequest {
   /// from one address is the shape of somebody probing, not somebody forgetful.
   requestedIp String?
 
-  resolvedAt DateTime?
+  resolvedAt               DateTime?
   /// The colleague who resolved it, when the salon handled it themselves.
-  resolvedById String?
+  resolvedById             String?
   /// The platform admin who resolved it, when it reached support.
   resolvedByPlatformUserId String?
   /// Their name, written out — see AuditLog.actorName for why.
-  resolvedByName String?
+  resolvedByName           String?
   /// Why support acted. Required on that path: it is the record of the identity
   /// check that happened off-screen, and without it the approval is unexplained.
-  reason String?
+  reason                   String?
 
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -3742,7 +3751,7 @@ model MarketingSource {
 
   /// What the salon says they spent, in rupees. Zero for an organic post, which
   /// is a real answer and not a missing one.
-  spend     Decimal  @default(0) @db.Decimal(12, 2)
+  spend       Decimal  @default(0) @db.Decimal(12, 2)
   /// A daily cap the salon set, so the screen can say when they are near it.
   dailyBudget Decimal? @db.Decimal(12, 2)
 
@@ -3790,14 +3799,14 @@ model MarketingClick {
 }
 
 model Conversation {
-  id       String @id @default(cuid())
-  tenantId String
+  id         String  @id @default(cuid())
+  tenantId   String
   /// Null for a number nobody has on the book. A stranger still gets a thread:
   /// it is how some customers arrive, and a salon should see them.
   customerId String?
   branchId   String?
 
-  channel Channel @default(WHATSAPP)
+  channel         Channel @default(WHATSAPP)
   /// E.164, normalised. The only identifier a stranger's thread has, and the
   /// reason the unique index below is on the address rather than the customer.
   customerAddress String
@@ -3809,7 +3818,7 @@ model Conversation {
   /// longer has to silence the assistant for all of them.
   mode ConversationMode @default(HUMAN)
 
-  status ConversationStatus @default(OPEN)
+  status       ConversationStatus @default(OPEN)
   /// The staff member who took it over, if anybody has.
   assignedToId String?
 
@@ -3817,9 +3826,9 @@ model Conversation {
   /// from nothing else — a reply of ours does not reopen it.
   lastCustomerMessageAt DateTime?
   /// When anybody last said anything, which is what the inbox sorts on.
-  lastMessageAt DateTime?
+  lastMessageAt         DateTime?
   /// Set when a person, or the assistant, hands the thread to staff.
-  needsAttentionAt DateTime?
+  needsAttentionAt      DateTime?
 
   /// WHICH POST OR AD SENT THIS PERSON HERE.
   ///
@@ -3830,20 +3839,20 @@ model Conversation {
   ///
   /// It is the only way a DM can ever be attributed. Everything else in the
   /// loop has a link to carry a code; a direct message has this and nothing.
-  sourceRef   String?
+  sourceRef  String?
   /// Meta's own ad id from the same payload, kept raw so it can be matched to a
   /// MarketingSource later even if the salon never set a code.
-  sourceAdId  String?
+  sourceAdId String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant       Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  customer     Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  assignedTo   User?            @relation(fields: [assignedToId], references: [id], onDelete: SetNull)
-  inbound      InboundMessage[]
-  outbound     MessageLog[]
-  events       ConversationEvent[]
+  tenant     Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer   Customer?           @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  assignedTo User?               @relation(fields: [assignedToId], references: [id], onDelete: SetNull)
+  inbound    InboundMessage[]
+  outbound   MessageLog[]
+  events     ConversationEvent[]
 
   /// One thread per number per channel. A customer who writes, is answered,
   /// and writes again a week later is in the same conversation — threads are
@@ -3895,13 +3904,13 @@ model ConversationEvent {
   tenantId       String
   conversationId String
 
-  kind ConversationEventKind
+  kind    ConversationEventKind
   /// One line, already written for a person to read. The detail is below.
   summary String
   /// The particulars — service, day, time, shop, appointment id. Json because
   /// each kind carries different ones, and because a column per particular
   /// would be a migration every time the assistant learns a new trick.
-  detail Json?
+  detail  Json?
 
   at DateTime @default(now())
 
@@ -3931,4 +3940,190 @@ enum ConversationEventKind {
   TAKEN_OVER
   /// A person gave it back.
   ASSISTANT_RESUMED
+}
+
+// ============================= HAIR DESIGN STUDIO ===========================
+
+/// How the hair falls. The four the trade actually uses, in the order a
+/// stylist would say them.
+enum HairTexture {
+  STRAIGHT
+  WAVY
+  CURLY
+  COILY
+}
+
+enum HairLength {
+  VERY_SHORT
+  SHORT
+  MEDIUM
+  LONG
+  VERY_LONG
+}
+
+enum HairDensity {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum FaceShape {
+  OVAL
+  ROUND
+  SQUARE
+  OBLONG
+  HEART
+  DIAMOND
+}
+
+/// How much upkeep the style asks of the customer. The single most useful
+/// filter in the room, and the one nobody records: a cut that needs a salon
+/// visit every three weeks is the wrong answer for most people however well it
+/// suits their face.
+enum HairMaintenance {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+/// A STYLE THE SALON OFFERS, AND WHAT MAY BE DONE TO IT.
+///
+/// Not a 3D file. `kind` names a parametric generator the studio knows how to
+/// draw, and everything else on this row says which knobs that generator is
+/// allowed to turn for this salon's version of the style. Two salons can both
+/// offer a butterfly cut, price it differently, allow different lengths and
+/// point it at different services, without either of them owning a 3D asset.
+///
+/// The supported* arrays are a contract with the configurator: a control the
+/// style does not support is not shown, rather than shown and ignored. An empty
+/// array means "all of them", because a salon that has not thought about it has
+/// not thereby forbidden everything.
+model HairstyleCatalog {
+  id       String  @id @default(cuid())
+  tenantId String
+  branchId String?
+
+  /// WHICH GENERATOR DRAWS THIS. Chosen from a fixed registry, never free text:
+  /// a kind the studio has no generator for renders a bald head and no error,
+  /// which is the worst possible failure for a screen whose whole job is to
+  /// show something. The service checks it against the registry on write.
+  kind        String
+  name        String
+  category    String?
+  gender      Gender  @default(UNISEX)
+  description String?
+
+  supportedTextures     HairTexture[] @default([])
+  supportedLengths      HairLength[]  @default([])
+  supportedDensities    HairDensity[] @default([])
+  recommendedFaceShapes FaceShape[]   @default([])
+
+  /// Which of the shared controls this style exposes. A fade slider on a bob is
+  /// not a harmless extra control, it is a promise the salon cannot keep.
+  supportsBangs   Boolean @default(false)
+  supportsLayers  Boolean @default(false)
+  supportsParting Boolean @default(true)
+  supportsFade    Boolean @default(false)
+
+  maintenance HairMaintenance @default(MEDIUM)
+
+  /// What the customer is actually booking when they book this look. Nullable
+  /// because a salon will add styles before it has decided how to price them,
+  /// and a half-filled catalogue is better than an empty one.
+  serviceId String?
+
+  previewUrl String?
+  isActive   Boolean @default(true)
+  sortOrder  Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant  Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch  Branch?  @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  service Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+
+  designs HairDesign[]
+
+  @@unique([tenantId, kind, name])
+  @@index([tenantId, isActive, sortOrder])
+  @@map("hairstyle_catalog")
+}
+
+/// ONE LOOK, SAVED.
+///
+/// Enough to redraw the exact design months later, which is the only test that
+/// matters: a customer who liked what they saw in October must get the same
+/// thing in January, from a different stylist, after the salon has edited its
+/// catalogue.
+///
+/// That is why `hairstyleKey`, the texture, the length and the base colour are
+/// COLUMNS carrying their own values rather than a lookup through `catalogId`.
+/// The catalogue row is a convenience and may be deleted or edited; the design
+/// is a record of a decision and must not change under the customer. `catalogId`
+/// is therefore nullable with onDelete: SetNull, and the design still renders.
+///
+/// `config` holds the parts that differ per style — highlights, balayage,
+/// ombre, bangs, layers, parting, fade depth. Json because the shape genuinely
+/// varies by style, and a column per option would be forty mostly-null columns
+/// that still would not cover the next style added.
+model HairDesign {
+  id       String  @id @default(cuid())
+  tenantId String
+  branchId String?
+
+  /// Null for somebody playing with the tablet on the counter who has not said
+  /// who they are. The design is still worth keeping for the length of the
+  /// visit, and gets a customer when one is chosen.
+  customerId String?
+  catalogId  String?
+
+  name String
+
+  /// The snapshot. See the note above: this is what gets redrawn, not catalogId.
+  hairstyleKey String
+  modelKey     String
+
+  texture HairTexture
+  length  HairLength
+  density HairDensity @default(MEDIUM)
+  /// 0-100. A slider, not three buckets, because volume is the control a
+  /// stylist nudges rather than picks.
+  volume  Int         @default(50)
+
+  /// Hex, including the leading #.
+  baseColor String
+
+  /// Everything style-specific. Defaults to an empty object rather than null so
+  /// readers never have to distinguish "no options" from "not set".
+  config Json @default("{}")
+
+  notes String?
+
+  serviceId     String?
+  staffId       String?
+  appointmentId String?
+
+  /// The look the customer is wearing now, as against ones they tried. At most
+  /// one per customer — enforced by a partial unique index in the migration,
+  /// because the service that maintains it will one day be called twice at once.
+  isCurrent Boolean @default(false)
+
+  createdById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant      Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch      Branch?           @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  customer    Customer?         @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  catalog     HairstyleCatalog? @relation(fields: [catalogId], references: [id], onDelete: SetNull)
+  service     Service?          @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  staff       Staff?            @relation(fields: [staffId], references: [id], onDelete: SetNull)
+  appointment Appointment?      @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+
+  /// The customer's history screen, newest first.
+  @@index([tenantId, customerId, createdAt])
+  @@index([tenantId, catalogId])
+  @@map("hair_designs")
 }
