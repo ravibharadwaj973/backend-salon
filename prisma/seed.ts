@@ -2,6 +2,7 @@
 import bcrypt from 'bcryptjs';
 import { PrismaClient, type Prisma } from '@prisma/client';
 import { DEFAULT_JOURNEYS, DEFAULT_TEMPLATES } from '../src/modules/messaging/defaults';
+import { HAIRSTYLE_KINDS } from '../src/modules/hair-studio/hairstyle-kinds';
 import { deleteTenantCompletely } from '../src/core/tenant-delete';
 import {
   FAIR_USE_UNLIMITED,
@@ -1003,6 +1004,257 @@ async function main() {
     },
   });
 
+  // ------------------------------------------------- hair design studio ---
+  /*
+   * The studio draws the cuts the salon offers, so an empty catalogue is an
+   * empty studio. Seeding the whole registry means a fresh database opens on
+   * something to play with rather than on a page explaining what it would do.
+   */
+  const womensHaircut = services.find((item) => item.name === 'Haircut (Women)')!;
+  const mensHaircut = services.find((item) => item.name === 'Haircut (Men)')!;
+  const highlights = services.find((item) => item.name === 'Hair Highlights')!;
+
+  const hairstyles: { id: string; kind: string; name: string }[] = [];
+  let styleOrder = 0;
+
+  for (const kind of HAIRSTYLE_KINDS) {
+    for (const name of kind.variants) {
+      styleOrder += 1;
+      const style = await prisma.hairstyleCatalog.create({
+        data: {
+          tenantId,
+          kind: kind.key,
+          name,
+          category: kind.category,
+          gender: kind.gender,
+          supportedTextures: kind.textures,
+          supportedLengths: kind.lengths,
+          supportedDensities: kind.densities,
+          recommendedFaceShapes: kind.faceShapes,
+          supportsBangs: kind.supportsBangs,
+          supportsLayers: kind.supportsLayers,
+          supportsParting: kind.supportsParting,
+          supportsFade: kind.supportsFade,
+          maintenance: kind.maintenance,
+          // Everything is bookable except one, left unlinked on purpose so the
+          // "Not bookable" state is visible in a demo rather than theoretical.
+          serviceId:
+            name === 'Skin fade'
+              ? null
+              : kind.key === 'layered_cut' && name === 'Long layers'
+                ? highlights.id
+                : kind.gender === 'MALE'
+                  ? mensHaircut.id
+                  : womensHaircut.id,
+          sortOrder: styleOrder,
+        },
+      });
+      hairstyles.push(style);
+    }
+  }
+
+  /*
+   * Named rather than indexed, and loud when it misses. Renaming a variant in
+   * the registry would otherwise make this return undefined and the seed would
+   * die several lines later on a null id, pointing at the wrong thing.
+   */
+  const styleBy = (name: string) => {
+    const found = hairstyles.find((item) => item.name === name);
+    if (!found) throw new Error(`Seed expects a hairstyle called "${name}", which the registry no longer has.`);
+    return found;
+  };
+
+  /** A saved look, written the way the studio writes one. */
+  const designSeed = [
+    {
+      style: styleBy('Butterfly cut'),
+      customer: customers[2]!,
+      staff: staff[0]!,
+      name: 'Butterfly, caramel ends',
+      texture: 'WAVY' as const,
+      length: 'LONG' as const,
+      density: 'HIGH' as const,
+      volume: 65,
+      baseColor: '#3B2417',
+      config: {
+        bangs: 'CURTAIN',
+        layers: 'MEDIUM',
+        faceFramingLayers: 45,
+        parting: 'CENTER',
+        balayage: { enabled: true, color: '#C58B55', intensity: 'MEDIUM', placement: 'ENDS' },
+      },
+      notes: 'Wants to keep the length. Face-framing kept long enough to tuck.',
+      current: true,
+    },
+    {
+      style: styleBy('Chin-length bob'),
+      customer: customers[5]!,
+      staff: staff[0]!,
+      name: 'Blunt bob, jet black',
+      texture: 'STRAIGHT' as const,
+      length: 'SHORT' as const,
+      density: 'MEDIUM' as const,
+      volume: 40,
+      baseColor: '#1C1917',
+      config: { bangs: 'STRAIGHT', layers: 'NONE', parting: 'CENTER' },
+      notes: 'Fringe to the eyebrow, not below.',
+      current: true,
+    },
+    {
+      style: styleBy('Mid fade'),
+      customer: customers[10]!,
+      staff: staff[2]!,
+      name: 'Mid fade, guard 1',
+      texture: 'STRAIGHT' as const,
+      length: 'SHORT' as const,
+      density: 'MEDIUM' as const,
+      volume: 55,
+      baseColor: '#1C1917',
+      config: { bangs: 'NONE', layers: 'NONE', parting: 'LEFT', fade: { type: 'MID', guard: 1, topLength: 70 } },
+      notes: 'Back every three weeks. Keep the line sharp above the ear.',
+      current: true,
+    },
+    {
+      style: styleBy('Long layers'),
+      customer: customers[2]!,
+      staff: staff[0]!,
+      name: 'Before the wedding — long layers',
+      texture: 'WAVY' as const,
+      length: 'LONG' as const,
+      density: 'MEDIUM' as const,
+      volume: 50,
+      baseColor: '#5A3A22',
+      config: {
+        bangs: 'NONE',
+        layers: 'LIGHT',
+        parting: 'CENTER',
+        rootShadow: { enabled: true, color: '#2A1B12', depth: 25, blend: 55 },
+      },
+      notes: 'Tried in October, went with the butterfly instead.',
+      current: false,
+    },
+    {
+      style: styleBy('Pixie'),
+      customer: customers[14]!,
+      staff: staff[4]!,
+      name: 'Pixie, grown out a little',
+      texture: 'CURLY' as const,
+      length: 'SHORT' as const,
+      density: 'HIGH' as const,
+      volume: 70,
+      baseColor: '#7B5230',
+      config: { bangs: 'WISPY', layers: 'MEDIUM', parting: 'NATURAL' },
+      notes: null,
+      current: true,
+    },
+    {
+      style: styleBy('Textured crop'),
+      customer: customers[18]!,
+      staff: staff[5]!,
+      name: 'Textured crop',
+      texture: 'WAVY' as const,
+      length: 'SHORT' as const,
+      density: 'MEDIUM' as const,
+      volume: 60,
+      baseColor: '#3B2417',
+      config: { bangs: 'STRAIGHT', layers: 'LIGHT', parting: 'NATURAL', fade: { type: 'LOW', guard: 2, topLength: 55 } },
+      notes: null,
+      current: true,
+    },
+  ];
+
+  for (const [index, item] of designSeed.entries()) {
+    await prisma.hairDesign.create({
+      data: {
+        tenantId,
+        branchId: hazratganj.id,
+        customerId: item.customer.id,
+        catalogId: item.style.id,
+        name: item.name,
+        // The snapshot, exactly as the service writes it: the design renders
+        // from this even if the catalogue entry is edited or deleted later.
+        hairstyleKey: item.style.kind,
+        modelKey: 'mannequin_oval',
+        texture: item.texture,
+        length: item.length,
+        density: item.density,
+        volume: item.volume,
+        baseColor: item.baseColor,
+        config: item.config as Prisma.InputJsonValue,
+        notes: item.notes,
+        staffId: item.staff.id,
+        isCurrent: item.current,
+        createdAt: daysAgo(70 - index * 11),
+      },
+    });
+  }
+
+  // --------------------------------------------------- marketing sources ---
+  /*
+   * Deliberately a mixed bag, including one promotion that lost money. A demo
+   * where everything worked teaches a salon owner nothing: the screen earns
+   * its place by showing which one to stop paying for.
+   */
+  const sourceSeed = [
+    { name: 'Diwali reel', code: 'diwali-reel', kind: 'BOOSTED_POST' as const, channel: 'INSTAGRAM' as const, spend: 3000, dailyBudget: 300, clicks: 184, bookings: 14, started: 48 },
+    { name: 'Bridal package story', code: 'bridal-story', kind: 'AD' as const, channel: 'INSTAGRAM' as const, spend: 7500, dailyBudget: 500, clicks: 263, bookings: 11, started: 60 },
+    { name: 'New chair post', code: 'new-chair', kind: 'ORGANIC_POST' as const, channel: 'INSTAGRAM' as const, spend: 0, dailyBudget: null, clicks: 96, bookings: 7, started: 30 },
+    { name: 'Metro gate flyer', code: 'metro-qr', kind: 'QR' as const, channel: 'IN_APP' as const, spend: 1200, dailyBudget: null, clicks: 41, bookings: 3, started: 25 },
+    { name: 'Saturday slots story', code: 'sat-slots', kind: 'ORGANIC_POST' as const, channel: 'INSTAGRAM' as const, spend: 0, dailyBudget: null, clicks: 58, bookings: 5, started: 14 },
+    { name: 'Keratin offer boost', code: 'keratin-boost', kind: 'BOOSTED_POST' as const, channel: 'INSTAGRAM' as const, spend: 2500, dailyBudget: 250, clicks: 72, bookings: 1, started: 40 },
+  ];
+
+  for (const item of sourceSeed) {
+    const source = await prisma.marketingSource.create({
+      data: {
+        tenantId,
+        branchId: hazratganj.id,
+        name: item.name,
+        code: item.code,
+        channel: item.channel,
+        kind: item.kind,
+        spend: item.spend,
+        dailyBudget: item.dailyBudget,
+        startedOn: daysAgo(item.started),
+        isActive: item.code !== 'keratin-boost',
+        notes: item.code === 'keratin-boost' ? 'Stopped — barely anybody booked.' : null,
+      },
+    });
+
+    await prisma.marketingClick.createMany({
+      data: Array.from({ length: item.clicks }, (_, n) => ({
+        tenantId,
+        sourceId: source.id,
+        at: daysAgo(Math.max(0, item.started - Math.floor((n / item.clicks) * item.started))),
+      })),
+    });
+  }
+
+  /*
+   * ATTRIBUTE REAL BOOKINGS, RATHER THAN INVENTING SEPARATE ONES.
+   *
+   * The dashboard divides money by spend, and the money comes from the
+   * invoices already raised against these appointments. Writing a parallel set
+   * of fake appointments would give the screen numbers that agreed with
+   * nothing else in the app, which is worse than no demo data at all.
+   */
+  const attributable = await prisma.appointment.findMany({
+    where: { tenantId, createdAt: { gte: daysAgo(60) }, status: { not: 'CANCELLED' } },
+    select: { id: true },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  let cursor = 0;
+  for (const item of sourceSeed) {
+    const take = attributable.slice(cursor, cursor + item.bookings);
+    cursor += item.bookings;
+    if (take.length === 0) continue;
+    await prisma.appointment.updateMany({
+      where: { id: { in: take.map((row) => row.id) } },
+      data: { sourceRef: item.code, source: item.kind === 'QR' ? 'WALK_IN' : 'ONLINE' },
+    });
+  }
+
   console.log(`
 Seed complete.
 
@@ -1012,6 +1264,9 @@ Seed complete.
   Staff        : ${staff.length}
   Customers    : ${customers.length}
   Invoices     : ${invoiceCounter}
+  Hairstyles   : ${hairstyles.length}
+  Saved looks  : ${designSeed.length}
+  Promotions   : ${sourceSeed.length}
 
   Owner login       : owner@parlon.in / ${PASSWORD}
   Manager login     : manager@parlon.in / ${PASSWORD}
