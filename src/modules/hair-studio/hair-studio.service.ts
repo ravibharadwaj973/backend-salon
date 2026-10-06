@@ -15,6 +15,7 @@ import {
   type DesignConfig,
   type StyleCapabilities,
 } from './design-rules';
+import { checkLookFields } from './look-dimensions';
 
 /**
  * THE HAIR DESIGN STUDIO, MINUS THE PIXELS.
@@ -41,6 +42,25 @@ export interface HairstyleInput {
   supportsParting?: boolean;
   supportsFade?: boolean;
   maintenance?: HairMaintenance;
+
+  /**
+   * THE SEVEN AXES A LOOK IS MADE OF — see `look-dimensions.ts`.
+   *
+   * Strings rather than unions because they are market taxonomies that grow, and
+   * `checkLookFields` validates every one against the registry on write. All
+   * optional and all nullable: null means "not recorded", which is a real and
+   * common state — a salon puts a style on the menu long before it describes it
+   * on seven axes.
+   */
+  cutFamily?: string | null;
+  fringe?: string | null;
+  finish?: string | null;
+  baseColorKey?: string | null;
+  colorTechnique?: string | null;
+  colorPlacement?: string | null;
+  desiredLooks?: string[];
+  occasions?: string[];
+
   serviceId?: string | null;
   previewUrl?: string | null;
   branchId?: string | null;
@@ -118,6 +138,14 @@ function assertEntryIsDrawable(input: Partial<HairstyleInput> & { kind: string }
   }
   const errors = checkCatalogEntry({ ...input, kind: input.kind });
   if (errors.length) throw BadRequest(errors.join(' '));
+
+  /*
+   * The seven axes, checked against the registry rather than against a zod enum —
+   * including the cross-field rule that no per-field check can catch, which is
+   * that a technique and a placement can each be valid and jointly name nothing.
+   */
+  const looks = checkLookFields(input);
+  if (looks.length) throw BadRequest(looks.join(' '));
 }
 
 export async function createHairstyle(input: HairstyleInput) {
@@ -144,6 +172,14 @@ export async function createHairstyle(input: HairstyleInput) {
       supportsParting: input.supportsParting ?? true,
       supportsFade: input.supportsFade ?? false,
       maintenance: input.maintenance ?? 'MEDIUM',
+      cutFamily: input.cutFamily ?? null,
+      fringe: input.fringe ?? null,
+      finish: input.finish ?? null,
+      baseColorKey: input.baseColorKey ?? null,
+      colorTechnique: input.colorTechnique ?? null,
+      colorPlacement: input.colorPlacement ?? null,
+      desiredLooks: input.desiredLooks ?? [],
+      occasions: input.occasions ?? [],
       serviceId: input.serviceId ?? null,
       previewUrl: input.previewUrl ?? null,
       isActive: input.isActive ?? true,
@@ -169,6 +205,21 @@ export async function updateHairstyle(id: string, input: Partial<HairstyleInput>
     supportsLayers: input.supportsLayers ?? existing.supportsLayers,
     supportsParting: input.supportsParting ?? existing.supportsParting,
     supportsFade: input.supportsFade ?? existing.supportsFade,
+    /*
+     * The colour pair MUST be merged rather than taken from the patch.
+     *
+     * A request that sets only `colorPlacement` carries no technique, and
+     * checking the patch alone would wave through "ends" on a global colour — the
+     * exact combination the cross-field rule exists to catch.
+     */
+    colorTechnique: input.colorTechnique ?? existing.colorTechnique,
+    colorPlacement: input.colorPlacement ?? existing.colorPlacement,
+    cutFamily: input.cutFamily ?? existing.cutFamily,
+    fringe: input.fringe ?? existing.fringe,
+    finish: input.finish ?? existing.finish,
+    baseColorKey: input.baseColorKey ?? existing.baseColorKey,
+    desiredLooks: input.desiredLooks ?? existing.desiredLooks,
+    occasions: input.occasions ?? existing.occasions,
   };
   assertEntryIsDrawable(merged);
 
@@ -191,6 +242,14 @@ export async function updateHairstyle(id: string, input: Partial<HairstyleInput>
       ...(input.supportsParting !== undefined ? { supportsParting: input.supportsParting } : {}),
       ...(input.supportsFade !== undefined ? { supportsFade: input.supportsFade } : {}),
       ...(input.maintenance !== undefined ? { maintenance: input.maintenance } : {}),
+      ...(input.cutFamily !== undefined ? { cutFamily: input.cutFamily } : {}),
+      ...(input.fringe !== undefined ? { fringe: input.fringe } : {}),
+      ...(input.finish !== undefined ? { finish: input.finish } : {}),
+      ...(input.baseColorKey !== undefined ? { baseColorKey: input.baseColorKey } : {}),
+      ...(input.colorTechnique !== undefined ? { colorTechnique: input.colorTechnique } : {}),
+      ...(input.colorPlacement !== undefined ? { colorPlacement: input.colorPlacement } : {}),
+      ...(input.desiredLooks !== undefined ? { desiredLooks: input.desiredLooks } : {}),
+      ...(input.occasions !== undefined ? { occasions: input.occasions } : {}),
       ...(input.serviceId !== undefined ? { serviceId: input.serviceId } : {}),
       ...(input.previewUrl !== undefined ? { previewUrl: input.previewUrl } : {}),
       ...(input.branchId !== undefined ? { branchId: input.branchId } : {}),

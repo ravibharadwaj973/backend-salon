@@ -926,6 +926,7 @@ model Tenant {
   marketingSources      MarketingSource[]
   passwordResetRequests PasswordResetRequest[]
   hairstyles            HairstyleCatalog[]
+  hairstylePhotos       HairstylePhoto[]
   hairDesigns           HairDesign[]
   hairGenerations       HairGeneration[]
   hairAnalyses          HairAnalysis[]
@@ -4074,6 +4075,65 @@ model HairstyleCatalog {
   /// offer for the other kind.
   photoIsUploaded Boolean @default(false)
 
+  /// ════════════════════════════════════════════════════════════════════════
+  /// WHAT THIS LOOK IS, ON THE SEVEN AXES A LOOK IS MADE OF.
+  ///
+  /// See `look-dimensions.ts`, which is the source of truth for the values AND
+  /// for the rules between them — which placements a technique admits, which
+  /// finishes a given natural texture can actually reach, and what the whole
+  /// thing commits the customer to in visits and weeks.
+  ///
+  /// ── Why these are String and not Postgres enums ─────────────────────────
+  ///
+  /// Because they are market taxonomies rather than closed sets. "U-cut" and
+  /// "V-cut" belong on an Indian salon's menu and were not on the first draft of
+  /// the cut list; foilyage and teasylights are techniques that did not exist
+  /// ten years ago. A Postgres enum makes each such addition a migration against
+  /// a live database, and this schema is `db push`-managed. The service validates
+  /// every one of these against the registry on write — the same arrangement as
+  /// `kind` above, and for the same reason.
+  ///
+  /// All nullable: a salon puts a style on the menu long before it has decided
+  /// how to describe it on seven axes, and a half-filled catalogue is better
+  /// than an empty one. Null means "not recorded", never a default value.
+  /// ════════════════════════════════════════════════════════════════════════
+
+  /// Dimension 4. What a customer asks for out loud — BOB, BUTTERFLY, V_CUT.
+  /// Broader than `kind`, which names the generator that draws it.
+  cutFamily String?
+
+  /// Dimension 6. Its own axis because the same cut exists with and without
+  /// one, and because a fringe is the change most often regretted.
+  fringe String?
+
+  /// Dimension 7. HOW THE HAIR IS WORN — and emphatically not the customer's
+  /// natural texture, which is `supportedTextures` above and belongs to her
+  /// rather than to the look. One word was doing both jobs; that is how a salon
+  /// promises a coily-haired customer a sleek bob without anyone deciding to
+  /// sell her a relaxer.
+  finish String?
+
+  /// Dimension 8. A named shade, which carries a LEVEL in the registry. The
+  /// level is what decides whether reaching it is one appointment or three.
+  baseColorKey String?
+
+  /// Dimensions 9 and 10 — HOW the colour is applied and WHERE it appears.
+  /// Kept apart because balayage tells you nothing about placement and a money
+  /// piece is a placement rather than a technique. Not a free grid: see
+  /// PLACEMENTS_FOR_TECHNIQUE.
+  colorTechnique String?
+  colorPlacement String?
+
+  /// Dimension 3, from the look's side: what this look IS, so that a customer's
+  /// stated preference can rank it. Arrays because a lob is both professional
+  /// and modern, and forcing one answer loses the useful half.
+  desiredLooks String[] @default([])
+
+  /// Occasion ranks the FINISH rather than the cut — the same lob goes to an
+  /// office and to a wedding, so filtering cuts by occasion returns everything
+  /// and teaches people the filter does nothing.
+  occasions String[] @default([])
+
   isActive   Boolean @default(true)
   sortOrder  Int     @default(0)
 
@@ -4086,10 +4146,108 @@ model HairstyleCatalog {
 
   designs     HairDesign[]
   references  HairGeneration[]
+  photos      HairstylePhoto[]
 
   @@unique([tenantId, kind, name])
   @@index([tenantId, isActive, sortOrder])
   @@map("hairstyle_catalog")
+}
+
+/// ONE ANGLE OF ONE STYLE.
+///
+/// ════════════════════════════════════════════════════════════════════════════
+/// WHY A STYLE NEEDS MORE THAN ONE PHOTOGRAPH
+/// ════════════════════════════════════════════════════════════════════════════
+///
+/// Because the back of the head is where most of the work is, and the front is
+/// all anybody ever photographs.
+///
+/// A butterfly cut, a U-cut, a V-cut, layers, a fade — the entire point of each
+/// is a shape the customer cannot see on herself. She approves a front view, sits
+/// down, and meets the back of her head in a mirror afterwards. That is the
+/// commonest route from a technically correct haircut to a complaint, and it is a
+/// photography problem rather than a cutting one.
+///
+/// ── Why a table rather than four more columns ───────────────────────────────
+///
+/// Each angle needs its own mask (the hair is in a different place), its own
+/// consent record (a different photograph of a different person on a different
+/// day), and its own provenance. Four of those is sixteen columns, mostly null,
+/// and a fifth angle is another four. A row per angle also makes the natural
+/// question — which angles does this style have — a count rather than four null
+/// checks.
+///
+/// ── Why previewUrl and maskUrl stay on the catalogue row ────────────────────
+///
+/// They are the FRONT view, which every existing reader already means by "the
+/// picture": the look-book thumbnail, the studio's canvas, the advisor's
+/// illustration. Keeping them is what makes this additive — a style with one
+/// photograph is still a complete, usable catalogue entry, and no salon is
+/// blocked on a four-angle shoot it will never book.
+model HairstylePhoto {
+  id        String @id @default(cuid())
+  tenantId  String
+  catalogId String
+
+  pose HairPose
+
+  imageUrl      String
+  /// Cloudinary's own id, kept so that deleting the row can delete the asset.
+  /// Without it an unpublished photograph lives on in the account for ever,
+  /// which matters doubly here because some of these are real customers.
+  imagePublicId String?
+
+  /// THE HAIR, CUT OUT OF THIS ANGLE.
+  ///
+  /// Per pose and not shareable: hair occupies completely different pixels from
+  /// the side than from the front, so one mask for four angles would recolour
+  /// a cheek. Null means this angle can be shown but not recoloured.
+  maskUrl String?
+
+  /// Whether the salon took this itself. Generated stand-ins are marked so that
+  /// "replace with a real photograph" stays the obvious offer.
+  isUploaded Boolean @default(false)
+
+  /// SET WHEN A REAL PERSON IS IN THE FRAME, PER ANGLE.
+  ///
+  /// Recorded here rather than once per style because each angle is a separate
+  /// photograph and may be of a different person — and because consent to be in
+  /// a look-book is given for a picture, not for a catalogue entry.
+  consentAt DateTime?
+
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant  Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  catalog HairstyleCatalog @relation(fields: [catalogId], references: [id], onDelete: Cascade)
+
+  /// ONE PICTURE PER ANGLE, REPLACED RATHER THAN ACCUMULATED.
+  ///
+  /// A style with eleven front views and no back view is the failure this is
+  /// preventing. The asset studio is not a gallery; it is a checklist of angles,
+  /// and the constraint is what makes it one.
+  @@unique([catalogId, pose])
+  @@index([tenantId, catalogId])
+  @@map("hairstyle_photos")
+}
+
+/// THE ANGLES, IN THE ORDER A SALON SHOULD SHOOT THEM.
+///
+/// A Postgres enum, unlike the look dimensions above, because this set is closed
+/// by anatomy rather than by fashion: there are only so many ways to stand
+/// relative to a camera, and no market taxonomy is going to add a sixth.
+enum HairPose {
+  /// What she sees in a mirror. The one that is never optional.
+  FRONT
+  /// 45°. One picture, most information — it shows the cut as a shape.
+  THREE_QUARTER
+  /// Length, layers, and the line at the jaw. Where a bob is right or wrong.
+  SIDE
+  /// The graduation, the V or the U, the fade. What she cannot see herself.
+  BACK
+  /// The crown and the parting. Mostly for density and thinning work.
+  TOP
 }
 
 /// ONE LOOK, SAVED.
@@ -4380,6 +4538,28 @@ enum HairlineShape {
 /// across a chair are not the same fact, and the recommendation weights the two
 /// differently. Recording which is which is the only way a wrong recommendation
 /// can be traced back to a wrong reading.
+/// WHAT THE HAIR CAN TAKE, which a stylist can tell by touch in a second.
+///
+/// Four values because the boundary that matters — can this be lifted — falls
+/// between NORMAL and POROUS, and two values either side of it is enough to say
+/// where somebody is without pretending to a precision nobody measures.
+enum HairCondition {
+  HEALTHY
+  NORMAL
+  /// Takes colour unevenly and takes lift badly. Reachable, over more visits.
+  POROUS
+  /// Will not be lifted. See colourFeasibility — this is a refusal, not a score.
+  DAMAGED
+}
+
+/// Forehead height. The one face measurement independent of face shape, and the
+/// one that decides a fringe.
+enum Forehead {
+  LOW
+  AVERAGE
+  HIGH
+}
+
 enum HairAnalysisSource {
   /// Read from a photograph by a model. Carries a confidence.
   AI
@@ -4425,6 +4605,51 @@ model HairAnalysis {
   /// 0-100, matching the studio's own slider.
   volume   Int?
   hairline HairlineShape?
+
+  /// ════════════════════════════════════════════════════════════════════════
+  /// THE TWO READINGS NOTHING HERE RECORDED, AND THE ONE THAT CAN SAY NO.
+  /// ════════════════════════════════════════════════════════════════════════
+
+  /// CONDITION. The only reading in this table that produces a refusal rather
+  /// than a preference.
+  ///
+  /// Texture and density make a style more or less suitable. Condition makes
+  /// lifting it unsafe, and `colourFeasibility` in `look-dimensions.ts` treats
+  /// that as a gate ahead of scoring rather than a penalty inside it —
+  /// deliberately, because a low score is still an offer and on a quiet day a
+  /// ranker will surface its least-bad option. Bleach on damaged hair must not
+  /// be rankable at all.
+  condition HairCondition?
+
+  /// WHERE THE HAIR IS NOW ON THE 1-10 SCALE, which is the only representation
+  /// in which "how far to the colour she wants" is a subtraction.
+  ///
+  /// She says "dark brown"; a colourist hears "level 3". The difference between
+  /// those two sentences is the difference between quoting one appointment and
+  /// quoting three.
+  colorLevel Int?
+
+  /// WHETHER THERE IS ALREADY COLOUR ON IT — the question a salon asks and a
+  /// form usually forgets.
+  ///
+  /// Box dye at level 3 and virgin hair at level 3 lift differently and
+  /// unpredictably, so this adds an appointment to any lift. NULLABLE RATHER
+  /// THAN DEFAULTING FALSE: "nobody asked" and "she said no" are different
+  /// facts, and treating the first as the second is how the surprise happens in
+  /// the bowl. Same principle as faceShapeConfidence above — unknown scores the
+  /// middle, never the optimistic end.
+  previouslyColored Boolean?
+
+  /// FOREHEAD HEIGHT, and the only face measurement here besides shape.
+  ///
+  /// The obvious version of a face profile records shape, proportions, jawline,
+  /// forehead and length-to-width. Three of those five are not independent of
+  /// the first — "square jawline" is most of what SQUARE means — and recording
+  /// them separately gives a stylist four fields that can disagree with each
+  /// other and no rule for which wins. This one is genuinely independent, it is
+  /// the commonest reason to recommend a fringe, and it is the one a customer
+  /// raises herself.
+  forehead Forehead?
 
   /// Free text from the reading — anything that did not fit a field. Shown to
   /// the stylist, never fed back into the scoring.

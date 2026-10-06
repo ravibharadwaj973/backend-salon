@@ -10,6 +10,8 @@ import { enqueue } from '../../jobs/queue';
 import { decodeDataUrl, readImageBytes, uploadBytes } from '../gallery/cloudinary';
 import { designConfigSchema, type DesignConfig } from './design-rules';
 import { libraryAllowance } from './generation-limits';
+import * as photos from './hairstyle-photos.service';
+import { PRIMARY_POSE } from './look-dimensions';
 import { buildPrompt, buildRecolourPrompt, buildReferencePrompt, NEGATIVE, type PromptInput } from './hair-prompt';
 import * as flux from './flux';
 
@@ -653,8 +655,27 @@ export async function setCatalogPreview(catalogId: string, generationId: string 
   const entry = await prisma.hairstyleCatalog.findFirst({ where: { id: catalogId, tenantId } });
   if (!entry) throw NotFound('Hairstyle not found');
 
+  /*
+   * ── WHY THIS WRITES A POSE ROW AND NOT JUST THE COLUMN ───────────────────
+   *
+   * Since poses exist, `hairstyle_photos` is the truth and `previewUrl` is a
+   * cache of its FRONT row (see `hairstyle-photos.service.ts`). A drawn picture
+   * published straight onto the column would be a photograph with no row, and
+   * the very next thing anybody does with it — cutting the hair out — looks up
+   * the front row and would fail with "there is no photograph at that angle" on
+   * a screen that is plainly showing one.
+   *
+   * So a published generation becomes the front pose, with `isUploaded: false`
+   * so that "replace with a photograph of your own work" stays the obvious offer,
+   * and with no consent timestamp because a generated portrait is of nobody and
+   * recording an agreement nobody made would be worse than recording none.
+   */
   if (generationId === null) {
-    return prisma.hairstyleCatalog.update({ where: { id: entry.id }, data: { previewUrl: null } });
+    await prisma.hairstylePhoto.deleteMany({ where: { catalogId: entry.id, tenantId, pose: 'FRONT', isUploaded: false } });
+    return prisma.hairstyleCatalog.update({
+      where: { id: entry.id },
+      data: { previewUrl: null, maskUrl: null, photoIsUploaded: false },
+    });
   }
 
   const picture = await prisma.hairGeneration.findFirst({
@@ -665,6 +686,20 @@ export async function setCatalogPreview(catalogId: string, generationId: string 
   if (picture.status !== 'READY' || !picture.imageUrl) {
     throw BadRequest('That picture has not finished yet.');
   }
+
+  await prisma.hairstylePhoto.upsert({
+    where: { catalogId_pose: { catalogId: entry.id, pose: 'FRONT' } },
+    create: {
+      tenantId,
+      catalogId: entry.id,
+      pose: 'FRONT',
+      imageUrl: picture.imageUrl,
+      isUploaded: false,
+      createdById: currentUserId(),
+    },
+    // The mask belonged to the picture being replaced, so it goes with it.
+    update: { imageUrl: picture.imageUrl, maskUrl: null, isUploaded: false, imagePublicId: null },
+  });
 
   return prisma.hairstyleCatalog.update({
     where: { id: entry.id },
@@ -714,47 +749,27 @@ export async function setCatalogPhoto(
   catalogId: string,
   input: { photo: string | null; consent?: boolean },
 ) {
-  const tenantId = requireTenantId();
+  /*
+   * ── NOW A THIN WRAPPER, AND THAT IS THE POINT ────────────────────────────
+   *
+   * Since a style has one photograph per ANGLE, `hairstyle_photos` is the truth
+   * and `previewUrl`/`maskUrl` on the catalogue row are a cache of its FRONT row.
+   * Two writers to the same fact is the bug that arrangement exists to prevent,
+   * so this no longer writes the columns itself: it writes the front pose, and
+   * the photos service mirrors.
+   *
+   * Kept rather than deleted because `POST /hairstyles/:id/photo` is what the
+   * asset studio calls and what a client that has never heard of poses calls.
+   * No pose means the front one, which is exactly what those callers meant.
+   */
+  await photos.setPhoto(catalogId, { pose: PRIMARY_POSE, photo: input.photo, consent: input.consent });
 
-  const entry = await prisma.hairstyleCatalog.findFirst({ where: { id: catalogId, tenantId } });
+  // The catalogue row, refreshed — the shape every existing caller expects back.
+  const entry = await prisma.hairstyleCatalog.findFirst({
+    where: { id: catalogId, tenantId: requireTenantId() },
+  });
   if (!entry) throw NotFound('Hairstyle not found');
-
-  if (input.photo === null) {
-    /*
-     * Removing the picture removes the cut-out with it. A mask is a silhouette OF
-     * a particular photograph — keeping it against a different one would place
-     * the colour wherever the old hair happened to be, which looks like a bug in
-     * the renderer rather than a stale file.
-     */
-    return prisma.hairstyleCatalog.update({
-      where: { id: entry.id },
-      data: { previewUrl: null, maskUrl: null, photoIsUploaded: false },
-    });
-  }
-
-  if (!input.consent) {
-    throw BadRequest(
-      'Confirm that whoever is in this photograph is happy for the salon to show it before uploading it.',
-    );
-  }
-
-  const { bytes, contentType } = decodeDataUrl(input.photo);
-  const tenant = await runUnscoped(() =>
-    prisma.tenant.findUnique({ where: { id: tenantId }, select: { slug: true } }),
-  );
-
-  const uploaded = await uploadBytes({
-    bytes,
-    contentType,
-    folder: `${tenant?.slug ?? tenantId}/hair-styles`,
-    tags: ['hair-style-photo', `salon-${tenant?.slug ?? tenantId}`],
-  });
-
-  return prisma.hairstyleCatalog.update({
-    where: { id: entry.id },
-    // The mask goes too: it belonged to the picture being replaced.
-    data: { previewUrl: uploaded.secureUrl, maskUrl: null, photoIsUploaded: true },
-  });
+  return entry;
 }
 
 /**
@@ -774,37 +789,14 @@ export async function setCatalogPhoto(
  * portrait is the point of keeping them apart.
  */
 export async function setCatalogMask(catalogId: string, dataUrl: string | null) {
-  const tenantId = requireTenantId();
+  // A wrapper, for the same reason as setCatalogPhoto above: one writer.
+  await photos.setPhotoMask(catalogId, { pose: PRIMARY_POSE, mask: dataUrl });
 
-  const entry = await prisma.hairstyleCatalog.findFirst({ where: { id: catalogId, tenantId } });
+  const entry = await prisma.hairstyleCatalog.findFirst({
+    where: { id: catalogId, tenantId: requireTenantId() },
+  });
   if (!entry) throw NotFound('Hairstyle not found');
-
-  if (dataUrl === null) {
-    return prisma.hairstyleCatalog.update({ where: { id: entry.id }, data: { maskUrl: null } });
-  }
-
-  const { bytes, contentType } = decodeDataUrl(dataUrl);
-  const tenant = await runUnscoped(() =>
-    prisma.tenant.findUnique({ where: { id: tenantId }, select: { slug: true } }),
-  );
-
-  const uploaded = await uploadBytes({
-    bytes,
-    contentType,
-    folder: `${tenant?.slug ?? tenantId}/hair-masks`,
-    /*
-     * Its own tag, well away from the gallery's. A mask is a black-and-white
-     * silhouette of somebody's hair; it is of no interest to anyone but the
-     * renderer, and it must never appear on the salon's public page because it
-     * happened to share a tag with the photographs.
-     */
-    tags: ['hair-mask', `salon-${tenant?.slug ?? tenantId}`],
-  });
-
-  return prisma.hairstyleCatalog.update({
-    where: { id: entry.id },
-    data: { maskUrl: uploaded.secureUrl },
-  });
+  return entry;
 }
 
 // ---------------------------------------------------------------- reading ---

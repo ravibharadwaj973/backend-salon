@@ -20,6 +20,8 @@ import {
 import * as studio from './hair-studio.service';
 import * as generation from './hair-generation.service';
 import * as analysis from './hair-analysis.service';
+import * as photos from './hairstyle-photos.service';
+import type { HairPose } from '@prisma/client';
 
 /**
  * THE HAIR DESIGN STUDIO.
@@ -50,6 +52,9 @@ const maintenanceEnum = z.enum(['LOW', 'MEDIUM', 'HIGH']);
 const genderEnum = z.enum(['MALE', 'FEMALE', 'UNISEX']);
 const colorFamilyEnum = z.enum(['BLACK', 'BROWN', 'BLONDE', 'RED', 'GREY', 'FASHION']);
 const skinToneEnum = z.enum(['FAIR', 'LIGHT', 'MEDIUM', 'OLIVE', 'DEEP']);
+/** The angles. A Postgres enum, so this one is safe to mirror in zod: the set is
+ *  closed by anatomy rather than by fashion, and will not grow. */
+const poseEnum = z.enum(['FRONT', 'THREE_QUARTER', 'SIDE', 'BACK', 'TOP']);
 
 // ------------------------------------------------------- what exists -------
 
@@ -112,6 +117,29 @@ const hairstyleBody = z.object({
    */
   colorFamily: colorFamilyEnum.nullable().optional(),
   skinTone: skinToneEnum.nullable().optional(),
+
+  /**
+   * THE SEVEN AXES A LOOK IS MADE OF. See `look-dimensions.ts`.
+   *
+   * Loosely typed HERE and strictly checked in the SERVICE, which is the opposite
+   * of the usual arrangement and is deliberate. These are market taxonomies that
+   * grow — U-cut, foilyage — so the allowed values live in one registry rather
+   * than being copied into a zod enum that then drifts from it. More importantly,
+   * the rule that matters most is a CROSS-FIELD one: technique and placement are
+   * each individually valid and jointly nonsense far more often than not, and
+   * "global colour on the ends" passes every per-field check there is.
+   *
+   * So zod enforces shape and length, `checkLookFields` enforces meaning.
+   */
+  cutFamily: z.string().trim().max(32).nullable().optional(),
+  fringe: z.string().trim().max(32).nullable().optional(),
+  finish: z.string().trim().max(32).nullable().optional(),
+  baseColorKey: z.string().trim().max(32).nullable().optional(),
+  colorTechnique: z.string().trim().max(32).nullable().optional(),
+  colorPlacement: z.string().trim().max(32).nullable().optional(),
+  desiredLooks: z.array(z.string().trim().max(32)).max(7).optional(),
+  occasions: z.array(z.string().trim().max(32)).max(7).optional(),
+
   serviceId: idSchema.nullable().optional(),
   previewUrl: z.string().trim().url().max(500).nullable().optional(),
   branchId: idSchema.nullable().optional(),
@@ -368,10 +396,35 @@ hairStudioRouter.post(
     body: z.object({
       photo: z.string().max(20_000_000).nullable(),
       consent: z.boolean().optional(),
+      /**
+       * WHICH ANGLE. Absent means the front one.
+       *
+       * Defaulted rather than required, which keeps every existing caller correct
+       * rather than merely working: a client that has never heard of poses is
+       * uploading the picture a customer sees in a mirror, which is the front —
+       * so the default is the right answer and not a guess.
+       */
+      pose: poseEnum.optional(),
     }),
   }),
   asyncHandler(async (req, res) => {
-    const body = req.body as { photo: string | null; consent?: boolean };
+    const body = req.body as { photo: string | null; consent?: boolean; pose?: HairPose };
+
+    if (body.pose && body.pose !== 'FRONT') {
+      const saved = await photos.setPhoto(req.params.id!, {
+        pose: body.pose,
+        photo: body.photo,
+        consent: body.consent,
+      });
+      audit({
+        action: body.photo ? 'hairstyle.photo_uploaded' : 'hairstyle.photo_removed',
+        entity: 'HairstyleCatalog',
+        entityId: req.params.id!,
+        after: { pose: body.pose, hasPhoto: !!saved },
+      });
+      return ok(res, saved);
+    }
+
     const entry = await generation.setCatalogPhoto(req.params.id!, body);
     audit({
       action: body.photo ? 'hairstyle.photo_uploaded' : 'hairstyle.photo_removed',
@@ -396,10 +449,30 @@ hairStudioRouter.post(
   requirePermission(PERMISSIONS.SERVICE_MANAGE),
   validate({
     params: idParam,
-    body: z.object({ mask: z.string().max(20_000_000).nullable() }),
+    body: z.object({
+      mask: z.string().max(20_000_000).nullable(),
+      /**
+       * Per angle, and never shared between them. Hair occupies completely
+       * different pixels from the side than from the front, so one mask reused
+       * across angles recolours a cheek — convincingly enough to ship.
+       */
+      pose: poseEnum.optional(),
+    }),
   }),
   asyncHandler(async (req, res) => {
-    const { mask } = req.body as { mask: string | null };
+    const { mask, pose } = req.body as { mask: string | null; pose?: HairPose };
+
+    if (pose && pose !== 'FRONT') {
+      const saved = await photos.setPhotoMask(req.params.id!, { pose, mask });
+      audit({
+        action: 'hairstyle.mask_set',
+        entity: 'HairstyleCatalog',
+        entityId: req.params.id!,
+        after: { pose, hasMask: !!saved.maskUrl },
+      });
+      return ok(res, saved);
+    }
+
     const entry = await generation.setCatalogMask(req.params.id!, mask);
     audit({
       action: 'hairstyle.mask_set',
@@ -409,6 +482,25 @@ hairStudioRouter.post(
     });
     return ok(res, entry);
   }),
+);
+
+/**
+ * EVERY ANGLE THIS STYLE HAS, AND THE ONES IT STILL OWES.
+ *
+ * The checklist rather than a plain list, because the useful question is not
+ * "what have we got" but "what is missing" — and the missing one is nearly always
+ * the back of the head, which is where most of the work in a haircut is and the
+ * one view a customer cannot see on herself.
+ *
+ * Derived from the cut, so the list is short: a one-length cut is not asked for
+ * four views of the same curtain of hair. A checklist nobody can finish is a
+ * feature nobody starts.
+ */
+hairStudioRouter.get(
+  '/hairstyles/:id/photos',
+  requirePermission(PERMISSIONS.SERVICE_VIEW),
+  validate({ params: idParam }),
+  asyncHandler(async (req, res) => ok(res, await photos.photoChecklist(req.params.id!))),
 );
 
 /** Make one of them the menu's picture. Null takes the picture away again. */
