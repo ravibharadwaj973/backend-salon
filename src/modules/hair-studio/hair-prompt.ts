@@ -68,6 +68,61 @@ export interface PromptInput {
    * on one skin tone has told its customers something it did not mean to.
    */
   skinTone?: SkinTone | null;
+  /**
+   * WHAT THIS CUSTOMER ACTUALLY ASKED FOR, IN HER OWN WORDS.
+   *
+   * A menu entry is a starting point, not an order. What happens in a
+   * consultation is "that bob, but keep the front long enough to tuck behind my
+   * ear" — a requirement the configurator has no slider for and never will,
+   * because the list of such requirements is the whole of hairdressing.
+   *
+   * So there is one short free-text field, typed by a stylist, and it is applied
+   * to the HAIR ONLY: `requirementClause` puts it after the keep-the-face
+   * instruction and frames it as an adjustment to the cut, so that a sentence
+   * typed into it cannot become licence to change the person. It is capped and
+   * stripped in `cleanRequirement` for the same reason — this text ends up in a
+   * prompt, and the prompt's first job is protecting the face in the photograph.
+   *
+   * Deliberately NOT offered on a catalogue reference: that picture is of the
+   * thing on the menu, and a menu entry has no requirements.
+   */
+  requirement?: string | null;
+}
+
+/**
+ * The free-text requirement, made safe to put in a prompt.
+ *
+ * One line, no control characters, nothing that reads as a new instruction
+ * block, and short enough that it cannot outweigh the sentence protecting the
+ * customer's face. Returns null for anything that is left over, so the clause is
+ * omitted entirely rather than appearing empty.
+ */
+export function cleanRequirement(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const text = raw
+    // Newlines are the cheapest way to make a prompt look like it has a second
+    // section, so they become spaces rather than being preserved.
+    .replace(/[\r\n\t]+/g, ' ')
+    // Keep the characters a stylist writes a note in; drop brackets, braces and
+    // quotes, which is most of what a prompt-shaped string is made of.
+    .replace(/[^\p{L}\p{N} ,.'’\-/&%+]/gu, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+    .slice(0, 200)
+    .trim();
+  return text.length >= 2 ? text : null;
+}
+
+/**
+ * Said as a request about the hair, never as a free instruction.
+ *
+ * The wording matters more than it looks: "Also:" would let "also, make her
+ * blonde and twenty years younger" read as a licence. Naming the scope in the
+ * same sentence as the text keeps it an adjustment to a haircut.
+ */
+function requirementClause(raw: string | null | undefined): string {
+  const text = cleanRequirement(raw);
+  return text ? ` Adjust the hair to this request from the customer, changing nothing else: ${text}.` : '';
 }
 
 // ----------------------------------------------------------- vocabulary -----
@@ -347,8 +402,9 @@ export function buildPrompt(input: PromptInput): string {
       'Keep the same face, the same facial features, the same skin tone, the same age, ' +
       'the same expression, the same clothing, the same pose, the same framing and the same background, ' +
       'all completely unchanged. ' +
-      `Replace the hair with ${hair}. ` +
-      'The new hair must sit naturally on the existing head, with a believable hairline and natural shadow ' +
+      `Replace the hair with ${hair}.` +
+      requirementClause(input.requirement) +
+      ' The new hair must sit naturally on the existing head, with a believable hairline and natural shadow ' +
       'where it meets the forehead and ears. Photographic, sharp, salon-quality result.'
     );
   }
@@ -451,8 +507,9 @@ export function buildRecolourPrompt(input: PromptInput): string {
     'Change only the colour of the hair in this photograph. ' +
     'Keep the same face, the same person, the same haircut, the same length, the same parting, ' +
     'the same styling, the same clothing and the same background, all completely unchanged. ' +
-    `Recolour the hair to ${colourName(input.baseColor)}${extra}. ` +
-    'Keep the natural shine and the shadows where the hair meets the scalp, so the new colour looks grown ' +
+    `Recolour the hair to ${colourName(input.baseColor)}${extra}.` +
+    requirementClause(input.requirement) +
+    ' Keep the natural shine and the shadows where the hair meets the scalp, so the new colour looks grown ' +
     'rather than painted on. Photographic, sharp, salon-quality result.'
   );
 }

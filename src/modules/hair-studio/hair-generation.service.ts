@@ -9,6 +9,7 @@ import { env, fluxReady } from '../../config/env';
 import { enqueue } from '../../jobs/queue';
 import { decodeDataUrl, readImageBytes, uploadBytes } from '../gallery/cloudinary';
 import { designConfigSchema, type DesignConfig } from './design-rules';
+import { libraryAllowance } from './generation-limits';
 import { buildPrompt, buildRecolourPrompt, buildReferencePrompt, NEGATIVE, type PromptInput } from './hair-prompt';
 import * as flux from './flux';
 
@@ -62,6 +63,16 @@ export interface GenerationInput {
   sourceAnalysisId?: string | null;
   /** Same seed, same face. Omitted means a new person. */
   seed?: number | null;
+  /**
+   * What this customer asked for that the design cannot express.
+   *
+   * The menu entry and the configurator between them describe a cut; a
+   * consultation is that cut plus one sentence — "keep the front long enough to
+   * tuck behind her ear". Carried through to the prompt, scoped to the hair and
+   * cleaned there (`cleanRequirement`), and stored on the row with the rest of
+   * the prompt so that what was asked for is auditable afterwards.
+   */
+  requirement?: string | null;
 }
 
 /**
@@ -75,20 +86,45 @@ export interface GenerationInput {
  * Counted over the salon's own rows for the day, including the ones that failed
  * after being submitted — because those were charged too.
  */
-async function assertUnderDailyCap(tenantId: string): Promise<void> {
+async function assertUnderDailyCap(tenantId: string, kind: HairGenerationKind): Promise<void> {
   const limit = env.BFL_DAILY_LIMIT_PER_TENANT;
   if (limit === 0) return;
 
   const since = startOfDay(new Date());
-  const used = await prisma.hairGeneration.count({
-    where: { tenantId, createdAt: { gte: since }, status: { not: 'PENDING' } },
-  });
+  const isLibrary = kind === 'CATALOG_REFERENCE';
+
+  const [used, libraryUsed] = await Promise.all([
+    prisma.hairGeneration.count({
+      where: { tenantId, createdAt: { gte: since }, status: { not: 'PENDING' } },
+    }),
+    isLibrary
+      ? prisma.hairGeneration.count({
+          where: {
+            tenantId,
+            kind: 'CATALOG_REFERENCE',
+            createdAt: { gte: since },
+            status: { not: 'PENDING' },
+          },
+        })
+      : Promise.resolve(0),
+  ]);
 
   if (used >= limit) {
     throw TooManyRequests(
-      `That is ${limit} generated previews today, which is this salon's daily limit. ` +
-        'The 3D studio still works as normal — it draws in the browser and costs nothing.',
+      `That is ${limit} generated pictures today, which is this salon's daily limit. ` +
+        'The studio still works as normal — it draws the colour in the browser and costs nothing.',
     );
+  }
+
+  if (isLibrary) {
+    const share = libraryAllowance(limit);
+    if (libraryUsed >= share) {
+      throw TooManyRequests(
+        `That is ${share} drawn menu pictures today, which is as much of the day's allowance as the look-book may spend. ` +
+          'The rest is held back for working with customers — a preview for somebody in the chair is worth more than a ' +
+          'stand-in on the menu. Uploading your own photographs has no limit at all, and looks better.',
+      );
+    }
   }
 }
 
@@ -105,7 +141,7 @@ export async function requestGeneration(input: GenerationInput): Promise<HairGen
 
   if (!fluxReady) {
     throw BadRequest(
-      'Photographic previews are not set up on this server. The 3D studio works without them — it draws the hair itself.',
+      'Photographic previews are not set up on this server. The studio works without them — it recolours the photograph in the browser.',
     );
   }
 
@@ -167,13 +203,22 @@ export async function requestGeneration(input: GenerationInput): Promise<HairGen
     inputImageUrl = source.imageUrl;
   }
 
-  await assertUnderDailyCap(tenantId);
+  await assertUnderDailyCap(tenantId, input.kind);
 
   const promptInput = promptInputFor(design, design.catalog?.name ?? null, design.catalog?.gender ?? null);
+  /*
+   * The requirement applies to an EDIT of a photograph and nowhere else.
+   *
+   * A new virtual model has no customer in front of it, so there is nothing to
+   * have asked for; passing it there would turn a look-book portrait into a
+   * free-text image generator, which is the one thing hair-prompt.ts says this
+   * must never become.
+   */
+  const requirement = input.kind === 'MODEL_PORTRAIT' ? null : input.requirement ?? null;
   const prompt =
     input.kind === 'RECOLOUR'
-      ? buildRecolourPrompt({ ...promptInput, editing: true })
-      : buildPrompt({ ...promptInput, editing: input.kind !== 'MODEL_PORTRAIT' });
+      ? buildRecolourPrompt({ ...promptInput, editing: true, requirement })
+      : buildPrompt({ ...promptInput, editing: input.kind !== 'MODEL_PORTRAIT', requirement });
 
   const generation = await prisma.hairGeneration.create({
     data: {
@@ -485,16 +530,22 @@ export interface ReferenceInput {
 }
 
 /**
- * ONE PICTURE FOR ONE THING THE SALON SELLS, DRAWN ONCE.
+ * A STAND-IN PICTURE FOR A MENU ENTRY NOBODY HAS PHOTOGRAPHED YET.
  *
- * ── Why this is the endpoint the economics depend on ──────────────────────
+ * ── Why this is the SECOND way a menu entry gets its picture ──────────────
  *
- * Every other generation here is per consultation. This one is per MENU ENTRY,
- * made when the salon sets its catalogue up and shown from then on to everybody
- * who opens the look-book. A library that regenerated itself on each page view
- * would cost more per month than the subscription, and the whole design of the
- * feature is that it does not: fifty configuration changes in the 3D studio cost
- * nothing, and a picture is drawn only when somebody asks for one.
+ * It used to be the first. It should not be: a photograph of this salon's own
+ * cutting, on its own customers, under its own lights, is both better evidence
+ * and free, and `setCatalogPhoto` below is the path that does it. Everything
+ * downstream is identical either way — the mask editor and the shader cannot tell
+ * where the pixels came from — so the only difference is whose work the look-book
+ * is showing.
+ *
+ * What is left for this endpoint is the honest gap: a salon setting up on day one
+ * with thirty empty tiles and no archive, where a drawn stand-in beats "No
+ * picture yet". It is capped to a share of the day (see `libraryAllowance`)
+ * because the allowance it spends is the same one a consultation spends, and the
+ * consultation is the one with a person waiting.
  *
  * ── Why it does not go through a design ───────────────────────────────────
  *
@@ -508,14 +559,14 @@ export async function requestCatalogReference(input: ReferenceInput): Promise<Ha
 
   if (!fluxReady) {
     throw BadRequest(
-      'Reference pictures are not set up on this server. The catalogue works without them — the 3D studio draws every style itself.',
+      'Drawn pictures are not set up on this server. The catalogue does not need them — upload a photograph of your own work instead, which is the better picture anyway.',
     );
   }
 
   const entry = await prisma.hairstyleCatalog.findFirst({ where: { id: input.catalogId, tenantId } });
   if (!entry) throw NotFound('Hairstyle not found');
 
-  await assertUnderDailyCap(tenantId);
+  await assertUnderDailyCap(tenantId, 'CATALOG_REFERENCE');
 
   /*
    * MIDDLE OF THE RANGE, NOT THE FIRST OPTION.
@@ -823,15 +874,44 @@ const publicFields = {
 export async function generationStatus() {
   const tenantId = requireTenantId();
   const since = startOfDay(new Date());
-  const usedToday = await prisma.hairGeneration.count({
-    where: { tenantId, createdAt: { gte: since }, status: { not: 'PENDING' } },
-  });
+
+  const [usedToday, libraryUsedToday] = await Promise.all([
+    prisma.hairGeneration.count({
+      where: { tenantId, createdAt: { gte: since }, status: { not: 'PENDING' } },
+    }),
+    prisma.hairGeneration.count({
+      where: { tenantId, kind: 'CATALOG_REFERENCE', createdAt: { gte: since }, status: { not: 'PENDING' } },
+    }),
+  ]);
+
+  const limit = env.BFL_DAILY_LIMIT_PER_TENANT;
+  const remainingToday = limit === 0 ? null : Math.max(0, limit - usedToday);
+
+  /*
+   * THE LIBRARY'S SHARE, REPORTED SEPARATELY.
+   *
+   * Two numbers because they answer two different questions, and the screen that
+   * asks each one is a different screen. A stylist mid-consultation wants to know
+   * how many pictures are left; an owner filling in the menu wants to know how
+   * many of those they are allowed to spend on the menu — which is deliberately
+   * not all of them. One combined number would let the second person believe the
+   * whole allowance is theirs and discover otherwise by being refused.
+   */
+  const libraryLimit = libraryAllowance(limit);
 
   return {
     ...flux.describe(),
-    dailyLimit: env.BFL_DAILY_LIMIT_PER_TENANT,
+    dailyLimit: limit,
     usedToday,
-    remainingToday: env.BFL_DAILY_LIMIT_PER_TENANT === 0 ? null : Math.max(0, env.BFL_DAILY_LIMIT_PER_TENANT - usedToday),
+    remainingToday,
+    libraryLimit,
+    libraryUsedToday,
+    libraryRemainingToday:
+      libraryLimit === 0
+        ? null
+        : // Never more than is left overall: the library's share is a ceiling on
+          // top of the day's cap, not an extra allowance beside it.
+          Math.max(0, Math.min(libraryLimit - libraryUsedToday, remainingToday ?? libraryLimit)),
   };
 }
 

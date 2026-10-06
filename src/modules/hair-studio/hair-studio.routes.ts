@@ -499,6 +499,15 @@ hairStudioRouter.post(
        * asks for, and the seed is the only thing that makes her the same woman.
        */
       seed: z.number().int().min(0).max(2_147_483_647).nullable().optional(),
+      /**
+       * ONE SENTENCE OF WHAT THIS CUSTOMER ASKED FOR.
+       *
+       * Bounded at 200 characters here and stripped again in the prompt builder,
+       * which is not belt-and-braces for the sake of it: this is the only free
+       * text in the whole feature that reaches an image model, and the prompt it
+       * joins has one job — keeping the face in the photograph unchanged.
+       */
+      requirement: z.string().trim().max(200).nullable().optional(),
     }),
   }),
   asyncHandler(async (req, res) => {
