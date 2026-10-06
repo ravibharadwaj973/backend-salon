@@ -111,7 +111,18 @@ export function decodeDataUrl(dataUrl: string): { bytes: Buffer; contentType: st
   const match = /^data:([\w/+.-]+);base64,(.+)$/s.exec(dataUrl.trim());
   if (!match) throw BadRequest('That does not look like an image file');
 
-  const bytes = Buffer.from(match[2]!, 'base64');
+  return readImageBytes(Buffer.from(match[2]!, 'base64'));
+}
+
+/**
+ * Check raw bytes are an image we are willing to host, and say which kind.
+ *
+ * Split out of decodeDataUrl so that bytes arriving from somewhere other than a
+ * browser — an image model's output, downloaded over HTTP — go through exactly
+ * the same gate. A generated picture is still a file from a third party, and the
+ * fact that we asked for it is not evidence of what came back.
+ */
+export function readImageBytes(bytes: Buffer): { bytes: Buffer; contentType: string } {
   if (bytes.length === 0) throw BadRequest('That file was empty');
   if (bytes.length > MAX_BYTES) {
     throw BadRequest(`That photograph is about ${Math.round(bytes.length / 1024 / 1024)}MB. The limit is 10MB.`);
@@ -152,11 +163,26 @@ export interface UploadOptions {
 }
 
 export async function uploadImage(options: UploadOptions): Promise<UploadResult> {
+  const { bytes, contentType } = decodeDataUrl(options.dataUrl);
+  return uploadBytes({ bytes, contentType, folder: options.folder, tags: options.tags, context: options.context });
+}
+
+/**
+ * The same upload, from bytes already in hand.
+ *
+ * Exists for generated images, which arrive as a download rather than as a data
+ * URL. Re-encoding those to base64 only so this file could decode them again
+ * would copy a multi-megabyte buffer twice for no reason, inside a worker that
+ * has other jobs waiting.
+ */
+export async function uploadBytes(
+  options: Omit<UploadOptions, 'dataUrl'> & { bytes: Buffer; contentType: string },
+): Promise<UploadResult> {
   if (!cloudinaryReady) {
     throw BadRequest('Photograph hosting is not set up on this server yet.');
   }
 
-  const { bytes, contentType } = decodeDataUrl(options.dataUrl);
+  const { bytes, contentType } = options;
 
   const timestamp = String(Math.floor(Date.now() / 1000));
   const context = buildContext(options.context ?? {});

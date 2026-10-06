@@ -18,6 +18,7 @@ import {
   designConfigSchema,
 } from './design-rules';
 import * as studio from './hair-studio.service';
+import * as generation from './hair-generation.service';
 
 /**
  * THE HAIR DESIGN STUDIO.
@@ -272,6 +273,89 @@ hairStudioRouter.delete(
     await studio.deleteDesign(req.params.id!);
     audit({ action: 'hair_design.deleted', entity: 'HairDesign', entityId: req.params.id! });
     return noContent(res);
+  }),
+);
+
+// ------------------------------------------------------- generated images --
+
+/**
+ * PHOTOGRAPHIC PREVIEWS.
+ *
+ * Three routes and no fourth: ask for one, read one, list them. There is
+ * deliberately no endpoint that takes a prompt. Every picture is built from a
+ * SAVED DESIGN, which means every picture is of something the salon can actually
+ * cut — and it means nobody can type a name into a box and get a photograph of a
+ * real person back out.
+ *
+ * `POST` answers 202 with a PENDING row rather than the picture. It takes tens
+ * of seconds and costs money; holding the request open would lose it the moment
+ * the salon's phone slept, after it had been paid for.
+ */
+hairStudioRouter.get(
+  '/generations/status',
+  requirePermission(PERMISSIONS.SERVICE_VIEW),
+  asyncHandler(async (_req, res) => ok(res, await generation.generationStatus())),
+);
+
+hairStudioRouter.get(
+  '/generations',
+  requirePermission(PERMISSIONS.SERVICE_VIEW),
+  validate({
+    query: z.object({
+      designId: idSchema.optional(),
+      customerId: idSchema.optional(),
+      branchId: idSchema.optional(),
+      limit: z.coerce.number().int().min(1).max(100).optional(),
+    }),
+  }),
+  asyncHandler(async (req, res) =>
+    ok(res, await generation.listGenerations(req.query as unknown as Parameters<typeof generation.listGenerations>[0])),
+  ),
+);
+
+hairStudioRouter.get(
+  '/generations/:id',
+  requirePermission(PERMISSIONS.SERVICE_VIEW),
+  validate({ params: idParam }),
+  asyncHandler(async (req, res) => ok(res, await generation.getGeneration(req.params.id!))),
+);
+
+hairStudioRouter.post(
+  '/generations',
+  /**
+   * SERVICE_VIEW, like designing — not SERVICE_MANAGE.
+   *
+   * It spends money, which argues for the owner's permission, and that would put
+   * the feature behind the one person who is not in the room when it is useful.
+   * The spend is bounded by a per-salon daily cap instead, which is the control
+   * that actually matches the risk.
+   */
+  requirePermission(PERMISSIONS.SERVICE_VIEW),
+  validate({
+    body: z.object({
+      kind: z.enum(['MODEL_PORTRAIT', 'STYLE_PREVIEW', 'RECOLOUR']).default('MODEL_PORTRAIT'),
+      designId: idSchema,
+      customerId: idSchema.nullable().optional(),
+      branchId: idSchema.nullable().optional(),
+      sourceGenerationId: idSchema.nullable().optional(),
+      /**
+       * Bounded to what the provider accepts as a seed. Allowed to be chosen
+       * because "that same model again, in copper" is the first thing any salon
+       * asks for, and the seed is the only thing that makes her the same woman.
+       */
+      seed: z.number().int().min(0).max(2_147_483_647).nullable().optional(),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const row = await generation.requestGeneration(req.body as generation.GenerationInput);
+    audit({
+      action: 'hair_generation.requested',
+      entity: 'HairGeneration',
+      entityId: row.id,
+      after: { kind: row.kind, designId: row.designId, model: row.model },
+    });
+    // 202, not 201: the row exists, the picture does not yet.
+    return res.status(202).json({ data: row });
   }),
 );
 

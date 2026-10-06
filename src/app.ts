@@ -4,7 +4,7 @@ import helmet from 'helmet';
 import compression from 'compression';
 import cookieParser from 'cookie-parser';
 import pinoHttp from 'pino-http';
-import { aiReady, cloudinaryReady, corsPolicy, env, isTest } from './config/env';
+import { aiReady, cloudinaryReady, corsPolicy, env, fluxReady, isTest } from './config/env';
 import { describePolicy, isAllowedOrigin, shouldReportRefusal } from './core/cors';
 import { logger } from './core/logger';
 import { redactUrl } from './core/log-redact';
@@ -18,6 +18,7 @@ import { databaseHealthy, prisma } from './core/prisma';
 import { runUnscoped } from './core/context';
 import { pendingMigrationsAtBoot } from './core/migrations';
 import { aiVerified } from './modules/feedback/feedback-ai.service';
+import { fluxVerified } from './modules/hair-studio/flux';
 import { buildRouter } from './routes';
 
 export function createApp(): Express {
@@ -180,6 +181,14 @@ export function createApp(): Express {
          */
         feedbackAiVerified: aiVerified(),
         photoUploads: cloudinaryReady,
+        /**
+         * Photographic hair previews. Both halves, because either one
+         * missing means the same thing on screen: an image model with
+         * nowhere to store what it draws produces a link that expires
+         * within the hour, which is worse than no feature at all.
+         */
+        hairImageGeneration: fluxReady,
+        hairImageGenerationVerified: fluxVerified(),
       },
       /**
        * How many migrations this database has not run, or null when it cannot

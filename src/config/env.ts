@@ -194,6 +194,69 @@ const envSchema = z.object({
    */
   GROQ_TIMEOUT_MS: z.coerce.number().int().positive().default(20_000),
 
+  /**
+   * BLACK FOREST LABS — drawing the hair.
+   *
+   * The key is the only secret here and it never leaves this process: no
+   * NEXT_PUBLIC_ twin, no proxying it to the browser, no putting it in a query
+   * string. A leaked image-model key is somebody else's bill, charged per
+   * picture, and the first anybody notices is the invoice.
+   *
+   * Optional, like Cloudinary and Groq above. No key means the 3D studio works
+   * exactly as it does today — it draws its own hair, in the browser, for free —
+   * and the photographic previews simply are not offered. That is the whole
+   * point of the ordering: the part a salon uses in the chair does not depend on
+   * a third party answering.
+   */
+  BFL_API_KEY: z.string().optional().default(''),
+  /**
+   * Regional, and it matters.
+   *
+   * BFL runs api.eu.bfl.ai and api.us.bfl.ai as well as the global address, and
+   * a request submitted to one is NOT visible to another. The submit call here
+   * sets the region; every later poll follows the address the provider itself
+   * hands back, which is why `pollingUrl` is a stored column rather than
+   * something rebuilt from this value.
+   */
+  BFL_API_URL: z
+    .string()
+    .url()
+    .default('https://api.bfl.ai')
+    .transform((value) => value.replace(/\/+$/, '')),
+  /**
+   * A HOSTED MODEL NAME IS NOT A CONSTANT. Same lesson as GROQ_MODEL above, and
+   * it cost a day there: the default was a real, current, undeprecated model
+   * that this particular account could not use, and every call came back 404.
+   *
+   * So this is configuration. Ask the key which models it has rather than
+   * trusting the default — including this one.
+   */
+  BFL_MODEL: z.string().default('flux-2-klein'),
+  /**
+   * One HTTP call, not the whole generation.
+   *
+   * The generation takes tens of seconds and is waited for by POLLING, never by
+   * holding a socket open: a submit that hangs holds a worker slot that
+   * appointment reminders need.
+   */
+  BFL_TIMEOUT_MS: z.coerce.number().int().positive().default(20_000),
+  /** How long between status checks, and how many before giving up. */
+  BFL_POLL_INTERVAL_MS: z.coerce.number().int().min(1000).default(4000),
+  BFL_MAX_POLLS: z.coerce.number().int().min(1).max(200).default(60),
+  /**
+   * A CEILING ON THE BILL, PER SALON, PER DAY.
+   *
+   * Every other third party in this file is metered by the message and billed
+   * to the salon. This one is billed to us, per picture, and the button that
+   * spends it is in a stylist's hand on a slow afternoon. Without a cap the
+   * failure mode is not an outage — it is an invoice.
+   *
+   * Counted over rows rather than through the quota ledger because that ledger
+   * is built around messaging channels; this belongs there eventually, and a
+   * number that stops the bleeding today is worth more than the refactor.
+   */
+  BFL_DAILY_LIMIT_PER_TENANT: z.coerce.number().int().min(0).default(60),
+
   EMAIL_DRIVER: z.enum(['console', 'resend']).default('console'),
   EMAIL_API_URL: z.string().default('https://api.resend.com'),
   EMAIL_API_KEY: z.string().optional().default(''),
@@ -262,6 +325,22 @@ export const cloudinaryReady = Boolean(
  * matter under retries of one that never will.
  */
 export const aiReady = Boolean(env.GROQ_API_KEY);
+
+/**
+ * Whether photographic previews can be generated at all.
+ *
+ * Checked before a row is written rather than inside the job, for the reason in
+ * the note above: a queue filling with work that can only fail buries the jobs
+ * that matter under retries of one that never will. A salon with no key is told
+ * so by the API in a sentence, on the spot.
+ *
+ * Cloudinary is deliberately part of this. The provider's own link expires
+ * within the hour, so without somewhere to put the bytes a "successful"
+ * generation produces a row that shows a broken image by morning — which is
+ * worse than not offering the feature, because the salon has already shown it to
+ * a customer.
+ */
+export const fluxReady = Boolean(env.BFL_API_KEY) && cloudinaryReady;
 
 export const isProd = env.NODE_ENV === 'production';
 export const isTest = env.NODE_ENV === 'test';

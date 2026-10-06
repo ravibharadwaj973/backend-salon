@@ -14,6 +14,20 @@ export type JobType =
   | 'invoice.post_process'
   | 'customer.rollup'
   | 'feedback.analyze'
+  /**
+   * TWO JOBS, NOT ONE, AND THE SPLIT IS THE WHOLE DESIGN.
+   *
+   * An image generation takes tens of seconds. The worker below runs every
+   * due job in one awaited pass, so a single handler that waited for a
+   * picture would hold up the appointment reminders queued behind it.
+   *
+   * So `submit` hands the work over and returns in a fraction of a second,
+   * and `poll` is one status check that books its own successor a few seconds
+   * out. The queue itself becomes the timer.
+   */
+  | 'hair.generate.submit'
+  | 'hair.generate.poll'
+  | 'hair.generate.sweep'
   | 'booking.notify'
   | 'inventory.consume'
   | 'alerts.generate'

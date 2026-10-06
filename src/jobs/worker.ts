@@ -129,6 +129,16 @@ function registerSchedules(): void {
   // Every 15 minutes: catch appointments that were never checked in.
   cron.schedule('*/15 * * * *', () => void enqueue('appointment.no_show_sweep', {}, { tenantId: null }), opts);
 
+  /*
+   * Every 10 minutes: find image generations whose poll job went missing.
+   *
+   * Every wait in that feature is a scheduled job, and a job is a row something
+   * can delete — a deploy restarting mid-flight is enough. Without this the row
+   * sits at SUBMITTED for ever while the finished picture expires at the
+   * provider, already paid for.
+   */
+  cron.schedule('*/10 * * * *', () => void enqueue('hair.generate.sweep', {}, { tenantId: null }), opts);
+
   // 06:30 — build the day's alert list before the salon opens.
   cron.schedule('30 6 * * *', () => void enqueue('alerts.generate', {}, { tenantId: null }), opts);
 

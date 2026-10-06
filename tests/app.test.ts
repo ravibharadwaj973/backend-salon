@@ -39,12 +39,30 @@ describe('http surface', () => {
     // model or the endpoint behind it.
     const res = await request(app).get('/health');
     const body = JSON.stringify(res.body);
-    for (const leak of ['gsk_', 'GROQ', 'api.groq.com', 'CLOUDINARY', 'cloudinary']) {
+    for (const leak of [
+      'gsk_',
+      'GROQ',
+      'api.groq.com',
+      'CLOUDINARY',
+      'cloudinary',
+      /*
+       * The image provider, added with the same care. Its own status endpoint
+       * does report the model slug and the endpoint, because whoever is setting
+       * it up needs those — but that route is authenticated and this one is not,
+       * and the key itself appears in neither.
+       */
+      'bfl_',
+      'BFL',
+      'bfl.ai',
+      'flux',
+    ]) {
       expect(body).not.toContain(leak);
     }
     expect(Object.keys(res.body.features).sort()).toEqual([
       'feedbackAi',
       'feedbackAiVerified',
+      'hairImageGeneration',
+      'hairImageGenerationVerified',
       'photoUploads',
     ]);
   });

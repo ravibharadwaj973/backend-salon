@@ -20,6 +20,7 @@ import { pruneAudit } from '../../modules/audit/audit.service';
 import * as renewals from '../../modules/tenants/renewal.service';
 import { analyseFeedback } from '../../modules/feedback/feedback-ai.service';
 import { noticeOnlineBooking } from '../../modules/appointments/online-booking-notice';
+import * as hairGen from '../../modules/hair-studio/hair-generation.service';
 
 export type JobHandler = (payload: Record<string, unknown>, job: Job) => Promise<unknown>;
 
@@ -415,6 +416,37 @@ const handlers: Record<JobType, JobHandler> = {
     const deleted = await pruneAudit(retentionDays);
     return { deleted, retentionDays };
   },
+
+  // ------------------------------------------------------ hair generation --
+  /**
+   * Hand one design to the image model. Fast by construction: the waiting is
+   * done by the poll job below, so this holds nobody up.
+   */
+  'hair.generate.submit': async (payload) => {
+    const generationId = payload.generationId as string | undefined;
+    if (!generationId) return { skipped: 'no generationId' };
+    return { generationId, result: await hairGen.submitGeneration(generationId) };
+  },
+
+  /**
+   * One status check, which either finishes the row or books the next check.
+   *
+   * Deliberately does NOT throw on a provider that is still thinking: a thrown
+   * error would be the queue's retry mechanism, with its own thirty-second-to-
+   * two-hour backoff, on top of the schedule this job already keeps for itself.
+   */
+  'hair.generate.poll': async (payload) => {
+    const generationId = payload.generationId as string | undefined;
+    if (!generationId) return { skipped: 'no generationId' };
+    const attempt = (payload.attempt as number | undefined) ?? 0;
+    return { generationId, attempt, result: await hairGen.pollGeneration(generationId, attempt) };
+  },
+
+  /**
+   * Picks up rows whose poll job went missing — a deploy mid-flight, a cleared
+   * queue. Normally finds nothing and costs one indexed query.
+   */
+  'hair.generate.sweep': async () => ({ requeued: await hairGen.sweepStalledGenerations() }),
 };
 
 export function getHandler(type: string): JobHandler | null {

@@ -927,6 +927,7 @@ model Tenant {
   passwordResetRequests PasswordResetRequest[]
   hairstyles            HairstyleCatalog[]
   hairDesigns           HairDesign[]
+  hairGenerations       HairGeneration[]
 
   @@index([status])
   @@map("tenants")
@@ -1027,6 +1028,7 @@ model Branch {
   marketingSources MarketingSource[]
   hairstyles       HairstyleCatalog[]
   hairDesigns      HairDesign[]
+  hairGenerations  HairGeneration[]
 
   @@unique([tenantId, code])
   @@index([tenantId, isActive])
@@ -1606,6 +1608,7 @@ model Customer {
   couponRedemptions CouponRedemption[]
   interests         CustomerInterest[]
   hairDesigns       HairDesign[]
+  hairGenerations   HairGeneration[]
   convertedFromLead Lead[]
   /// WHEN THIS CUSTOMER LAST WROTE TO US.
   ///
@@ -4122,8 +4125,126 @@ model HairDesign {
   staff       Staff?            @relation(fields: [staffId], references: [id], onDelete: SetNull)
   appointment Appointment?      @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
 
+  generations HairGeneration[]
+
   /// The customer's history screen, newest first.
   @@index([tenantId, customerId, createdAt])
   @@index([tenantId, catalogId])
   @@map("hair_designs")
+}
+
+/// WHERE A GENERATED PICTURE CAME FROM, AND WHETHER IT ARRIVED.
+///
+/// A row per call to the image model. It exists because the call is slow, costs
+/// money and happens in the background: the person who pressed the button has
+/// already navigated away, so "what happened to that" has to be answerable from
+/// the database rather than from a promise held in memory.
+enum HairGenerationStatus {
+  /// Accepted and queued. Nothing has been sent to the provider yet.
+  PENDING
+  /// The provider has it and is working. `providerId` is set.
+  SUBMITTED
+  /// Finished, downloaded and stored. `imageUrl` is permanent.
+  READY
+  /// Something broke — network, provider outage, a bad response. Worth retrying.
+  FAILED
+  /// The provider refused the prompt or its own output on content grounds.
+  /// Separate from FAILED on purpose: retrying is pointless and the salon needs
+  /// different words on screen.
+  REFUSED
+}
+
+/// WHAT KIND OF PICTURE WAS ASKED FOR.
+enum HairGenerationKind {
+  /// A virtual model wearing the design, from text alone. No customer photo is
+  /// involved, which is the whole point: a salon can build a look-book without
+  /// asking anybody's permission to put their face in it.
+  MODEL_PORTRAIT
+  /// The design applied to an image we already hold — the same model, a new cut.
+  STYLE_PREVIEW
+  /// The same model and the same cut in a different colour.
+  RECOLOUR
+}
+
+/// ONE GENERATED IMAGE.
+///
+/// ── Why the prompt and the model name are COLUMNS ─────────────────────────
+///
+/// Both are the only record of how the picture was made. The prompt is rebuilt
+/// from a design, and a design is editable; the provider's model slug is a
+/// moving target that will be changed in an env file one afternoon. Six months
+/// from now "why do the October portraits look different from the January ones"
+/// is answerable from these two columns and from nowhere else.
+///
+/// `seed` is what makes a virtual model a PERSON rather than a lottery: the same
+/// seed and the same prompt return the same face, so a salon's model can be
+/// shown in four different colours and still be recognisably one woman.
+model HairGeneration {
+  id       String  @id @default(cuid())
+  tenantId String
+  branchId String?
+
+  /// Both nullable. A look-book portrait belongs to the salon and to no
+  /// customer, and a design can be deleted while the picture it produced is
+  /// still on a wall.
+  customerId String?
+  designId   String?
+
+  kind   HairGenerationKind
+  status HairGenerationStatus @default(PENDING)
+
+  /// Exactly what was sent. See the note above.
+  prompt String
+  /// The provider's model slug, as configured when this ran.
+  model  String
+  seed   Int?
+
+  /// The provider's request id and the address it told us to ask at.
+  ///
+  /// The polling address is stored rather than built: the provider hands back a
+  /// REGIONAL url, and a url assembled from the base address asks the wrong
+  /// datacentre and is told the request does not exist.
+  providerId String?
+  pollingUrl String?
+
+  /// Where the source image was, for an edit. Null for a portrait from text.
+  inputImageUrl String?
+
+  /// PERMANENT storage, not the provider's link.
+  ///
+  /// The url the provider returns is signed and expires within the hour, so a
+  /// row that kept it would show a salon a broken image the next morning. The
+  /// bytes are downloaded and re-hosted before this is written.
+  imageUrl      String?
+  imagePublicId String?
+  width         Int?
+  height        Int?
+  bytes         Int?
+
+  /// A sentence for the person who pressed the button, not a stack trace.
+  error String?
+
+  /// How many times the status has been checked. Bounded, because a provider
+  /// that never answers must not be polled until the end of time.
+  polls Int @default(0)
+
+  submittedAt DateTime?
+  readyAt     DateTime?
+
+  createdById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant   Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch   Branch?     @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  customer Customer?   @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  design   HairDesign? @relation(fields: [designId], references: [id], onDelete: SetNull)
+
+  /// The gallery screen, newest first.
+  @@index([tenantId, createdAt])
+  /// The sweep that finds work the queue dropped.
+  @@index([status, createdAt])
+  @@index([tenantId, designId])
+  @@map("hair_generations")
 }
