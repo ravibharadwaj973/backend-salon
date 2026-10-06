@@ -5,6 +5,7 @@ import { requireTenantId, currentUserId } from '../../core/context';
 import { optionalBranchFilter } from '../../core/scope';
 import { BadRequest, NotFound, Conflict } from '../../core/errors';
 import { logger } from '../../core/logger';
+import { thumbnail } from '../gallery/thumbnail';
 import { HAIRSTYLE_KINDS, isKnownKind, kindByKey, knownKindKeys } from './hairstyle-kinds';
 import {
   checkCatalogEntry,
@@ -47,13 +48,27 @@ export interface HairstyleInput {
   sortOrder?: number;
 }
 
+/**
+ * A SMALL VERSION OF THE PICTURE, ADDED ON THE WAY OUT.
+ *
+ * Derived rather than stored, for the reason in thumbnail.ts: a second column
+ * holding the same fact drifts from the first, and a look-book showing last
+ * month's haircut beside this month's name errors nowhere.
+ *
+ * It matters most on the grid, which is the one screen that loads thirty-odd
+ * portraits at once over a salon's phone connection.
+ */
+function withThumbnail<T extends { previewUrl: string | null }>(row: T) {
+  return { ...row, thumbnailUrl: thumbnail(row.previewUrl, { width: 400 }) };
+}
+
 export async function listHairstyles(input: {
   branchId?: string;
   activeOnly?: boolean;
   gender?: Gender;
 }) {
   const tenantId = requireTenantId();
-  return prisma.hairstyleCatalog.findMany({
+  const rows = await prisma.hairstyleCatalog.findMany({
     where: {
       tenantId,
       ...optionalBranchFilter(input.branchId),
@@ -65,6 +80,7 @@ export async function listHairstyles(input: {
     include: { service: { select: { id: true, name: true, price: true, durationMin: true } } },
     orderBy: [{ isActive: 'desc' }, { sortOrder: 'asc' }, { name: 'asc' }],
   });
+  return rows.map(withThumbnail);
 }
 
 export async function getHairstyle(id: string) {
@@ -74,7 +90,7 @@ export async function getHairstyle(id: string) {
     include: { service: { select: { id: true, name: true, price: true, durationMin: true } } },
   });
   if (!style) throw NotFound('Hairstyle not found');
-  return style;
+  return withThumbnail(style);
 }
 
 function assertEntryIsDrawable(input: Partial<HairstyleInput> & { kind: string }): void {

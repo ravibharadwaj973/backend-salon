@@ -4049,7 +4049,8 @@ model HairstyleCatalog {
   branch  Branch?  @relation(fields: [branchId], references: [id], onDelete: SetNull)
   service Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
 
-  designs HairDesign[]
+  designs     HairDesign[]
+  references  HairGeneration[]
 
   @@unique([tenantId, kind, name])
   @@index([tenantId, isActive, sortOrder])
@@ -4167,6 +4168,14 @@ enum HairGenerationKind {
   STYLE_PREVIEW
   /// The same model and the same cut in a different colour.
   RECOLOUR
+  /// A REFERENCE PICTURE FOR THE SALON'S MENU, drawn once and kept.
+  ///
+  /// Not per customer and not per consultation: one picture per catalogue entry,
+  /// generated when the salon sets its menu up and shown from then on. The
+  /// economics of the whole feature rest on this distinction — a look-book that
+  /// regenerated itself every time somebody opened the page would cost more per
+  /// month than the subscription.
+  CATALOG_REFERENCE
   /// THE CUSTOMER'S OWN PHOTOGRAPH, with the hair replaced and nothing else.
   ///
   /// Kept distinct from STYLE_PREVIEW even though the mechanics are identical,
@@ -4220,6 +4229,14 @@ model HairGeneration {
   /// Where the source image was, for an edit. Null for a portrait from text.
   inputImageUrl String?
 
+  /// THE MENU ENTRY THIS ILLUSTRATES, for a reference picture.
+  ///
+  /// Mutually exclusive with designId in practice though not in the schema: a
+  /// reference picture belongs to a style the salon SELLS, a preview belongs to a
+  /// look somebody DESIGNED, and the two are different rows with different
+  /// lifetimes. Nullable both ways because the oldest rows predate this column.
+  catalogId String?
+
   /// THE READING THIS WAS BUILT ON, when the source was a customer's own photo.
   ///
   /// Carried so that "delete my photograph" can mean it. Without this link the
@@ -4260,6 +4277,10 @@ model HairGeneration {
   /// Cascade, not SetNull. See the note on analysisId: a reading being deleted is
   /// a customer withdrawing consent, and the pictures made from it go with it.
   analysis HairAnalysis? @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+  /// SET NULL rather than Cascade: a salon renaming or retiring a menu entry must
+  /// not silently destroy pictures it has already printed and put on a wall, and
+  /// which it paid for.
+  catalog  HairstyleCatalog? @relation(fields: [catalogId], references: [id], onDelete: SetNull)
 
   /// The gallery screen, newest first.
   @@index([tenantId, createdAt])
@@ -4267,6 +4288,7 @@ model HairGeneration {
   @@index([status, createdAt])
   @@index([tenantId, designId])
   @@index([analysisId])
+  @@index([tenantId, catalogId, status])
   @@map("hair_generations")
 }
 

@@ -1,4 +1,4 @@
-import type { HairGenerationKind, HairGeneration, Prisma } from '@prisma/client';
+import type { FaceShape, HairGenerationKind, HairGeneration, HairLength, HairTexture, Prisma } from '@prisma/client';
 import { prisma } from '../../core/prisma';
 import { requireTenantId, currentUserId, runAsTenant, runUnscoped } from '../../core/context';
 import { optionalBranchFilter } from '../../core/scope';
@@ -9,7 +9,7 @@ import { env, fluxReady } from '../../config/env';
 import { enqueue } from '../../jobs/queue';
 import { readImageBytes, uploadBytes } from '../gallery/cloudinary';
 import { designConfigSchema, type DesignConfig } from './design-rules';
-import { buildPrompt, buildRecolourPrompt, NEGATIVE, type PromptInput } from './hair-prompt';
+import { buildPrompt, buildRecolourPrompt, buildReferencePrompt, NEGATIVE, type PromptInput } from './hair-prompt';
 import * as flux from './flux';
 
 /**
@@ -469,6 +469,160 @@ function schedulePoll(generationId: string, tenantId: string, attempt: number): 
   );
 }
 
+// ------------------------------------------------- catalogue references ------
+
+export interface ReferenceInput {
+  catalogId: string;
+  /** Which of the style's supported options to draw. Defaults to the middle. */
+  texture?: HairTexture | null;
+  length?: HairLength | null;
+  faceShape?: FaceShape | null;
+  /** Hex. A look-book in one colour reads as one haircut repeated. */
+  baseColor?: string | null;
+  seed?: number | null;
+}
+
+/**
+ * ONE PICTURE FOR ONE THING THE SALON SELLS, DRAWN ONCE.
+ *
+ * ── Why this is the endpoint the economics depend on ──────────────────────
+ *
+ * Every other generation here is per consultation. This one is per MENU ENTRY,
+ * made when the salon sets its catalogue up and shown from then on to everybody
+ * who opens the look-book. A library that regenerated itself on each page view
+ * would cost more per month than the subscription, and the whole design of the
+ * feature is that it does not: fifty configuration changes in the 3D studio cost
+ * nothing, and a picture is drawn only when somebody asks for one.
+ *
+ * ── Why it does not go through a design ───────────────────────────────────
+ *
+ * A design is what a CUSTOMER chose. A reference picture illustrates what the
+ * SALON offers, has no customer, and must outlive any particular consultation.
+ * Routing it through a throwaway design would put rows in a customer's history
+ * for looks nobody ever asked for.
+ */
+export async function requestCatalogReference(input: ReferenceInput): Promise<HairGeneration> {
+  const tenantId = requireTenantId();
+
+  if (!fluxReady) {
+    throw BadRequest(
+      'Reference pictures are not set up on this server. The catalogue works without them — the 3D studio draws every style itself.',
+    );
+  }
+
+  const entry = await prisma.hairstyleCatalog.findFirst({ where: { id: input.catalogId, tenantId } });
+  if (!entry) throw NotFound('Hairstyle not found');
+
+  await assertUnderDailyCap(tenantId);
+
+  /*
+   * MIDDLE OF THE RANGE, NOT THE FIRST OPTION.
+   *
+   * `supportedLengths[0]` is the shortest the style is offered at, and a
+   * look-book drawn entirely at the short end misrepresents half the menu. The
+   * middle is the one that looks like the style people have in mind when they
+   * say its name.
+   */
+  const middle = <T>(list: T[], fallback: T): T => list[Math.floor(list.length / 2)] ?? fallback;
+
+  const texture = input.texture ?? middle(entry.supportedTextures, 'STRAIGHT');
+  const length = input.length ?? middle(entry.supportedLengths, 'MEDIUM');
+  const density = middle(entry.supportedDensities, 'MEDIUM');
+  const faceShape = input.faceShape ?? entry.recommendedFaceShapes[0] ?? null;
+
+  const prompt = buildReferencePrompt({
+    hairstyleKey: entry.kind,
+    styleName: entry.name,
+    gender: entry.gender,
+    texture,
+    length,
+    density,
+    volume: 50,
+    // A dark brown default: it is the commonest hair colour in this market, and
+    // it photographs with visible strand separation, which blonde does not.
+    baseColor: input.baseColor ?? '#3B2417',
+    faceShape,
+    /*
+     * The style's own switches, at their natural setting. Deliberately NOT the
+     * full configurator: a reference picture is of the STYLE, and a bob drawn
+     * with curtain bangs and a deep side parting is a picture of one styling of
+     * it rather than of the thing on the menu.
+     */
+    config: {
+      bangs: 'NONE',
+      layers: entry.supportsLayers ? 'MEDIUM' : 'NONE',
+      parting: 'NATURAL',
+      ...(entry.supportsFade ? { fade: { type: 'MID' as const, guard: 1 as const, topLength: 50 } } : {}),
+    },
+  });
+
+  const generation = await prisma.hairGeneration.create({
+    data: {
+      tenantId,
+      branchId: entry.branchId,
+      catalogId: entry.id,
+      kind: 'CATALOG_REFERENCE',
+      status: 'PENDING',
+      prompt,
+      model: env.BFL_MODEL,
+      seed: input.seed ?? Math.floor(Math.random() * 2_147_483_647),
+      createdById: currentUserId(),
+    },
+  });
+
+  await enqueue(
+    'hair.generate.submit',
+    { generationId: generation.id },
+    { tenantId, uniqueKey: `hair.generate:${generation.id}` },
+  );
+
+  return generation;
+}
+
+/**
+ * CHOOSE THE BEST ONE — the step the specification calls "select best result".
+ *
+ * Generation is cheap and judgement is not: a model draws four plausible heads
+ * and exactly one of them looks like the haircut the salon actually does. So
+ * nothing is attached automatically. A picture becomes the menu's face only when
+ * a person picks it, and picking a different one later is the same call again.
+ */
+export async function setCatalogPreview(catalogId: string, generationId: string | null) {
+  const tenantId = requireTenantId();
+
+  const entry = await prisma.hairstyleCatalog.findFirst({ where: { id: catalogId, tenantId } });
+  if (!entry) throw NotFound('Hairstyle not found');
+
+  if (generationId === null) {
+    return prisma.hairstyleCatalog.update({ where: { id: entry.id }, data: { previewUrl: null } });
+  }
+
+  const picture = await prisma.hairGeneration.findFirst({
+    where: { id: generationId, tenantId, catalogId: entry.id },
+    select: { status: true, imageUrl: true },
+  });
+  if (!picture) throw NotFound('That picture');
+  if (picture.status !== 'READY' || !picture.imageUrl) {
+    throw BadRequest('That picture has not finished yet.');
+  }
+
+  return prisma.hairstyleCatalog.update({
+    where: { id: entry.id },
+    data: { previewUrl: picture.imageUrl },
+  });
+}
+
+/** Everything drawn for one menu entry, newest first. */
+export async function listCatalogReferences(catalogId: string) {
+  const tenantId = requireTenantId();
+  return prisma.hairGeneration.findMany({
+    where: { tenantId, catalogId },
+    orderBy: { createdAt: 'desc' },
+    take: 24,
+    select: publicFields,
+  });
+}
+
 // ---------------------------------------------------------------- reading ---
 
 export async function listGenerations(input: {
@@ -518,6 +672,7 @@ const publicFields = {
   height: true,
   error: true,
   designId: true,
+  catalogId: true,
   customerId: true,
   analysisId: true,
   inputImageUrl: true,

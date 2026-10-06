@@ -243,3 +243,59 @@ describe('the starter catalogue the salon is handed', () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 });
+
+describe('hand-placed sections survive a save', () => {
+  const strip = {
+    id: 'strip-1',
+    color: '#C9A063',
+    phi: 0.8,
+    start: 0.35,
+    width: 40,
+    brightness: 70,
+    blend: 45,
+  };
+
+  /**
+   * THE BUG THIS EXISTS TO PREVENT.
+   *
+   * designConfigSchema is `.strip()`ed, which is right — the studio grows
+   * controls faster than this API is redeployed, and a saved look is worth more
+   * than a strict error about a field nobody has shipped a reader for. The cost
+   * is that a key the schema does not know is DROPPED IN SILENCE: a section
+   * painted on the model would look perfect right up to the moment somebody
+   * pressed Save, and then not exist. Nothing would error, and the stylist would
+   * conclude the feature was broken rather than that the field was missing.
+   */
+  it('keeps the sections rather than quietly dropping them', () => {
+    const parsed = designConfigSchema.parse({ bangs: 'NONE', layers: 'NONE', parting: 'NATURAL', strips: [strip] });
+    expect(parsed.strips).toHaveLength(1);
+    expect(parsed.strips?.[0]).toMatchObject(strip);
+  });
+
+  it('accepts the full range an atan2 can produce', () => {
+    for (const phi of [-Math.PI, -0.001, 0, 3.14159, Math.PI]) {
+      expect(() =>
+        designConfigSchema.parse({ bangs: 'NONE', layers: 'NONE', parting: 'NATURAL', strips: [{ ...strip, phi }] }),
+      ).not.toThrow();
+    }
+  });
+
+  it('refuses a colour that is not a colour', () => {
+    expect(() =>
+      designConfigSchema.parse({
+        bangs: 'NONE',
+        layers: 'NONE',
+        parting: 'NATURAL',
+        strips: [{ ...strip, color: 'caramel' }],
+      }),
+    ).toThrow();
+  });
+
+  /** An unbounded array here is a JSON column somebody can grow until a row stops fitting. */
+  it('bounds how many sections one look may hold', () => {
+    const many = Array.from({ length: 9 }, (_, index) => ({ ...strip, id: `s${index}` }));
+    expect(() =>
+      designConfigSchema.parse({ bangs: 'NONE', layers: 'NONE', parting: 'NATURAL', strips: many }),
+    ).toThrow();
+  });
+});

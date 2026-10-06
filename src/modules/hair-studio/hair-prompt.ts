@@ -1,4 +1,4 @@
-import type { Gender, HairDensity, HairLength, HairTexture } from '@prisma/client';
+import type { FaceShape, Gender, HairDensity, HairLength, HairTexture } from '@prisma/client';
 import { kindByKey } from './hairstyle-kinds';
 import type { DesignConfig } from './design-rules';
 
@@ -52,6 +52,14 @@ export interface PromptInput {
   config?: Partial<DesignConfig> | null;
   /** Set when the picture is an edit of one we already hold. */
   editing?: boolean;
+  /**
+   * Which face the cut should be shown on, for a catalogue reference.
+   *
+   * Only useful there. A salon's look-book is browsed by somebody trying to
+   * recognise their own face in it, so a style advised for round faces shown on a
+   * sharply oval one is a picture that argues against itself.
+   */
+  faceShape?: FaceShape | null;
 }
 
 // ----------------------------------------------------------- vocabulary -----
@@ -212,6 +220,25 @@ function colourEffects(config: Partial<DesignConfig>): string[] {
     parts.push(`a soft ${colourName(config.rootShadow.color)} root shadow blended down from the parting`);
   }
 
+  /*
+   * Hand-placed sections, described by COUNT and COLOUR rather than by angle.
+   *
+   * The model has no idea what 0.8 radians means and would be no better off
+   * being told; what it can draw is "two hand-painted panels in caramel". The
+   * exact placement is the 3D studio's job, which is the honest division — the
+   * configurator is where a section is positioned, and the photograph is where
+   * the salon sees roughly what that kind of colouring looks like.
+   */
+  const strips = (config.strips ?? []).filter((strip) => strip.brightness > 0);
+  if (strips.length) {
+    const colours = [...new Set(strips.map((strip) => colourName(strip.color)))];
+    parts.push(
+      strips.length === 1
+        ? `a hand-painted panel of ${colours[0]} through one section`
+        : `${strips.length} hand-painted panels in ${colours.join(' and ')}`,
+    );
+  }
+
   return parts;
 }
 
@@ -323,6 +350,59 @@ export function buildPrompt(input: PromptInput): string {
     `The hair is ${hair}. ` +
     'Sharp focus on the hair, every strand clearly defined, natural shine, photorealistic, ' +
     'shot on a full-frame camera with an 85mm lens.'
+  );
+}
+
+const FACE: Record<FaceShape, string> = {
+  OVAL: 'an oval face',
+  ROUND: 'a round face',
+  SQUARE: 'a square jawline',
+  OBLONG: 'a long, oblong face',
+  HEART: 'a heart-shaped face',
+  DIAMOND: 'a diamond-shaped face',
+};
+
+/**
+ * A REFERENCE PICTURE FOR THE SALON'S MENU.
+ *
+ * ── Why this is not just buildPrompt with a different caption ──────────────
+ *
+ * Because it is drawn ONCE and then shown to every customer who opens the look-
+ * book, which changes what it has to be. A consultation preview can be a little
+ * odd and be regenerated in forty seconds; a catalogue picture that is a little
+ * odd is a little odd for a year, on a page the salon uses to sell.
+ *
+ * So three things are tighter here than anywhere else in this file:
+ *
+ *   THE FACE IS NAMED. A browser of a look-book is looking for their own face in
+ *   it, and a cut advised for round faces shown on a sharply oval one is a
+ *   picture that quietly argues against the advice attached to it.
+ *
+ *   THE WORD "FICTIONAL" IS IN THE PROMPT. It is the one picture here that will
+ *   be published on a salon's own page rather than shown across a counter, and
+ *   the distinction between "a person" and "a particular person" is the whole
+ *   question when something is published.
+ *
+ *   IT ASKS FOR STRANDS. A reference image is judged on whether the hair reads as
+ *   hair at thumbnail size, which is a different request from a flattering
+ *   portrait and worth saying outright.
+ */
+export function buildReferencePrompt(input: PromptInput): string {
+  const hair = describeHair(input);
+  const person =
+    input.gender === 'MALE'
+      ? 'a fictional adult man'
+      : input.gender === 'FEMALE'
+        ? 'a fictional adult woman'
+        : 'a fictional adult';
+  const face = input.faceShape ? ` with ${FACE[input.faceShape]}` : '';
+
+  return (
+    `A photorealistic salon hairstyle reference photograph of ${person}${face}, ` +
+    `showing ${hair}. ` +
+    'Front-facing, head and shoulders, neutral expression, plain light grey studio background, ' +
+    'soft professional salon lighting, natural skin texture, individual hair strands clearly visible, ' +
+    'clean commercial beauty photography, sharp focus on the hair.'
   );
 }
 

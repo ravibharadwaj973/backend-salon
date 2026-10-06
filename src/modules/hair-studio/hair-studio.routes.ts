@@ -277,6 +277,79 @@ hairStudioRouter.delete(
   }),
 );
 
+// ------------------------------------------------ the hair asset studio ----
+
+/**
+ * REFERENCE PICTURES FOR THE MENU, DRAWN ONCE.
+ *
+ * The salon-side replacement for the Hairstyles screen that was removed: this is
+ * where a style gets a face. Three calls — draw one, see what has been drawn, pick
+ * the one that becomes the menu's picture — and the middle step is the point.
+ * Generation is cheap and judgement is not, so nothing is attached automatically:
+ * a model draws four plausible heads and one of them looks like the haircut this
+ * salon actually does.
+ *
+ * SERVICE_MANAGE throughout, unlike the consultation previews. This changes what
+ * every customer sees on the look-book from now on, and it is the owner's menu.
+ */
+hairStudioRouter.post(
+  '/hairstyles/:id/references',
+  requirePermission(PERMISSIONS.SERVICE_MANAGE),
+  validate({
+    params: idParam,
+    body: z
+      .object({
+        texture: textureEnum.nullable().optional(),
+        length: lengthEnum.nullable().optional(),
+        faceShape: faceShapeEnum.nullable().optional(),
+        baseColor: z
+          .string()
+          .trim()
+          .regex(/^#[0-9a-fA-F]{6}$/, 'A colour must be a hex value like #3B2417')
+          .nullable()
+          .optional(),
+        seed: z.number().int().min(0).max(2_147_483_647).nullable().optional(),
+      })
+      .optional(),
+  }),
+  asyncHandler(async (req, res) => {
+    const body = (req.body ?? {}) as Omit<generation.ReferenceInput, 'catalogId'>;
+    const row = await generation.requestCatalogReference({ ...body, catalogId: req.params.id! });
+    audit({
+      action: 'hairstyle.reference_requested',
+      entity: 'HairstyleCatalog',
+      entityId: req.params.id!,
+      after: { generationId: row.id, model: row.model },
+    });
+    return accepted(res, row);
+  }),
+);
+
+hairStudioRouter.get(
+  '/hairstyles/:id/references',
+  requirePermission(PERMISSIONS.SERVICE_VIEW),
+  validate({ params: idParam }),
+  asyncHandler(async (req, res) => ok(res, await generation.listCatalogReferences(req.params.id!))),
+);
+
+/** Make one of them the menu's picture. Null takes the picture away again. */
+hairStudioRouter.post(
+  '/hairstyles/:id/preview',
+  requirePermission(PERMISSIONS.SERVICE_MANAGE),
+  validate({ params: idParam, body: z.object({ generationId: idSchema.nullable() }) }),
+  asyncHandler(async (req, res) => {
+    const { generationId } = req.body as { generationId: string | null };
+    const entry = await generation.setCatalogPreview(req.params.id!, generationId);
+    audit({
+      action: 'hairstyle.preview_set',
+      entity: 'HairstyleCatalog',
+      entityId: entry.id,
+      after: { previewUrl: entry.previewUrl },
+    });
+    return ok(res, entry);
+  }),
+);
+
 // ------------------------------------------------------- generated images --
 
 /**

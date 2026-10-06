@@ -71,6 +71,35 @@ export const designConfigSchema = z
     faceFramingLayers: z.number().int().min(0).max(100).optional(),
     parting: z.enum(PARTINGS).default('NATURAL'),
 
+    /**
+     * HAND-PLACED SECTIONS.
+     *
+     * Added to this schema the same day the control shipped, and that ordering
+     * matters more than it looks: the object below is `.strip()`ed, so a key this
+     * schema does not know about is silently DROPPED on save. A section painted
+     * on the model would have survived until the stylist pressed Save and then
+     * quietly vanished — the worst kind of bug, because the screen would show it
+     * working right up to the moment it did not.
+     */
+    strips: z
+      .array(
+        z.object({
+          id: z.string().trim().min(1).max(64),
+          color: hex,
+          /** Azimuth in radians. Bounded to one turn either way, not to 0-2π:
+           *  the client gets this from Math.atan2, which returns -π..π. */
+          phi: z.number().min(-Math.PI * 2).max(Math.PI * 2),
+          start: z.number().min(0).max(1),
+          width: z.number().int().min(0).max(100),
+          brightness: z.number().int().min(0).max(100),
+          blend: z.number().int().min(0).max(100),
+        }),
+      )
+      // Six is already more sections than anyone foils by hand, and an unbounded
+      // array here is a JSON column somebody can grow until a row stops fitting.
+      .max(6)
+      .optional(),
+
     fade: z
       .object({
         type: z.enum(FADE_TYPES).default('MID'),
