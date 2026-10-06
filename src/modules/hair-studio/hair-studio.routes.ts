@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { asyncHandler, created, noContent, ok } from '../../core/http';
+import { accepted, asyncHandler, created, noContent, ok } from '../../core/http';
 import { validate } from '../../middleware/validate';
 import { authenticate } from '../../middleware/auth';
 import { requirePermission } from '../../middleware/rbac';
@@ -19,6 +19,7 @@ import {
 } from './design-rules';
 import * as studio from './hair-studio.service';
 import * as generation from './hair-generation.service';
+import * as analysis from './hair-analysis.service';
 
 /**
  * THE HAIR DESIGN STUDIO.
@@ -333,11 +334,13 @@ hairStudioRouter.post(
   requirePermission(PERMISSIONS.SERVICE_VIEW),
   validate({
     body: z.object({
-      kind: z.enum(['MODEL_PORTRAIT', 'STYLE_PREVIEW', 'RECOLOUR']).default('MODEL_PORTRAIT'),
+      kind: z.enum(['MODEL_PORTRAIT', 'STYLE_PREVIEW', 'RECOLOUR', 'CUSTOMER_PREVIEW']).default('MODEL_PORTRAIT'),
       designId: idSchema,
       customerId: idSchema.nullable().optional(),
       branchId: idSchema.nullable().optional(),
       sourceGenerationId: idSchema.nullable().optional(),
+      /** CUSTOMER_PREVIEW only: the reading holding their consented photo. */
+      sourceAnalysisId: idSchema.nullable().optional(),
       /**
        * Bounded to what the provider accepts as a seed. Allowed to be chosen
        * because "that same model again, in copper" is the first thing any salon
@@ -355,8 +358,139 @@ hairStudioRouter.post(
       after: { kind: row.kind, designId: row.designId, model: row.model },
     });
     // 202, not 201: the row exists, the picture does not yet.
-    return res.status(202).json({ data: row });
+    return accepted(res, row);
   }),
+);
+
+// --------------------------------------------- readings and the advisor ----
+
+const hairlineEnum = z.enum(['STRAIGHT', 'ROUNDED', 'WIDOWS_PEAK', 'RECEDING', 'UNEVEN']);
+
+/**
+ * WHAT THIS PERSON'S HAIR ACTUALLY IS, AND WHICH CUTS SUIT IT.
+ *
+ * Two endpoints and a deliberate asymmetry between them:
+ *
+ *   A READING IS A WRITE, and needs CUSTOMER_MANAGE when it is attached to
+ *   somebody. It can hold a photograph of their face, so it is not something a
+ *   read-only role creates.
+ *
+ *   A RECOMMENDATION IS ARITHMETIC over the salon's own menu and needs nothing
+ *   but SERVICE_VIEW. A stylist asking "what would suit her" is reading the menu
+ *   aloud, which is the moment the product is useful.
+ */
+hairStudioRouter.post(
+  '/analyses',
+  requirePermission(PERMISSIONS.CUSTOMER_MANAGE),
+  validate({
+    body: z.object({
+      customerId: idSchema.nullable().optional(),
+      branchId: idSchema.nullable().optional(),
+      /**
+       * A data URL, matching how the logo and gallery uploads already work.
+       * Bounded here as well as in the decoder: an eight-megabyte base64 body
+       * should be refused by the validator rather than buffered and then
+       * rejected.
+       */
+      photo: z.string().max(15_000_000).nullable().optional(),
+      /**
+       * Required with a photo, and the service refuses without it rather than
+       * trusting this flag alone. A face stored without a yes cannot be
+       * un-stored.
+       */
+      consent: z.boolean().optional(),
+      faceShape: faceShapeEnum.nullable().optional(),
+      texture: textureEnum.nullable().optional(),
+      density: densityEnum.nullable().optional(),
+      length: lengthEnum.nullable().optional(),
+      volume: z.number().int().min(0).max(100).nullable().optional(),
+      hairline: hairlineEnum.nullable().optional(),
+      notes: z.string().trim().max(1000).nullable().optional(),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const row = await analysis.createAnalysis(req.body as analysis.AnalysisInput);
+    audit({
+      action: 'hair_analysis.created',
+      entity: 'HairAnalysis',
+      entityId: row.id,
+      // The reading's source and whether a photo was kept — never the photo, and
+      // never the reading itself, which is personal data about a named customer.
+      after: { source: row.source, photoStored: !!row.imagePublicId },
+    });
+    return created(res, row);
+  }),
+);
+
+/** The newest reading for a customer, which is the only one anybody wants. */
+hairStudioRouter.get(
+  '/analyses/customer/:id',
+  requirePermission(PERMISSIONS.CUSTOMER_VIEW),
+  validate({ params: idParam }),
+  asyncHandler(async (req, res) => ok(res, await analysis.latestAnalysis(req.params.id!))),
+);
+
+hairStudioRouter.get(
+  '/analyses/:id',
+  requirePermission(PERMISSIONS.CUSTOMER_VIEW),
+  validate({ params: idParam }),
+  asyncHandler(async (req, res) => ok(res, await analysis.getAnalysis(req.params.id!))),
+);
+
+/**
+ * FORGET THE PHOTOGRAPH.
+ *
+ * Exists because somebody will ask, and because an app that stores faces without
+ * a way to remove them is not one a salon should be running. It deletes the
+ * generated previews made from it too — those are the same person's face.
+ */
+hairStudioRouter.delete(
+  '/analyses/:id',
+  requirePermission(PERMISSIONS.CUSTOMER_MANAGE),
+  validate({ params: idParam }),
+  asyncHandler(async (req, res) => {
+    const result = await analysis.deleteAnalysis(req.params.id!);
+    audit({ action: 'hair_analysis.deleted', entity: 'HairAnalysis', entityId: req.params.id!, after: result });
+    return ok(res, result);
+  }),
+);
+
+/**
+ * THE ADVISOR, AND THE APPLICATION OWNS THE RANKING.
+ *
+ * Weighted arithmetic over the salon's own active catalogue — face 30, texture
+ * 25, length 15, density 10, stated preference 10, upkeep 10 — with every score
+ * returned decomposed into its factors. No model is consulted and none is needed:
+ * it answers offline, instantly, identically every time, and can be argued with.
+ */
+hairStudioRouter.post(
+  '/recommendations',
+  requirePermission(PERMISSIONS.SERVICE_VIEW),
+  validate({
+    body: z.object({
+      analysisId: idSchema.nullable().optional(),
+      customerId: idSchema.nullable().optional(),
+      // Everything below overrides the stored reading, field by field, so a
+      // stylist can try "what if her hair were longer" without saving anything.
+      faceShape: faceShapeEnum.nullable().optional(),
+      texture: textureEnum.nullable().optional(),
+      density: densityEnum.nullable().optional(),
+      length: lengthEnum.nullable().optional(),
+      gender: genderEnum.nullable().optional(),
+      preferences: z
+        .object({
+          desiredLength: lengthEnum.nullable().optional(),
+          maintenance: maintenanceEnum.nullable().optional(),
+          likedKinds: z.array(z.string().trim().max(64)).max(30).optional(),
+          dislikedKinds: z.array(z.string().trim().max(64)).max(30).optional(),
+          wantsBangs: z.boolean().nullable().optional(),
+          wantsFade: z.boolean().nullable().optional(),
+        })
+        .optional(),
+      limit: z.number().int().min(1).max(20).optional(),
+    }),
+  }),
+  asyncHandler(async (req, res) => ok(res, await analysis.recommendFor(req.body as analysis.RecommendInput))),
 );
 
 export default hairStudioRouter;

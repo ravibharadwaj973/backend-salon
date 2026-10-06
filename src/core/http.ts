@@ -25,6 +25,18 @@ export function created<T>(res: Response, data: T): Response {
   return res.status(201).json({ success: true, data });
 }
 
+/**
+ * 202 — ACCEPTED, NOT DONE.
+ *
+ * For work that is now queued rather than finished: the row exists, the thing it
+ * describes does not yet. Distinct from `created` on purpose, because a client
+ * that reads 201 is entitled to assume the body is the finished article, and
+ * here it is a record to come back and ask about.
+ */
+export function accepted<T>(res: Response, data: T): Response {
+  return res.status(202).json({ success: true, data });
+}
+
 export function noContent(res: Response): Response {
   return res.status(204).send();
 }

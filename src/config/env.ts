@@ -187,6 +187,16 @@ const envSchema = z.object({
    * Sent only when set, and defaulted per model below, because a model that
    * does not understand the parameter answers 400 rather than ignoring it.
    */
+  /**
+   * A MODEL THAT CAN SEE, WHICH IS NOT THE SAME MODEL.
+   *
+   * Its own variable rather than reusing GROQ_MODEL, because a text-only model
+   * answers 400 to an attached image rather than ignoring it — so one setting for
+   * both would mean switching the feedback model quietly broke hair analysis, or
+   * the reverse. Empty is a legitimate state: the hair analysis is then filled in
+   * by the stylist, which it has to support anyway.
+   */
+  GROQ_VISION_MODEL: z.string().optional().default(''),
   GROQ_REASONING_EFFORT: z.enum(['low', 'medium', 'high']).optional(),
   /**
    * A feedback analysis nobody is waiting for. Short on purpose: it runs in a

@@ -52,6 +52,14 @@ export interface GenerationInput {
    * internet.
    */
   sourceGenerationId?: string | null;
+  /**
+   * For CUSTOMER_PREVIEW: the reading that holds the customer's own photograph.
+   *
+   * The photo is referenced through the reading rather than passed as a url,
+   * which is the whole safety property — the only faces this endpoint can draw
+   * on are ones already stored against a recorded consent in this salon.
+   */
+  sourceAnalysisId?: string | null;
   /** Same seed, same face. Omitted means a new person. */
   seed?: number | null;
 }
@@ -115,7 +123,37 @@ export async function requestGeneration(input: GenerationInput): Promise<HairGen
    * inside a worker is a FAILED row nobody is watching.
    */
   let source: HairGeneration | null = null;
-  if (input.kind !== 'MODEL_PORTRAIT') {
+  let analysisId: string | null = null;
+  let inputImageUrl: string | null = null;
+  let analysisCustomerId: string | null = null;
+
+  if (input.kind === 'CUSTOMER_PREVIEW') {
+    /**
+     * PREVIEW ON THE CUSTOMER'S OWN FACE.
+     *
+     * Reached only through a stored reading, which is the gate: a reading exists
+     * only if somebody agreed to their photograph being kept, and it belongs to
+     * this salon. There is deliberately no way to pass a url here — that would be
+     * an endpoint that renders any face on the internet wearing a haircut.
+     */
+    if (!input.sourceAnalysisId) {
+      throw BadRequest("Previewing on the customer needs their photo — add a reading with a photo first.");
+    }
+    const analysis = await prisma.hairAnalysis.findFirst({
+      where: { id: input.sourceAnalysisId, tenantId },
+      select: { id: true, imageUrl: true, consentAt: true, customerId: true },
+    });
+    if (!analysis) throw NotFound('The reading to start from');
+    if (!analysis.imageUrl) throw BadRequest('That reading has no photo to work from.');
+    // Belt and braces: the service that writes these refuses to store a photo
+    // without consent, and this refuses to USE one. Two independent checks,
+    // because the cost of being wrong once is a customer's face in a prompt.
+    if (!analysis.consentAt) throw BadRequest('That photo has no recorded consent, so it cannot be used.');
+
+    analysisId = analysis.id;
+    inputImageUrl = analysis.imageUrl;
+    analysisCustomerId = analysis.customerId;
+  } else if (input.kind !== 'MODEL_PORTRAIT') {
     if (!input.sourceGenerationId) {
       throw BadRequest('Changing a look needs a finished picture to start from.');
     }
@@ -126,6 +164,7 @@ export async function requestGeneration(input: GenerationInput): Promise<HairGen
     if (source.status !== 'READY' || !source.imageUrl) {
       throw BadRequest('That picture has not finished generating yet.');
     }
+    inputImageUrl = source.imageUrl;
   }
 
   await assertUnderDailyCap(tenantId);
@@ -134,13 +173,18 @@ export async function requestGeneration(input: GenerationInput): Promise<HairGen
   const prompt =
     input.kind === 'RECOLOUR'
       ? buildRecolourPrompt({ ...promptInput, editing: true })
-      : buildPrompt({ ...promptInput, editing: input.kind === 'STYLE_PREVIEW' });
+      : buildPrompt({ ...promptInput, editing: input.kind !== 'MODEL_PORTRAIT' });
 
   const generation = await prisma.hairGeneration.create({
     data: {
       tenantId,
       branchId: input.branchId ?? design.branchId ?? null,
-      customerId: input.customerId ?? design.customerId ?? null,
+      /*
+       * The reading's own customer wins. A picture of somebody's face filed
+       * under nobody — or under whoever the design happened to be saved for — is
+       * precisely the row that survives a deletion request.
+       */
+      customerId: analysisCustomerId ?? input.customerId ?? design.customerId ?? null,
       designId: design.id,
       kind: input.kind,
       status: 'PENDING',
@@ -155,7 +199,14 @@ export async function requestGeneration(input: GenerationInput): Promise<HairGen
        * first thing anybody asks for.
        */
       seed: input.seed ?? source?.seed ?? Math.floor(Math.random() * 2_147_483_647),
-      inputImageUrl: source?.imageUrl ?? null,
+      inputImageUrl,
+      analysisId,
+      /*
+       * A preview of a real person is attached to that person, whatever the
+       * caller passed: the reading knows whose face it is, and a picture of
+       * somebody's face filed under nobody is exactly the row that survives a
+       * deletion request.
+       */
       createdById: currentUserId(),
     },
   });
@@ -468,6 +519,7 @@ const publicFields = {
   error: true,
   designId: true,
   customerId: true,
+  analysisId: true,
   inputImageUrl: true,
   createdAt: true,
   readyAt: true,

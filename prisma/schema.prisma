@@ -928,6 +928,7 @@ model Tenant {
   hairstyles            HairstyleCatalog[]
   hairDesigns           HairDesign[]
   hairGenerations       HairGeneration[]
+  hairAnalyses          HairAnalysis[]
 
   @@index([status])
   @@map("tenants")
@@ -1029,6 +1030,7 @@ model Branch {
   hairstyles       HairstyleCatalog[]
   hairDesigns      HairDesign[]
   hairGenerations  HairGeneration[]
+  hairAnalyses     HairAnalysis[]
 
   @@unique([tenantId, code])
   @@index([tenantId, isActive])
@@ -1609,6 +1611,7 @@ model Customer {
   interests         CustomerInterest[]
   hairDesigns       HairDesign[]
   hairGenerations   HairGeneration[]
+  hairAnalyses      HairAnalysis[]
   convertedFromLead Lead[]
   /// WHEN THIS CUSTOMER LAST WROTE TO US.
   ///
@@ -4164,6 +4167,13 @@ enum HairGenerationKind {
   STYLE_PREVIEW
   /// The same model and the same cut in a different colour.
   RECOLOUR
+  /// THE CUSTOMER'S OWN PHOTOGRAPH, with the hair replaced and nothing else.
+  ///
+  /// Kept distinct from STYLE_PREVIEW even though the mechanics are identical,
+  /// because the OBLIGATIONS are not: this one holds a real person's face, it
+  /// exists only with recorded consent, and deleting that consent has to delete
+  /// these too. A status word is how that rule stays findable.
+  CUSTOMER_PREVIEW
 }
 
 /// ONE GENERATED IMAGE.
@@ -4210,6 +4220,13 @@ model HairGeneration {
   /// Where the source image was, for an edit. Null for a portrait from text.
   inputImageUrl String?
 
+  /// THE READING THIS WAS BUILT ON, when the source was a customer's own photo.
+  ///
+  /// Carried so that "delete my photograph" can mean it. Without this link the
+  /// analysis row could be removed while a picture OF THAT PERSON'S FACE stayed
+  /// in storage, with nothing left to say whose it was or why it was there.
+  analysisId String?
+
   /// PERMANENT storage, not the provider's link.
   ///
   /// The url the provider returns is signed and expires within the hour, so a
@@ -4240,11 +4257,106 @@ model HairGeneration {
   branch   Branch?     @relation(fields: [branchId], references: [id], onDelete: SetNull)
   customer Customer?   @relation(fields: [customerId], references: [id], onDelete: SetNull)
   design   HairDesign? @relation(fields: [designId], references: [id], onDelete: SetNull)
+  /// Cascade, not SetNull. See the note on analysisId: a reading being deleted is
+  /// a customer withdrawing consent, and the pictures made from it go with it.
+  analysis HairAnalysis? @relation(fields: [analysisId], references: [id], onDelete: Cascade)
 
   /// The gallery screen, newest first.
   @@index([tenantId, createdAt])
   /// The sweep that finds work the queue dropped.
   @@index([status, createdAt])
   @@index([tenantId, designId])
+  @@index([analysisId])
   @@map("hair_generations")
+}
+
+/// THE SHAPE OF A HAIRLINE. Matters for exactly the decisions a fringe or a fade
+/// is for: a receding hairline rules out a high fade, a widow's peak decides
+/// whether a centre parting works.
+enum HairlineShape {
+  STRAIGHT
+  ROUNDED
+  WIDOWS_PEAK
+  RECEDING
+  UNEVEN
+}
+
+/// WHO DECIDED THIS, AND IT IS NEVER A DETAIL.
+///
+/// A face shape a model guessed from a photograph and one a stylist looked at
+/// across a chair are not the same fact, and the recommendation weights the two
+/// differently. Recording which is which is the only way a wrong recommendation
+/// can be traced back to a wrong reading.
+enum HairAnalysisSource {
+  /// Read from a photograph by a model. Carries a confidence.
+  AI
+  /// Entered by a person. Always full confidence, because somebody looked.
+  MANUAL
+  /// A model's reading that a person then corrected.
+  CORRECTED
+}
+
+/// WHAT THIS PERSON'S HAIR AND FACE ACTUALLY ARE.
+///
+/// The input to the advisor, and separate from HairDesign on purpose: a design is
+/// what somebody WANTS, this is what they HAVE. Conflating the two is how a
+/// recommender ends up suggesting the haircut the customer already has.
+///
+/// ── The photograph ────────────────────────────────────────────────────────
+///
+/// `imageUrl` is a customer's face, which makes this the most sensitive table in
+/// the schema. Three things follow and all three are enforced in the service:
+/// it is stored only with recorded consent, it is tagged so the salon's public
+/// website can never render it, and deleting the row destroys the hosted file
+/// rather than orphaning it.
+model HairAnalysis {
+  id       String  @id @default(cuid())
+  tenantId String
+  branchId String?
+
+  /// Null for a walk-in who has not said who they are. The reading is still
+  /// worth having for the length of the visit.
+  customerId String?
+
+  source HairAnalysisSource @default(AI)
+
+  faceShape FaceShape?
+  /// 0-1. Scales the face factor towards neutral rather than towards zero, so a
+  /// hesitant guess cannot outvote what the salon can actually see.
+  faceShapeConfidence Float?
+
+  texture HairTexture?
+  density HairDensity?
+  /// What they have NOW. The starting point, not the destination.
+  length  HairLength?
+  /// 0-100, matching the studio's own slider.
+  volume   Int?
+  hairline HairlineShape?
+
+  /// Free text from the reading — anything that did not fit a field. Shown to
+  /// the stylist, never fed back into the scoring.
+  notes String?
+
+  imageUrl      String?
+  imagePublicId String?
+
+  /// CONSENT, RECORDED RATHER THAN ASSUMED.
+  ///
+  /// A row with a photograph and no consent timestamp is a bug, and the service
+  /// refuses to create one. Kept as a time rather than a boolean because "when"
+  /// is the question actually asked afterwards.
+  consentAt DateTime?
+
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch   Branch?   @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  generations HairGeneration[]
+
+  /// The newest reading for a customer, which is the only one anybody wants.
+  @@index([tenantId, customerId, createdAt])
+  @@map("hair_analyses")
 }

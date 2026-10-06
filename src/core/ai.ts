@@ -178,3 +178,92 @@ export async function chat(
   }
 }
 
+/**
+ * ONE CALL THAT CAN SEE A PICTURE, AND RETURNS JSON OR NOTHING.
+ *
+ * ── Why this is separate from `chat` above ────────────────────────────────
+ *
+ * Not every model behind an OpenAI-compatible endpoint accepts an image, and one
+ * that does not answers 400 rather than ignoring the attachment. Sending a
+ * photograph to GROQ_MODEL would therefore break the feedback analysis the day
+ * somebody set a text-only model — so vision is its own setting, and when it is
+ * unset the caller gets null and asks a person instead.
+ *
+ * ── Why it parses the JSON here ───────────────────────────────────────────
+ *
+ * Because a model asked for JSON returns JSON inside a code fence about a third
+ * of the time, and every caller would otherwise grow its own slightly different
+ * unwrapping. One place to be wrong, and one place to fix.
+ *
+ * Returns null for everything: no key, a refusal, a timeout, prose instead of
+ * JSON. The caller cannot tell the difference and must not need to — every
+ * feature using this has to work with a human answering instead.
+ */
+export async function visionJson<T>(
+  system: string,
+  user: string,
+  image: { dataUrl: string },
+  options: { timeoutMs?: number } = {},
+): Promise<T | null> {
+  if (!aiReady || !env.GROQ_VISION_MODEL) return null;
+
+  const signal = AbortSignal.timeout(options.timeoutMs ?? env.GROQ_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(`${env.GROQ_BASE_URL.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: env.GROQ_VISION_MODEL,
+        // Zero, and for the reason the note on `chat` gives: the same photograph
+        // must read as the same face shape in March and in September, or the
+        // recommendations measure the model's mood.
+        temperature: 0,
+        max_tokens: 700,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: system },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: user },
+              { type: 'image_url', image_url: { url: image.dataUrl } },
+            ],
+          },
+        ],
+      }),
+      signal,
+    });
+
+    const data = (await response.json()) as ChatResponse;
+
+    if (!response.ok || data.error) {
+      const reason = data.error?.message ?? 'unknown';
+      if ([400, 401, 403, 404].includes(response.status)) {
+        logger.error(
+          { status: response.status, reason, model: env.GROQ_VISION_MODEL, set: 'GROQ_VISION_MODEL' },
+          'image reading is MISCONFIGURED — hair analysis will fall back to being entered by hand',
+        );
+      } else {
+        logger.warn({ status: response.status, reason }, 'image reading: model refused');
+      }
+      return null;
+    }
+
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) return null;
+
+    // A fenced block is the common failure, and it is not worth losing a reading
+    // over three backticks.
+    const cleaned = content.trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+    try {
+      return JSON.parse(cleaned) as T;
+    } catch {
+      logger.warn('image reading: model answered with something that was not JSON');
+      return null;
+    }
+  } catch (err) {
+    logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'image reading: call failed');
+    return null;
+  }
+}
