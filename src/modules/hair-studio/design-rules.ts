@@ -114,6 +114,16 @@ export const designConfigSchema = z
     photo: z
       .object({
         lift: z.number().int().min(0).max(100).default(50),
+        /**
+         * The three that apply to any hairstyle, 50 meaning "as photographed".
+         *
+         * They are properties of HAIR rather than of a cut — which is why they
+         * are here and not on the catalogue entry, and why a salon adding its
+         * thirty-fourth style gets them for nothing.
+         */
+        density: z.number().int().min(0).max(100).default(50),
+        shine: z.number().int().min(0).max(100).default(50),
+        intensity: z.number().int().min(0).max(100).default(50),
         highlightColor: hex.optional(),
         highlightAmount: z.number().int().min(0).max(100).default(0),
         highlightFace: z.boolean().default(false),

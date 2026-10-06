@@ -297,6 +297,11 @@ describe('hand-placed sections survive a save', () => {
     expect(parsed.photo?.lift).toBe(85);
     expect(parsed.photo?.highlightAmount).toBe(60);
     expect(parsed.photo?.highlightFace).toBe(false);
+    // Fifty is "as photographed" on all three, so an older saved look that has
+    // never seen these fields comes back looking exactly as it did.
+    expect(parsed.photo?.density).toBe(50);
+    expect(parsed.photo?.shine).toBe(50);
+    expect(parsed.photo?.intensity).toBe(50);
   });
 
   it('refuses a colour that is not a colour', () => {
@@ -311,6 +316,18 @@ describe('hand-placed sections survive a save', () => {
   });
 
   /** An unbounded array here is a JSON column somebody can grow until a row stops fitting. */
+  it('keeps density, shine and how vivid', () => {
+    const parsed = designConfigSchema.parse({
+      bangs: 'NONE',
+      layers: 'NONE',
+      parting: 'NATURAL',
+      photo: { density: 90, shine: 15, intensity: 100 },
+    });
+    expect(parsed.photo?.density).toBe(90);
+    expect(parsed.photo?.shine).toBe(15);
+    expect(parsed.photo?.intensity).toBe(100);
+  });
+
   it('bounds how many sections one look may hold', () => {
     const many = Array.from({ length: 9 }, (_, index) => ({ ...strip, id: `s${index}` }));
     expect(() =>
