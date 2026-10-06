@@ -1,4 +1,4 @@
-import type { FaceShape, HairGenerationKind, HairGeneration, HairLength, HairTexture, Prisma } from '@prisma/client';
+import type { FaceShape, HairGenerationKind, HairGeneration, HairLength, HairTexture, Prisma, SkinTone } from '@prisma/client';
 import { prisma } from '../../core/prisma';
 import { requireTenantId, currentUserId, runAsTenant, runUnscoped } from '../../core/context';
 import { optionalBranchFilter } from '../../core/scope';
@@ -477,6 +477,8 @@ export interface ReferenceInput {
   texture?: HairTexture | null;
   length?: HairLength | null;
   faceShape?: FaceShape | null;
+  /** Who it is shown on. Defaults to whatever the entry already records. */
+  skinTone?: SkinTone | null;
   /** Hex. A look-book in one colour reads as one haircut repeated. */
   baseColor?: string | null;
   seed?: number | null;
@@ -529,6 +531,12 @@ export async function requestCatalogReference(input: ReferenceInput): Promise<Ha
   const length = input.length ?? middle(entry.supportedLengths, 'MEDIUM');
   const density = middle(entry.supportedDensities, 'MEDIUM');
   const faceShape = input.faceShape ?? entry.recommendedFaceShapes[0] ?? null;
+  /*
+   * A look-book is browsed by somebody looking for themselves in it, so the
+   * skin tone is asked for rather than left to the model's own idea of who wears
+   * a haircut — which, unprompted, is remarkably narrow.
+   */
+  const skinTone = input.skinTone ?? entry.skinTone ?? null;
 
   const prompt = buildReferencePrompt({
     hairstyleKey: entry.kind,
@@ -542,6 +550,7 @@ export async function requestCatalogReference(input: ReferenceInput): Promise<Ha
     // it photographs with visible strand separation, which blonde does not.
     baseColor: input.baseColor ?? '#3B2417',
     faceShape,
+    skinTone,
     /*
      * The style's own switches, at their natural setting. Deliberately NOT the
      * full configurator: a reference picture is of the STYLE, and a bob drawn
@@ -608,7 +617,9 @@ export async function setCatalogPreview(catalogId: string, generationId: string 
 
   return prisma.hairstyleCatalog.update({
     where: { id: entry.id },
-    data: { previewUrl: picture.imageUrl },
+    // Generated, so photoIsUploaded goes false — the asset studio offers
+    // "draw another" for one and "replace the photo" for the other.
+    data: { previewUrl: picture.imageUrl, maskUrl: null, photoIsUploaded: false },
   });
 }
 
@@ -620,6 +631,78 @@ export async function listCatalogReferences(catalogId: string) {
     orderBy: { createdAt: 'desc' },
     take: 24,
     select: publicFields,
+  });
+}
+
+/**
+ * A PHOTOGRAPH THE SALON TOOK ITSELF.
+ *
+ * ── Why this matters more than the generated one ──────────────────────────
+ *
+ * Nothing in this studio should require an image model. A salon with no key, no
+ * budget for one, or a provider having a bad week still has the thing that
+ * actually sells: photographs of its own work. Those are better than anything
+ * generated — they are this salon's cutting, on this salon's customers, under
+ * this salon's lights — and the recolour, the highlights and the painted sections
+ * all work on them identically, because the shader does not know or care where
+ * the pixels came from.
+ *
+ * So the generated reference is the FALLBACK for a salon with no photographs
+ * yet, not the main path. It took building the generation pipeline first to see
+ * that the right way round.
+ *
+ * ── Consent ───────────────────────────────────────────────────────────────
+ *
+ * A generated portrait is of nobody. This one is very likely of a real customer,
+ * and it is going into a look-book that other customers will scroll through. The
+ * service refuses without an explicit acknowledgement for the same reason the
+ * analysis photo does: once it is uploaded it has been copied to a third party,
+ * and no later correction undoes that.
+ */
+export async function setCatalogPhoto(
+  catalogId: string,
+  input: { photo: string | null; consent?: boolean },
+) {
+  const tenantId = requireTenantId();
+
+  const entry = await prisma.hairstyleCatalog.findFirst({ where: { id: catalogId, tenantId } });
+  if (!entry) throw NotFound('Hairstyle not found');
+
+  if (input.photo === null) {
+    /*
+     * Removing the picture removes the cut-out with it. A mask is a silhouette OF
+     * a particular photograph — keeping it against a different one would place
+     * the colour wherever the old hair happened to be, which looks like a bug in
+     * the renderer rather than a stale file.
+     */
+    return prisma.hairstyleCatalog.update({
+      where: { id: entry.id },
+      data: { previewUrl: null, maskUrl: null, photoIsUploaded: false },
+    });
+  }
+
+  if (!input.consent) {
+    throw BadRequest(
+      'Confirm that whoever is in this photograph is happy for the salon to show it before uploading it.',
+    );
+  }
+
+  const { bytes, contentType } = decodeDataUrl(input.photo);
+  const tenant = await runUnscoped(() =>
+    prisma.tenant.findUnique({ where: { id: tenantId }, select: { slug: true } }),
+  );
+
+  const uploaded = await uploadBytes({
+    bytes,
+    contentType,
+    folder: `${tenant?.slug ?? tenantId}/hair-styles`,
+    tags: ['hair-style-photo', `salon-${tenant?.slug ?? tenantId}`],
+  });
+
+  return prisma.hairstyleCatalog.update({
+    where: { id: entry.id },
+    // The mask goes too: it belonged to the picture being replaced.
+    data: { previewUrl: uploaded.secureUrl, maskUrl: null, photoIsUploaded: true },
   });
 }
 

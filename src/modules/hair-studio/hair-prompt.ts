@@ -1,4 +1,4 @@
-import type { FaceShape, Gender, HairDensity, HairLength, HairTexture } from '@prisma/client';
+import type { FaceShape, Gender, HairDensity, HairLength, HairTexture, SkinTone } from '@prisma/client';
 import { kindByKey } from './hairstyle-kinds';
 import type { DesignConfig } from './design-rules';
 
@@ -60,6 +60,14 @@ export interface PromptInput {
    * sharply oval one is a picture that argues against itself.
    */
   faceShape?: FaceShape | null;
+  /**
+   * Who the cut is shown on, for a catalogue reference.
+   *
+   * Asked for rather than left to the model, whose unprompted idea of who wears
+   * a haircut is remarkably narrow — and a salon whose entire library comes back
+   * on one skin tone has told its customers something it did not mean to.
+   */
+  skinTone?: SkinTone | null;
 }
 
 // ----------------------------------------------------------- vocabulary -----
@@ -353,6 +361,22 @@ export function buildPrompt(input: PromptInput): string {
   );
 }
 
+/**
+ * Described by complexion rather than by any word about race or origin.
+ *
+ * The picture needs a skin tone; it does not need — and must not carry — a claim
+ * about who somebody is. These are the words a photographer or a make-up artist
+ * would use about light falling on skin, which is the only thing being decided
+ * here.
+ */
+const SKIN: Record<SkinTone, string> = {
+  FAIR: 'fair skin',
+  LIGHT: 'light skin',
+  MEDIUM: 'medium brown skin',
+  OLIVE: 'olive skin',
+  DEEP: 'deep brown skin',
+};
+
 const FACE: Record<FaceShape, string> = {
   OVAL: 'an oval face',
   ROUND: 'a round face',
@@ -395,7 +419,11 @@ export function buildReferencePrompt(input: PromptInput): string {
       : input.gender === 'FEMALE'
         ? 'a fictional adult woman'
         : 'a fictional adult';
-  const face = input.faceShape ? ` with ${FACE[input.faceShape]}` : '';
+  const traits = [
+    input.skinTone ? SKIN[input.skinTone] : null,
+    input.faceShape ? FACE[input.faceShape] : null,
+  ].filter(Boolean);
+  const face = traits.length ? ` with ${traits.join(' and ')}` : '';
 
   return (
     `A photorealistic salon hairstyle reference photograph of ${person}${face}, ` +

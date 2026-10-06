@@ -4061,6 +4061,19 @@ model HairstyleCatalog {
   /// it can be shown but not recoloured.
   maskUrl String?
 
+  /// WHAT THE PICTURE SHOWS — the browsing axes, as against what the cut IS.
+  ///
+  /// Both nullable: a style can be on the menu long before anybody has
+  /// photographed it, and a half-filled catalogue is better than an empty one.
+  colorFamily HairColorFamily?
+  skinTone    SkinTone?
+
+  /// How the photograph came to exist. A salon with no image-model key at all
+  /// still gets the whole studio by uploading its own work, and knowing which is
+  /// which is what makes "regenerate" safe to offer and "re-upload" the right
+  /// offer for the other kind.
+  photoIsUploaded Boolean @default(false)
+
   isActive   Boolean @default(true)
   sortOrder  Int     @default(0)
 
@@ -4312,6 +4325,42 @@ model HairGeneration {
   @@index([analysisId])
   @@index([tenantId, catalogId, status])
   @@map("hair_generations")
+}
+
+/// THE COLOUR FAMILY A STYLE'S PHOTOGRAPH IS SHOT IN.
+///
+/// Not what the hair can be recoloured to — that is every colour, for free, in
+/// the studio. This is what the picture in the look-book SHOWS, which is a
+/// different question and the one somebody browsing is actually asking.
+enum HairColorFamily {
+  BLACK
+  BROWN
+  BLONDE
+  RED
+  GREY
+  /// Violet, blue, pink — anything that is a statement rather than a shade.
+  FASHION
+}
+
+/// THE SKIN TONE OF THE MODEL IN THE PHOTOGRAPH.
+///
+/// ── Why this is a field and not an afterthought ───────────────────────────
+///
+/// A look-book is browsed by somebody looking for themselves in it. A salon in
+/// India whose entire library is shot on fair skin has told every other customer
+/// something it did not mean to, and the fix is not a disclaimer — it is being
+/// able to see the gap and fill it. Recorded so the asset studio can show which
+/// tones are missing, and so a generated reference can be asked for the one that
+/// is.
+///
+/// Deliberately coarse. Five bands is enough to notice a library that only shows
+/// one, and finer than that invites a precision nobody can apply consistently.
+enum SkinTone {
+  FAIR
+  LIGHT
+  MEDIUM
+  OLIVE
+  DEEP
 }
 
 /// THE SHAPE OF A HAIRLINE. Matters for exactly the decisions a fringe or a fade

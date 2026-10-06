@@ -48,6 +48,8 @@ const densityEnum = z.enum(['LOW', 'MEDIUM', 'HIGH']);
 const faceShapeEnum = z.enum(['OVAL', 'ROUND', 'SQUARE', 'OBLONG', 'HEART', 'DIAMOND']);
 const maintenanceEnum = z.enum(['LOW', 'MEDIUM', 'HIGH']);
 const genderEnum = z.enum(['MALE', 'FEMALE', 'UNISEX']);
+const colorFamilyEnum = z.enum(['BLACK', 'BROWN', 'BLONDE', 'RED', 'GREY', 'FASHION']);
+const skinToneEnum = z.enum(['FAIR', 'LIGHT', 'MEDIUM', 'OLIVE', 'DEEP']);
 
 // ------------------------------------------------------- what exists -------
 
@@ -76,6 +78,8 @@ hairStudioRouter.get(
         partings: PARTINGS,
         fadeTypes: FADE_TYPES,
         balayagePlacements: BALAYAGE_PLACEMENTS,
+        colorFamilies: colorFamilyEnum.options,
+        skinTones: skinToneEnum.options,
       },
     }),
   ),
@@ -98,6 +102,16 @@ const hairstyleBody = z.object({
   supportsParting: z.boolean().optional(),
   supportsFade: z.boolean().optional(),
   maintenance: maintenanceEnum.optional(),
+  /**
+   * HOW THE LOOK-BOOK IS BROWSED, as against what the cut is.
+   *
+   * `colorFamily` is what the PICTURE shows, not what the hair can be recoloured
+   * to — which is every colour, for free, in the studio. `skinTone` is who it is
+   * shown on, which is the axis a salon most often has a gap in and cannot see
+   * until it is recorded.
+   */
+  colorFamily: colorFamilyEnum.nullable().optional(),
+  skinTone: skinToneEnum.nullable().optional(),
   serviceId: idSchema.nullable().optional(),
   previewUrl: z.string().trim().url().max(500).nullable().optional(),
   branchId: idSchema.nullable().optional(),
@@ -302,6 +316,7 @@ hairStudioRouter.post(
         texture: textureEnum.nullable().optional(),
         length: lengthEnum.nullable().optional(),
         faceShape: faceShapeEnum.nullable().optional(),
+        skinTone: skinToneEnum.nullable().optional(),
         baseColor: z
           .string()
           .trim()
@@ -330,6 +345,42 @@ hairStudioRouter.get(
   requirePermission(PERMISSIONS.SERVICE_VIEW),
   validate({ params: idParam }),
   asyncHandler(async (req, res) => ok(res, await generation.listCatalogReferences(req.params.id!))),
+);
+
+/**
+ * UPLOAD A PHOTOGRAPH THE SALON TOOK ITSELF.
+ *
+ * The path that needs no image model at all, and on reflection the main one: a
+ * salon's own work is better than anything generated, because it is this salon's
+ * cutting on this salon's customers. The recolour, the highlights and the painted
+ * sections all work on it identically — the shader does not know where the pixels
+ * came from.
+ *
+ * `consent` is required and the service refuses without it. A generated portrait
+ * is of nobody; this one is very likely of a real customer, and it is going into
+ * a look-book other customers scroll through.
+ */
+hairStudioRouter.post(
+  '/hairstyles/:id/photo',
+  requirePermission(PERMISSIONS.SERVICE_MANAGE),
+  validate({
+    params: idParam,
+    body: z.object({
+      photo: z.string().max(20_000_000).nullable(),
+      consent: z.boolean().optional(),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const body = req.body as { photo: string | null; consent?: boolean };
+    const entry = await generation.setCatalogPhoto(req.params.id!, body);
+    audit({
+      action: body.photo ? 'hairstyle.photo_uploaded' : 'hairstyle.photo_removed',
+      entity: 'HairstyleCatalog',
+      entityId: entry.id,
+      after: { hasPhoto: !!entry.previewUrl, uploaded: entry.photoIsUploaded },
+    });
+    return ok(res, entry);
+  }),
 );
 
 /**
