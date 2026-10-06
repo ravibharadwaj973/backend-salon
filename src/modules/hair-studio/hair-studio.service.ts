@@ -77,10 +77,27 @@ export async function listHairstyles(input: {
       // them rather than hiding the half of the menu that suits everybody.
       ...(input.gender ? { gender: { in: [input.gender, 'UNISEX'] } } : {}),
     },
-    include: { service: { select: { id: true, name: true, price: true, durationMin: true } } },
+    include: {
+      service: { select: { id: true, name: true, price: true, durationMin: true } },
+      /**
+       * HOW OFTEN THIS SALON HAS ACTUALLY CHOSEN IT.
+       *
+       * So that a "popular" tab can be a fact rather than a label. Every product
+       * with a trending section is tempted to fill it with whatever the team
+       * wants to sell, and a salon can tell within a week — this is the salon's
+       * OWN saved looks, which is the only popularity that means anything to the
+       * person reading it.
+       *
+       * One grouped count, not a query per row.
+       */
+      _count: { select: { designs: true } },
+    },
     orderBy: [{ isActive: 'desc' }, { sortOrder: 'asc' }, { name: 'asc' }],
   });
-  return rows.map(withThumbnail);
+  return rows.map((row) => {
+    const { _count, ...rest } = row;
+    return { ...withThumbnail(rest), timesChosen: _count.designs };
+  });
 }
 
 export async function getHairstyle(id: string) {

@@ -53,6 +53,32 @@ const APPOINTMENT_INCLUDE = {
   },
   invoice: { select: { id: true, invoiceNumber: true, grandTotal: true, status: true, dueAmount: true } },
   feedback: { select: { id: true, rating: true, comment: true } },
+  /**
+   * THE LOOK THE CUSTOMER AGREED TO, ON THE APPOINTMENT THAT WILL CUT IT.
+   *
+   * The studio has been able to attach a design to an appointment since it was
+   * built, and nothing read it back — so the agreement was recorded and then lost
+   * on the way to the chair, which is the exact failure the studio exists to
+   * prevent. The stylist opening tomorrow's booking is the person who needs it.
+   *
+   * Narrow on purpose: enough to recognise the look and open it, not the whole
+   * design. The configurator fetches the rest when it is actually opened, and an
+   * appointment list has no use for a colour config.
+   */
+  hairDesigns: {
+    orderBy: { createdAt: 'desc' as const },
+    take: 3,
+    select: {
+      id: true,
+      name: true,
+      hairstyleKey: true,
+      texture: true,
+      length: true,
+      baseColor: true,
+      notes: true,
+      catalog: { select: { id: true, name: true, previewUrl: true } },
+    },
+  },
 } satisfies Prisma.AppointmentInclude;
 
 /**
