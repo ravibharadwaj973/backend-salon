@@ -72,32 +72,57 @@ export const designConfigSchema = z
     parting: z.enum(PARTINGS).default('NATURAL'),
 
     /**
-     * HAND-PLACED SECTIONS.
+     * HAND-PAINTED SECTIONS, IN THE PICTURE'S OWN COORDINATES.
      *
-     * Added to this schema the same day the control shipped, and that ordering
-     * matters more than it looks: the object below is `.strip()`ed, so a key this
-     * schema does not know about is silently DROPPED on save. A section painted
-     * on the model would have survived until the stylist pressed Save and then
-     * quietly vanished — the worst kind of bug, because the screen would show it
-     * working right up to the moment it did not.
+     * x and y are where on the photograph somebody tapped, 0-1 from the top left.
+     * They were an angle around a 3D head until the studio became a photograph;
+     * nothing had shipped, so the shape was replaced rather than carried.
+     *
+     * This schema is `.strip()`ed, which is right — the studio grows controls
+     * faster than this API is redeployed — and the cost is that a key it does not
+     * know is DROPPED IN SILENCE. A section painted on screen would look perfect
+     * until somebody pressed Save and then not exist, with no error anywhere. The
+     * test beside this file exists for exactly that.
      */
     strips: z
       .array(
         z.object({
           id: z.string().trim().min(1).max(64),
           color: hex,
-          /** Azimuth in radians. Bounded to one turn either way, not to 0-2π:
-           *  the client gets this from Math.atan2, which returns -π..π. */
-          phi: z.number().min(-Math.PI * 2).max(Math.PI * 2),
-          start: z.number().min(0).max(1),
+          x: z.number().min(0).max(1),
+          y: z.number().min(0).max(1),
           width: z.number().int().min(0).max(100),
-          brightness: z.number().int().min(0).max(100),
           blend: z.number().int().min(0).max(100),
+          strength: z.number().int().min(0).max(100),
         }),
       )
-      // Six is already more sections than anyone foils by hand, and an unbounded
-      // array here is a JSON column somebody can grow until a row stops fitting.
+      // Six is already more sections than anyone foils by hand, and it is what
+      // the shader's fixed loop reads. An unbounded array here is also a JSON
+      // column somebody can grow until a row stops fitting.
       .max(6)
+      .optional(),
+
+    /**
+     * THE COLOUR, AS THE PHOTOGRAPH NEEDS IT.
+     *
+     * `lift` is the one field with no counterpart in the old mannequin studio and
+     * the one that makes the whole thing work: you cannot turn black hair blonde
+     * by changing hue, because black has nowhere to go. It is the bleach step —
+     * how far the hair's own luminance is rescaled onto the target's level —
+     * and without it every dark base stays dark whatever colour is chosen.
+     */
+    photo: z
+      .object({
+        lift: z.number().int().min(0).max(100).default(50),
+        highlightColor: hex.optional(),
+        highlightAmount: z.number().int().min(0).max(100).default(0),
+        highlightFace: z.boolean().default(false),
+        rootColor: hex.optional(),
+        rootDepth: z.number().int().min(0).max(100).default(0),
+        endsColor: hex.optional(),
+        endsAmount: z.number().int().min(0).max(100).default(0),
+        endsStart: z.number().int().min(0).max(100).default(55),
+      })
       .optional(),
 
     fade: z

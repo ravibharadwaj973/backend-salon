@@ -229,7 +229,7 @@ function colourEffects(config: Partial<DesignConfig>): string[] {
    * configurator is where a section is positioned, and the photograph is where
    * the salon sees roughly what that kind of colouring looks like.
    */
-  const strips = (config.strips ?? []).filter((strip) => strip.brightness > 0);
+  const strips = (config.strips ?? []).filter((strip) => strip.strength > 0);
   if (strips.length) {
     const colours = [...new Set(strips.map((strip) => colourName(strip.color)))];
     parts.push(

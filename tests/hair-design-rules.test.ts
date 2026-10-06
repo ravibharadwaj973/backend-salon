@@ -248,11 +248,11 @@ describe('hand-placed sections survive a save', () => {
   const strip = {
     id: 'strip-1',
     color: '#C9A063',
-    phi: 0.8,
-    start: 0.35,
+    x: 0.3,
+    y: 0.45,
     width: 40,
-    brightness: 70,
     blend: 45,
+    strength: 70,
   };
 
   /**
@@ -272,12 +272,31 @@ describe('hand-placed sections survive a save', () => {
     expect(parsed.strips?.[0]).toMatchObject(strip);
   });
 
-  it('accepts the full range an atan2 can produce', () => {
-    for (const phi of [-Math.PI, -0.001, 0, 3.14159, Math.PI]) {
+  it('accepts the corners of the picture and refuses outside it', () => {
+    for (const [x, y] of [[0, 0], [1, 1], [0.5, 0.5]]) {
       expect(() =>
-        designConfigSchema.parse({ bangs: 'NONE', layers: 'NONE', parting: 'NATURAL', strips: [{ ...strip, phi }] }),
+        designConfigSchema.parse({ bangs: 'NONE', layers: 'NONE', parting: 'NATURAL', strips: [{ ...strip, x, y }] }),
       ).not.toThrow();
     }
+    expect(() =>
+      designConfigSchema.parse({ bangs: 'NONE', layers: 'NONE', parting: 'NATURAL', strips: [{ ...strip, x: 1.4 }] }),
+    ).toThrow();
+  });
+
+  /**
+   * `lift` is the field that makes dark-to-blonde possible, and it is in the
+   * same `.strip()`ed object — so it is worth its own assertion that it survives.
+   */
+  it('keeps the photo colour settings, lift included', () => {
+    const parsed = designConfigSchema.parse({
+      bangs: 'NONE',
+      layers: 'NONE',
+      parting: 'NATURAL',
+      photo: { lift: 85, highlightColor: '#E8C88A', highlightAmount: 60, rootDepth: 30, rootColor: '#1C1512' },
+    });
+    expect(parsed.photo?.lift).toBe(85);
+    expect(parsed.photo?.highlightAmount).toBe(60);
+    expect(parsed.photo?.highlightFace).toBe(false);
   });
 
   it('refuses a colour that is not a colour', () => {

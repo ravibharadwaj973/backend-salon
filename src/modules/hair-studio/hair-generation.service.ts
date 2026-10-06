@@ -7,7 +7,7 @@ import { logger } from '../../core/logger';
 import { dayjs, startOfDay } from '../../core/dates';
 import { env, fluxReady } from '../../config/env';
 import { enqueue } from '../../jobs/queue';
-import { readImageBytes, uploadBytes } from '../gallery/cloudinary';
+import { decodeDataUrl, readImageBytes, uploadBytes } from '../gallery/cloudinary';
 import { designConfigSchema, type DesignConfig } from './design-rules';
 import { buildPrompt, buildRecolourPrompt, buildReferencePrompt, NEGATIVE, type PromptInput } from './hair-prompt';
 import * as flux from './flux';
@@ -620,6 +620,56 @@ export async function listCatalogReferences(catalogId: string) {
     orderBy: { createdAt: 'desc' },
     take: 24,
     select: publicFields,
+  });
+}
+
+/**
+ * CUT THE HAIR OUT OF THE PICTURE, ONCE.
+ *
+ * The mask is drawn by a person in the asset studio — a few taps on the hair and
+ * a brush to tidy the edges — and stored beside the photograph it belongs to.
+ * Blind segmentation was tried first and was confidently wrong: on a portrait
+ * with a gradient backdrop it selected the WALL, because the wall was the largest
+ * region that was neither skin nor a flat border colour. A rule that wrong is
+ * worse than no rule, and a person pointing at the hair is the one piece of
+ * information no heuristic has.
+ *
+ * Stored as its own image rather than as an alpha channel on the photograph:
+ * the photograph is shown on its own in the look-book and must stay a plain
+ * opaque picture, and a mask that can be redrawn without regenerating the
+ * portrait is the point of keeping them apart.
+ */
+export async function setCatalogMask(catalogId: string, dataUrl: string | null) {
+  const tenantId = requireTenantId();
+
+  const entry = await prisma.hairstyleCatalog.findFirst({ where: { id: catalogId, tenantId } });
+  if (!entry) throw NotFound('Hairstyle not found');
+
+  if (dataUrl === null) {
+    return prisma.hairstyleCatalog.update({ where: { id: entry.id }, data: { maskUrl: null } });
+  }
+
+  const { bytes, contentType } = decodeDataUrl(dataUrl);
+  const tenant = await runUnscoped(() =>
+    prisma.tenant.findUnique({ where: { id: tenantId }, select: { slug: true } }),
+  );
+
+  const uploaded = await uploadBytes({
+    bytes,
+    contentType,
+    folder: `${tenant?.slug ?? tenantId}/hair-masks`,
+    /*
+     * Its own tag, well away from the gallery's. A mask is a black-and-white
+     * silhouette of somebody's hair; it is of no interest to anyone but the
+     * renderer, and it must never appear on the salon's public page because it
+     * happened to share a tag with the photographs.
+     */
+    tags: ['hair-mask', `salon-${tenant?.slug ?? tenantId}`],
+  });
+
+  return prisma.hairstyleCatalog.update({
+    where: { id: entry.id },
+    data: { maskUrl: uploaded.secureUrl },
   });
 }
 

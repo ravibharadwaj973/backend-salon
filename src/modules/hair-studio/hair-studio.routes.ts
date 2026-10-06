@@ -332,6 +332,34 @@ hairStudioRouter.get(
   asyncHandler(async (req, res) => ok(res, await generation.listCatalogReferences(req.params.id!))),
 );
 
+/**
+ * THE HAIR, CUT OUT OF THE MENU'S PICTURE.
+ *
+ * Drawn once per style, and then every colour the salon sells is a shader over it
+ * rather than another call to the image model. The body is a greyscale PNG as a
+ * data URL, which is what a canvas produces and what the gallery uploader already
+ * knows how to validate.
+ */
+hairStudioRouter.post(
+  '/hairstyles/:id/mask',
+  requirePermission(PERMISSIONS.SERVICE_MANAGE),
+  validate({
+    params: idParam,
+    body: z.object({ mask: z.string().max(20_000_000).nullable() }),
+  }),
+  asyncHandler(async (req, res) => {
+    const { mask } = req.body as { mask: string | null };
+    const entry = await generation.setCatalogMask(req.params.id!, mask);
+    audit({
+      action: 'hairstyle.mask_set',
+      entity: 'HairstyleCatalog',
+      entityId: entry.id,
+      after: { hasMask: !!entry.maskUrl },
+    });
+    return ok(res, entry);
+  }),
+);
+
 /** Make one of them the menu's picture. Null takes the picture away again. */
 hairStudioRouter.post(
   '/hairstyles/:id/preview',

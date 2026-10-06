@@ -4039,6 +4039,28 @@ model HairstyleCatalog {
   serviceId String?
 
   previewUrl String?
+
+  /// THE HAIR, CUT OUT OF THE PICTURE ABOVE.
+  ///
+  /// A greyscale PNG the same size as previewUrl: white where the hair is, black
+  /// where it is not, soft at the edges. It is what turns one generated
+  /// photograph into every colour the salon sells.
+  ///
+  /// ── Why this column is the whole economic argument ────────────────────────
+  ///
+  /// Without it, showing a customer a different colour means another call to the
+  /// image model — billed per picture, a second or more of waiting, and a face
+  /// that comes back subtly different. With it, the colour, the highlights, the
+  /// balayage, the root shadow and every hand-painted section are a shader over
+  /// two textures: instant, free, and the same person every time. Five cuts by
+  /// eight colours by five highlight styles by four intensities is eight hundred
+  /// combinations, and this is the difference between eight hundred generations
+  /// and one.
+  ///
+  /// Null means the style has a photograph nobody has cut the hair out of yet, so
+  /// it can be shown but not recoloured.
+  maskUrl String?
+
   isActive   Boolean @default(true)
   sortOrder  Int     @default(0)
 
