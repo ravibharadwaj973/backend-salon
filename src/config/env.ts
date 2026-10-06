@@ -240,8 +240,14 @@ const envSchema = z.object({
    *
    * So this is configuration. Ask the key which models it has rather than
    * trusting the default — including this one.
+   *
+   * The default WAS `flux-2-klein`, which is not an endpoint, and the first real
+   * attempt failed on it twice. The model name is a path segment, so a wrong one
+   * is a 404 on a route that does not exist — the provider answers a bare
+   * "Not Found" and nothing about it suggests the cause. The submit path now says
+   * so in words; this default is the slug the documentation actually lists.
    */
-  BFL_MODEL: z.string().default('flux-2-klein'),
+  BFL_MODEL: z.string().default('flux-2-klein-9b'),
   /**
    * One HTTP call, not the whole generation.
    *

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyStatus, trustedPollingUrl } from '../src/modules/hair-studio/flux';
+import { classifyStatus, trustedPollingUrl, unknownModelMessage } from '../src/modules/hair-studio/flux';
 import { buildPrompt, buildRecolourPrompt, colourName, describeHair } from '../src/modules/hair-studio/hair-prompt';
 import type { PromptInput } from '../src/modules/hair-studio/hair-prompt';
 
@@ -270,5 +270,32 @@ describe('buildRecolourPrompt', () => {
     expect(text).toContain('balayage');
     expect(text).toContain('on the ends only');
     expect(text).not.toContain('wavy');
+  });
+});
+
+describe('a wrong model name', () => {
+  /**
+   * THE FAILURE THIS INTEGRATION ACTUALLY HIT, TWICE, ON ITS FIRST REAL RUN.
+   *
+   * The model is a path segment, so an unknown one is an unknown ROUTE and the
+   * provider answers FastAPI's default body — {"detail":"Not Found"}. Passed
+   * through, the salon reads the words "Not Found": true, useless, and
+   * indistinguishable from the provider being down. The configured slug was
+   * `flux-2-klein`; the endpoint is `flux-2-klein-9b`.
+   *
+   * The person reading this message is the one who can fix it in one line, so the
+   * test holds it to naming the setting and the value that is wrong.
+   */
+  it('names the setting and the value, not just the status', () => {
+    const message = unknownModelMessage('flux-2-klein');
+    expect(message).toContain('flux-2-klein');
+    expect(message).toContain('BFL_MODEL');
+    expect(message).not.toMatch(/^Not Found$/);
+  });
+
+  it('points at where the real names are listed', () => {
+    const message = unknownModelMessage('whatever');
+    expect(message).toContain('docs.bfl.ai');
+    expect(message).toContain('flux-2-klein-9b');
   });
 });

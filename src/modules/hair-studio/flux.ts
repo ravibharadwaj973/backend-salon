@@ -203,9 +203,31 @@ export async function submit(options: SubmitOptions): Promise<FluxSubmitResult> 
   const payload = (await json(response)) as { id?: string; polling_url?: string; detail?: unknown } | null;
 
   if (!response.ok || !payload?.id) {
+    /**
+     * A 404 ON SUBMIT IS A WRONG MODEL NAME, AND SAYING SO IS THE WHOLE POINT.
+     *
+     * The model is a path segment, so an unknown one is an unknown ROUTE, and the
+     * provider answers FastAPI's default body: {"detail":"Not Found"}. Passed
+     * through, that reaches the salon as the words "Not Found" — which is true,
+     * useless, and indistinguishable from the provider being down.
+     *
+     * It is not hypothetical. The first real attempt on this integration failed
+     * exactly here, twice, because the configured slug was `flux-2-klein` and the
+     * endpoint is `flux-2-klein-9b`. The person reading the message is the one who
+     * can fix it in one line, so the message names the setting and its value.
+     *
+     * A 404 while POLLING means something else entirely — the request aged out of
+     * the provider's store — which is why only the submit path says this.
+     */
+    if (response.status === 404) {
+      const detail = unknownModelMessage(env.BFL_MODEL);
+      noteFailure(404, detail);
+      throw new FluxError(detail, 'config');
+    }
+
     const detail = readDetail(payload) ?? `The image provider answered ${response.status}.`;
     noteFailure(response.status, detail);
-    throw new FluxError(detail, [400, 401, 403, 404].includes(response.status) ? 'config' : 'transient');
+    throw new FluxError(detail, [400, 401, 403].includes(response.status) ? 'config' : 'transient');
   }
 
   /**
@@ -305,6 +327,24 @@ export async function download(sampleUrl: string): Promise<Buffer> {
 }
 
 // ------------------------------------------------------------- plumbing -----
+
+/**
+ * What to say when the model name is not a route.
+ *
+ * Pulled out and exported so the wording is in one place and a test can hold it
+ * to naming the variable: the whole value of this message is that the person
+ * reading it can fix it in one line, and a message that says "Not Found" sends
+ * them to support instead.
+ */
+export function unknownModelMessage(model: string): string {
+  return (
+    `The image provider has no model called "${model}". ` +
+    'The model name is part of the address, so a wrong one is a page that does not exist rather than a refusal — ' +
+    'which is why the provider answers a bare "Not Found". ' +
+    'Set BFL_MODEL to a slug your account has: the FLUX.2 endpoints are named like flux-2-klein-9b and flux-2-pro, ' +
+    'listed at docs.bfl.ai.'
+  );
+}
 
 /** A failure with a verdict attached: can retrying possibly help? */
 export class FluxError extends Error {
